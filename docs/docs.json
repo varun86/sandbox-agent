@@ -61,7 +61,8 @@
 									"deploy/daytona",
 									"deploy/vercel",
 									"deploy/cloudflare",
-									"deploy/docker"
+									"deploy/docker",
+									"deploy/boxlite"
 								]
 							}
 						]
