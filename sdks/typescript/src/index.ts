@@ -10,6 +10,7 @@ export { AcpRpcError } from "acp-http-client";
 export { buildInspectorUrl } from "./inspector.ts";
 
 export type {
+  SandboxAgentHealthWaitOptions,
   AgentQueryOptions,
   ProcessLogFollowQuery,
   ProcessLogListener,

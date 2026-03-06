@@ -1,6 +1,6 @@
 import { SimpleBox } from "@boxlite-ai/boxlite";
 import { SandboxAgent } from "sandbox-agent";
-import { detectAgent, buildInspectorUrl, waitForHealth } from "@sandbox-agent/example-shared";
+import { detectAgent, buildInspectorUrl } from "@sandbox-agent/example-shared";
 import { setupImage, OCI_DIR } from "./setup-image.ts";
 
 const env: Record<string, string> = {};
@@ -26,9 +26,7 @@ if (result.exitCode !== 0) throw new Error(`Failed to start server: ${result.std
 
 const baseUrl = "http://localhost:3000";
 
-console.log("Waiting for server...");
-await waitForHealth({ baseUrl });
-
+console.log("Connecting to server...");
 const client = await SandboxAgent.connect({ baseUrl });
 const session = await client.createSession({ agent: detectAgent(), sessionInit: { cwd: "/root", mcpServers: [] } });
 const sessionId = session.id;

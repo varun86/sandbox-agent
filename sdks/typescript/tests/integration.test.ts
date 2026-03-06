@@ -337,6 +337,111 @@ describe("Integration: TypeScript SDK flat session API", () => {
     );
   });
 
+  it("waits for health before non-ACP HTTP helpers", async () => {
+    const defaultFetch = globalThis.fetch;
+    if (!defaultFetch) {
+      throw new Error("Global fetch is not available in this runtime.");
+    }
+
+    let healthAttempts = 0;
+    const seenPaths: string[] = [];
+    const customFetch: typeof fetch = async (input, init) => {
+      const outgoing = new Request(input, init);
+      const parsed = new URL(outgoing.url);
+      seenPaths.push(parsed.pathname);
+
+      if (parsed.pathname === "/v1/health") {
+        healthAttempts += 1;
+        if (healthAttempts < 3) {
+          return new Response("warming up", { status: 503 });
+        }
+      }
+
+      const forwardedUrl = new URL(`${parsed.pathname}${parsed.search}`, baseUrl);
+      const forwarded = new Request(forwardedUrl.toString(), outgoing);
+      return defaultFetch(forwarded);
+    };
+
+    const sdk = await SandboxAgent.connect({
+      token,
+      fetch: customFetch,
+    });
+
+    const agents = await sdk.listAgents();
+    expect(Array.isArray(agents.agents)).toBe(true);
+    expect(healthAttempts).toBe(3);
+
+    const firstAgentsRequest = seenPaths.indexOf("/v1/agents");
+    expect(firstAgentsRequest).toBeGreaterThanOrEqual(0);
+    expect(seenPaths.slice(0, firstAgentsRequest)).toEqual([
+      "/v1/health",
+      "/v1/health",
+      "/v1/health",
+    ]);
+
+    await sdk.dispose();
+  });
+
+  it("surfaces health timeout when a request awaits readiness", async () => {
+    const customFetch: typeof fetch = async (input, init) => {
+      const outgoing = new Request(input, init);
+      const parsed = new URL(outgoing.url);
+
+      if (parsed.pathname === "/v1/health") {
+        return new Response("warming up", { status: 503 });
+      }
+
+      throw new Error(`Unexpected request path during timeout test: ${parsed.pathname}`);
+    };
+
+    const sdk = await SandboxAgent.connect({
+      token,
+      fetch: customFetch,
+      waitForHealth: { timeoutMs: 100 },
+    });
+
+    await expect(sdk.listAgents()).rejects.toThrow("Timed out waiting for sandbox-agent health");
+    await sdk.dispose();
+  });
+
+  it("aborts the shared health wait when connect signal is aborted", async () => {
+    const controller = new AbortController();
+    const customFetch: typeof fetch = async (input, init) => {
+      const outgoing = new Request(input, init);
+      const parsed = new URL(outgoing.url);
+
+      if (parsed.pathname !== "/v1/health") {
+        throw new Error(`Unexpected request path during abort test: ${parsed.pathname}`);
+      }
+
+      return new Promise<Response>((_resolve, reject) => {
+        const onAbort = () => {
+          outgoing.signal.removeEventListener("abort", onAbort);
+          reject(outgoing.signal.reason ?? new DOMException("Connect aborted", "AbortError"));
+        };
+
+        if (outgoing.signal.aborted) {
+          onAbort();
+          return;
+        }
+
+        outgoing.signal.addEventListener("abort", onAbort, { once: true });
+      });
+    };
+
+    const sdk = await SandboxAgent.connect({
+      token,
+      fetch: customFetch,
+      signal: controller.signal,
+    });
+
+    const pending = sdk.listAgents();
+    controller.abort(new DOMException("Connect aborted", "AbortError"));
+
+    await expect(pending).rejects.toThrow("Connect aborted");
+    await sdk.dispose();
+  });
+
   it("restores a session on stale connection by recreating and replaying history on first prompt", async () => {
     const persist = new InMemorySessionPersistDriver({
       maxEventsPerSession: 200,
