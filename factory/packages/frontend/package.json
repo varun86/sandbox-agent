@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@sandbox-agent/react": "workspace:*",
     "@openhandoff/client": "workspace:*",
     "@openhandoff/frontend-errors": "workspace:*",
     "@openhandoff/shared": "workspace:*",

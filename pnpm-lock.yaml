@@ -520,6 +520,9 @@ importers:
       '@openhandoff/shared':
         specifier: workspace:*
         version: link:../shared
+      '@sandbox-agent/react':
+        specifier: workspace:*
+        version: link:../../../sdks/react
       '@tanstack/react-query':
         specifier: ^5.85.5
         version: 5.90.21(react@19.2.4)

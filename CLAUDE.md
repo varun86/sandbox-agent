@@ -66,6 +66,14 @@
 - `Session` helpers are `prompt(...)`, `rawSend(...)`, `onEvent(...)`, `setMode(...)`, `setModel(...)`, `setThoughtLevel(...)`, `setConfigOption(...)`, `getConfigOptions()`, `getModes()`, `respondPermission(...)`, `rawRespondPermission(...)`, and `onPermissionRequest(...)`.
 - Cleanup is `sdk.dispose()`.
 
+### React Component Methodology
+
+- Shared React UI belongs in `sdks/react` only when it is reusable outside the Inspector.
+- If the same UI pattern is shared between the Sandbox Agent Inspector and Foundry, prefer extracting it into `sdks/react` instead of maintaining parallel implementations.
+- Keep shared components unstyled by default: behavior in the package, styling in the consumer via `className`, slot-level `classNames`, render overrides, and `data-*` hooks.
+- Prefer extracting reusable pieces such as transcript, composer, and conversation surfaces. Keep Inspector-specific shells such as session selection, session headers, and control-plane actions in `frontend/packages/inspector/`.
+- Document all shared React components in `docs/react-components.mdx`, and keep that page aligned with the exported surface in `sdks/react/src/index.ts`.
+
 ### TypeScript SDK Naming Conventions
 
 - Use `respond<Thing>(id, reply)` for SDK methods that reply to an agent-initiated request (e.g. `respondPermission`). This is the standard pattern for answering any inbound JSON-RPC request from the agent.

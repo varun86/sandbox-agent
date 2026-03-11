@@ -53,6 +53,8 @@ Use `pnpm` workspaces and Turborepo.
 - GUI state should update in realtime (no manual refresh buttons). Prefer RivetKit push reactivity and actor-driven events; do not add polling/refetch for normal product flows.
 - Keep the mock workbench types and mock client in `packages/shared` + `packages/client` up to date with the frontend contract. The mock is the UI testing reference implementation while backend functionality catches up.
 - Keep frontend route/state coverage current in code and tests; there is no separate page-inventory doc to maintain.
+- If Foundry uses a shared component from `@sandbox-agent/react`, make changes in `sdks/react` instead of copying or forking that component into Foundry.
+- When changing shared React components in `sdks/react` for Foundry, verify they still work in the Sandbox Agent Inspector before finishing.
 - When making UI changes, verify the live flow with `agent-browser`, take screenshots of the updated UI, and offer to open those screenshots in Preview when you finish.
 - When asked for screenshots, capture all relevant affected screens and modal states, not just a single viewport. Include empty, populated, success, and blocked/error states when they are part of the changed flow.
 - If a screenshot catches a transition frame, blank modal, or otherwise misleading state, retake it before reporting it.
