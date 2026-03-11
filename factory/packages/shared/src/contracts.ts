@@ -65,6 +65,7 @@ export const CreateHandoffInputSchema = z.object({
   task: z.string().min(1),
   explicitTitle: z.string().trim().min(1).optional(),
   explicitBranchName: z.string().trim().min(1).optional(),
+  initialPrompt: z.string().optional(),
   providerId: ProviderIdSchema.optional(),
   agentType: AgentTypeSchema.optional(),
   onBranch: z.string().trim().min(1).optional(),

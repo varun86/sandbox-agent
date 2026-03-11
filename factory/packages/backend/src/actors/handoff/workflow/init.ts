@@ -370,7 +370,10 @@ export async function initCreateSessionActivity(loopCtx: any, body: any, sandbox
   const cwd = sandbox.metadata && typeof (sandbox.metadata as any).cwd === "string" ? ((sandbox.metadata as any).cwd as string) : undefined;
 
   return await sandboxInstance.createSession({
-    prompt: buildAgentPrompt(loopCtx.state.task),
+    prompt:
+      typeof loopCtx.state.initialPrompt === "string"
+        ? loopCtx.state.initialPrompt
+        : buildAgentPrompt(loopCtx.state.task),
     cwd,
     agent: (loopCtx.state.agentType ?? config.default_agent) as any,
   });

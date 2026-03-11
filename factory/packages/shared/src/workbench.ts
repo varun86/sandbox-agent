@@ -130,6 +130,7 @@ export interface HandoffWorkbenchCreateHandoffInput {
   title?: string;
   branch?: string;
   model?: WorkbenchModelId;
+  initialPrompt?: string;
 }
 
 export interface HandoffWorkbenchRenameInput {

@@ -44,6 +44,11 @@ Use `pnpm` workspaces and Turborepo.
 - Stop the preview stack: `just factory-preview-down`
 - Tail preview logs: `just factory-preview-logs`
 
+## Local Env
+
+- For local The Foundry dev server setup, keep a personal env copy at `~/misc/the-foundry.env`.
+- To run the dev server from this workspace, copy that content into the repo root `.env`. Root `.env` is gitignored in this repo, so keep local secrets there and do not commit them.
+
 ## Frontend + Client Boundary
 
 - Keep a browser-friendly GUI implementation aligned with the TUI interaction model wherever possible.
@@ -163,6 +168,7 @@ For all Rivet/RivetKit implementation:
 - Integration tests use `setupTest()` from `rivetkit/test` and are gated behind `HF_ENABLE_ACTOR_INTEGRATION_TESTS=1`.
 - End-to-end testing must run against the dev backend started via `docker compose -f compose.dev.yaml up` (host -> container). Do not run E2E against an in-process test runtime.
   - E2E tests should talk to the backend over HTTP (default `http://127.0.0.1:7741/api/rivet`) and use real GitHub repos/PRs.
+  - Current org test repo: `rivet-dev/sandbox-agent-testing` (`https://github.com/rivet-dev/sandbox-agent-testing`).
   - Secrets (e.g. `OPENAI_API_KEY`, `GITHUB_TOKEN`/`GH_TOKEN`) must be provided via environment variables, never hardcoded in the repo.
 - Treat client E2E tests in `packages/client/test` as the primary end-to-end source of truth for product behavior.
 - Keep backend tests small and targeted. Only retain backend-only tests for invariants or persistence rules that are not well-covered through client E2E.

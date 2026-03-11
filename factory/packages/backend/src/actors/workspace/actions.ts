@@ -282,6 +282,7 @@ async function createHandoffMutation(c: any, input: CreateHandoffInput): Promise
     agentType: input.agentType ?? null,
     explicitTitle: input.explicitTitle ?? null,
     explicitBranchName: input.explicitBranchName ?? null,
+    initialPrompt: input.initialPrompt ?? null,
     onBranch: input.onBranch ?? null,
   });
 
@@ -299,9 +300,10 @@ async function createHandoffMutation(c: any, input: CreateHandoffInput): Promise
 
   const handoff = getHandoff(c, c.state.workspaceId, repoId, created.handoffId);
   await handoff.provision({ providerId });
+  const provisioned = await handoff.get();
 
   await workspaceActions.notifyWorkbenchUpdated(c);
-  return created;
+  return provisioned;
 }
 
 async function refreshProviderProfilesMutation(c: any, command?: RefreshProviderProfilesCommand): Promise<void> {
@@ -437,16 +439,20 @@ export const workspaceActions = {
     c.broadcast("workbenchUpdated", { at: Date.now() });
   },
 
-  async createWorkbenchHandoff(c: any, input: HandoffWorkbenchCreateHandoffInput): Promise<{ handoffId: string }> {
+  async createWorkbenchHandoff(c: any, input: HandoffWorkbenchCreateHandoffInput): Promise<{ handoffId: string; tabId?: string }> {
     const created = await workspaceActions.createHandoff(c, {
       workspaceId: c.state.workspaceId,
       repoId: input.repoId,
       task: input.task,
       ...(input.title ? { explicitTitle: input.title } : {}),
       ...(input.branch ? { explicitBranchName: input.branch } : {}),
+      ...(input.initialPrompt !== undefined ? { initialPrompt: input.initialPrompt } : {}),
       ...(input.model ? { agentType: agentTypeForModel(input.model) } : {}),
     });
-    return { handoffId: created.handoffId };
+    return {
+      handoffId: created.handoffId,
+      ...(created.activeSessionId ? { tabId: created.activeSessionId } : {}),
+    };
   },
 
   async markWorkbenchUnread(c: any, input: HandoffWorkbenchSelectInput): Promise<void> {
