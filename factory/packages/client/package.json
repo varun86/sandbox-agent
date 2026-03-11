@@ -15,7 +15,8 @@
   },
   "dependencies": {
     "@openhandoff/shared": "workspace:*",
-    "rivetkit": "2.1.6"
+    "rivetkit": "2.1.6",
+    "sandbox-agent": "workspace:*"
   },
   "devDependencies": {
     "tsup": "^8.5.0"

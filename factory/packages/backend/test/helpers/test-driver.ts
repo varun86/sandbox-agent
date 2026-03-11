@@ -9,7 +9,15 @@ import type {
   SandboxAgentClientLike,
   TmuxDriver,
 } from "../../src/driver.js";
-import type { ListEventsRequest, ListPage, ListPageRequest, SessionEvent, SessionRecord } from "sandbox-agent";
+import type {
+  ListEventsRequest,
+  ListPage,
+  ListPageRequest,
+  ProcessInfo,
+  ProcessLogsResponse,
+  SessionEvent,
+  SessionRecord,
+} from "sandbox-agent";
 
 export function createTestDriver(overrides?: Partial<BackendDriver>): BackendDriver {
   return {
@@ -70,7 +78,27 @@ export function createTestSandboxAgentDriver(overrides?: Partial<SandboxAgentDri
   };
 }
 
-export function createTestSandboxAgentClient(overrides?: Partial<SandboxAgentClientLike>): SandboxAgentClientLike {
+export function createTestSandboxAgentClient(
+  overrides?: Partial<SandboxAgentClientLike>
+): SandboxAgentClientLike {
+  const defaultProcess: ProcessInfo = {
+    id: "process-1",
+    command: "bash",
+    args: ["-lc", "echo test"],
+    createdAtMs: Date.now(),
+    cwd: "/workspace",
+    exitCode: null,
+    exitedAtMs: null,
+    interactive: true,
+    pid: 123,
+    status: "running",
+    tty: true,
+  };
+  const defaultLogs: ProcessLogsResponse = {
+    processId: defaultProcess.id,
+    stream: "combined",
+    entries: [],
+  };
   return {
     createSession: async (_prompt) => ({ id: "test-session-1", status: "running" }),
     sessionStatus: async (sessionId) => ({ id: sessionId, status: "running" }),
@@ -82,6 +110,12 @@ export function createTestSandboxAgentClient(overrides?: Partial<SandboxAgentCli
       items: [],
       nextCursor: undefined,
     }),
+    createProcess: async () => defaultProcess,
+    listProcesses: async () => ({ processes: [defaultProcess] }),
+    getProcessLogs: async () => defaultLogs,
+    stopProcess: async () => ({ ...defaultProcess, status: "exited", exitCode: 0, exitedAtMs: Date.now() }),
+    killProcess: async () => ({ ...defaultProcess, status: "exited", exitCode: 137, exitedAtMs: Date.now() }),
+    deleteProcess: async () => {},
     sendPrompt: async (_request) => {},
     cancelSession: async (_sessionId) => {},
     destroySession: async (_sessionId) => {},

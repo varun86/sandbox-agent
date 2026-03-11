@@ -376,6 +376,62 @@ export async function initCreateSessionActivity(loopCtx: any, body: any, sandbox
   });
 }
 
+export async function initExposeSandboxActivity(
+  loopCtx: any,
+  body: any,
+  sandbox: any,
+  sandboxInstanceReady?: { actorId?: string | null }
+): Promise<void> {
+  const providerId = body?.providerId ?? loopCtx.state.providerId;
+  const now = Date.now();
+  const db = loopCtx.db;
+  const activeCwd =
+    sandbox.metadata && typeof (sandbox.metadata as any).cwd === "string"
+      ? ((sandbox.metadata as any).cwd as string)
+      : null;
+  const sandboxActorId =
+    typeof sandboxInstanceReady?.actorId === "string" && sandboxInstanceReady.actorId.length > 0
+      ? sandboxInstanceReady.actorId
+      : null;
+
+  await db
+    .insert(handoffSandboxes)
+    .values({
+      sandboxId: sandbox.sandboxId,
+      providerId,
+      sandboxActorId,
+      switchTarget: sandbox.switchTarget,
+      cwd: activeCwd,
+      statusMessage: "sandbox ready",
+      createdAt: now,
+      updatedAt: now
+    })
+    .onConflictDoUpdate({
+      target: handoffSandboxes.sandboxId,
+      set: {
+        providerId,
+        sandboxActorId,
+        switchTarget: sandbox.switchTarget,
+        cwd: activeCwd,
+        statusMessage: "sandbox ready",
+        updatedAt: now
+      }
+    })
+    .run();
+
+  await db
+    .update(handoffRuntime)
+    .set({
+      activeSandboxId: sandbox.sandboxId,
+      activeSwitchTarget: sandbox.switchTarget,
+      activeCwd,
+      statusMessage: "sandbox ready",
+      updatedAt: now
+    })
+    .where(eq(handoffRuntime.id, HANDOFF_ROW_ID))
+    .run();
+}
+
 export async function initWriteDbActivity(
   loopCtx: any,
   body: any,

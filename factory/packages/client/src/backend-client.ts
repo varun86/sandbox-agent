@@ -29,6 +29,14 @@ import type {
   StarSandboxAgentRepoResult,
   SwitchResult,
 } from "@openhandoff/shared";
+import type {
+  ProcessCreateRequest,
+  ProcessInfo,
+  ProcessLogFollowQuery,
+  ProcessLogsResponse,
+  ProcessSignalQuery,
+} from "sandbox-agent";
+import { createMockBackendClient } from "./mock/backend-client.js";
 import { sandboxInstanceKey, workspaceKey } from "./keys.js";
 
 export type HandoffAction = "push" | "sync" | "merge" | "archive" | "kill";
@@ -60,6 +68,8 @@ export interface SandboxSessionEventRecord {
   sender: "client" | "agent";
   payload: unknown;
 }
+
+export type SandboxProcessRecord = ProcessInfo;
 
 interface WorkspaceHandle {
   addRepo(input: AddRepoInput): Promise<RepoRecord>;
@@ -104,8 +114,15 @@ interface SandboxInstanceHandle {
   }): Promise<{ id: string | null; status: "running" | "idle" | "error"; error?: string }>;
   listSessions(input?: { cursor?: string; limit?: number }): Promise<{ items: SandboxSessionRecord[]; nextCursor?: string }>;
   listSessionEvents(input: { sessionId: string; cursor?: string; limit?: number }): Promise<{ items: SandboxSessionEventRecord[]; nextCursor?: string }>;
+  createProcess(input: ProcessCreateRequest): Promise<SandboxProcessRecord>;
+  listProcesses(): Promise<{ processes: SandboxProcessRecord[] }>;
+  getProcessLogs(input: { processId: string; query?: ProcessLogFollowQuery }): Promise<ProcessLogsResponse>;
+  stopProcess(input: { processId: string; query?: ProcessSignalQuery }): Promise<SandboxProcessRecord>;
+  killProcess(input: { processId: string; query?: ProcessSignalQuery }): Promise<SandboxProcessRecord>;
+  deleteProcess(input: { processId: string }): Promise<void>;
   sendPrompt(input: { sessionId: string; prompt: string; notification?: boolean }): Promise<void>;
   sessionStatus(input: { sessionId: string }): Promise<{ id: string; status: "running" | "idle" | "error" }>;
+  sandboxAgentConnection(): Promise<{ endpoint: string; token?: string }>;
   providerState(): Promise<{ providerId: ProviderId; sandboxId: string; state: string; at: number }>;
 }
 
@@ -121,6 +138,7 @@ interface RivetClient {
 export interface BackendClientOptions {
   endpoint: string;
   defaultWorkspaceId?: string;
+  mode?: "remote" | "mock";
 }
 
 export interface BackendMetadata {
@@ -163,6 +181,50 @@ export interface BackendClient {
     sandboxId: string,
     input: { sessionId: string; cursor?: string; limit?: number },
   ): Promise<{ items: SandboxSessionEventRecord[]; nextCursor?: string }>;
+  createSandboxProcess(input: {
+    workspaceId: string;
+    providerId: ProviderId;
+    sandboxId: string;
+    request: ProcessCreateRequest;
+  }): Promise<SandboxProcessRecord>;
+  listSandboxProcesses(
+    workspaceId: string,
+    providerId: ProviderId,
+    sandboxId: string
+  ): Promise<{ processes: SandboxProcessRecord[] }>;
+  getSandboxProcessLogs(
+    workspaceId: string,
+    providerId: ProviderId,
+    sandboxId: string,
+    processId: string,
+    query?: ProcessLogFollowQuery
+  ): Promise<ProcessLogsResponse>;
+  stopSandboxProcess(
+    workspaceId: string,
+    providerId: ProviderId,
+    sandboxId: string,
+    processId: string,
+    query?: ProcessSignalQuery
+  ): Promise<SandboxProcessRecord>;
+  killSandboxProcess(
+    workspaceId: string,
+    providerId: ProviderId,
+    sandboxId: string,
+    processId: string,
+    query?: ProcessSignalQuery
+  ): Promise<SandboxProcessRecord>;
+  deleteSandboxProcess(
+    workspaceId: string,
+    providerId: ProviderId,
+    sandboxId: string,
+    processId: string
+  ): Promise<void>;
+  subscribeSandboxProcesses(
+    workspaceId: string,
+    providerId: ProviderId,
+    sandboxId: string,
+    listener: () => void
+  ): () => void;
   sendSandboxPrompt(input: {
     workspaceId: string;
     providerId: ProviderId;
@@ -182,6 +244,11 @@ export interface BackendClient {
     providerId: ProviderId,
     sandboxId: string,
   ): Promise<{ providerId: ProviderId; sandboxId: string; state: string; at: number }>;
+  getSandboxAgentConnection(
+    workspaceId: string,
+    providerId: ProviderId,
+    sandboxId: string
+  ): Promise<{ endpoint: string; token?: string }>;
   getWorkbench(workspaceId: string): Promise<HandoffWorkbenchSnapshot>;
   subscribeWorkbench(workspaceId: string, listener: () => void): () => void;
   createWorkbenchHandoff(workspaceId: string, input: HandoffWorkbenchCreateHandoffInput): Promise<HandoffWorkbenchCreateHandoffResponse>;
@@ -327,8 +394,19 @@ async function probeMetadataEndpoint(endpoint: string, namespace: string | undef
 }
 
 export function createBackendClient(options: BackendClientOptions): BackendClient {
+  if (options.mode === "mock") {
+    return createMockBackendClient(options.defaultWorkspaceId);
+  }
+
   let clientPromise: Promise<RivetClient> | null = null;
   const workbenchSubscriptions = new Map<
+    string,
+    {
+      listeners: Set<() => void>;
+      disposeConnPromise: Promise<(() => Promise<void>) | null> | null;
+    }
+  >();
+  const sandboxProcessSubscriptions = new Map<
     string,
     {
       listeners: Set<() => void>;
@@ -495,6 +573,69 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
     };
   };
 
+  const sandboxProcessSubscriptionKey = (
+    workspaceId: string,
+    providerId: ProviderId,
+    sandboxId: string,
+  ): string => `${workspaceId}:${providerId}:${sandboxId}`;
+
+  const subscribeSandboxProcesses = (
+    workspaceId: string,
+    providerId: ProviderId,
+    sandboxId: string,
+    listener: () => void,
+  ): (() => void) => {
+    const key = sandboxProcessSubscriptionKey(workspaceId, providerId, sandboxId);
+    let entry = sandboxProcessSubscriptions.get(key);
+    if (!entry) {
+      entry = {
+        listeners: new Set(),
+        disposeConnPromise: null,
+      };
+      sandboxProcessSubscriptions.set(key, entry);
+    }
+
+    entry.listeners.add(listener);
+
+    if (!entry.disposeConnPromise) {
+      entry.disposeConnPromise = (async () => {
+        const handle = await sandboxByKey(workspaceId, providerId, sandboxId);
+        const conn = (handle as any).connect();
+        const unsubscribeEvent = conn.on("processesUpdated", () => {
+          const current = sandboxProcessSubscriptions.get(key);
+          if (!current) {
+            return;
+          }
+          for (const currentListener of [...current.listeners]) {
+            currentListener();
+          }
+        });
+        const unsubscribeError = conn.onError(() => {});
+        return async () => {
+          unsubscribeEvent();
+          unsubscribeError();
+          await conn.dispose();
+        };
+      })().catch(() => null);
+    }
+
+    return () => {
+      const current = sandboxProcessSubscriptions.get(key);
+      if (!current) {
+        return;
+      }
+      current.listeners.delete(listener);
+      if (current.listeners.size > 0) {
+        return;
+      }
+
+      sandboxProcessSubscriptions.delete(key);
+      void current.disposeConnPromise?.then(async (disposeConn) => {
+        await disposeConn?.();
+      });
+    };
+  };
+
   return {
     async addRepo(workspaceId: string, remoteUrl: string): Promise<RepoRecord> {
       return (await workspace(workspaceId)).addRepo({ workspaceId, remoteUrl });
@@ -629,6 +770,101 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
       return await withSandboxHandle(workspaceId, providerId, sandboxId, async (handle) => handle.listSessionEvents(input));
     },
 
+    async createSandboxProcess(input: {
+      workspaceId: string;
+      providerId: ProviderId;
+      sandboxId: string;
+      request: ProcessCreateRequest;
+    }): Promise<SandboxProcessRecord> {
+      return await withSandboxHandle(
+        input.workspaceId,
+        input.providerId,
+        input.sandboxId,
+        async (handle) => handle.createProcess(input.request)
+      );
+    },
+
+    async listSandboxProcesses(
+      workspaceId: string,
+      providerId: ProviderId,
+      sandboxId: string
+    ): Promise<{ processes: SandboxProcessRecord[] }> {
+      return await withSandboxHandle(
+        workspaceId,
+        providerId,
+        sandboxId,
+        async (handle) => handle.listProcesses()
+      );
+    },
+
+    async getSandboxProcessLogs(
+      workspaceId: string,
+      providerId: ProviderId,
+      sandboxId: string,
+      processId: string,
+      query?: ProcessLogFollowQuery
+    ): Promise<ProcessLogsResponse> {
+      return await withSandboxHandle(
+        workspaceId,
+        providerId,
+        sandboxId,
+        async (handle) => handle.getProcessLogs({ processId, query })
+      );
+    },
+
+    async stopSandboxProcess(
+      workspaceId: string,
+      providerId: ProviderId,
+      sandboxId: string,
+      processId: string,
+      query?: ProcessSignalQuery
+    ): Promise<SandboxProcessRecord> {
+      return await withSandboxHandle(
+        workspaceId,
+        providerId,
+        sandboxId,
+        async (handle) => handle.stopProcess({ processId, query })
+      );
+    },
+
+    async killSandboxProcess(
+      workspaceId: string,
+      providerId: ProviderId,
+      sandboxId: string,
+      processId: string,
+      query?: ProcessSignalQuery
+    ): Promise<SandboxProcessRecord> {
+      return await withSandboxHandle(
+        workspaceId,
+        providerId,
+        sandboxId,
+        async (handle) => handle.killProcess({ processId, query })
+      );
+    },
+
+    async deleteSandboxProcess(
+      workspaceId: string,
+      providerId: ProviderId,
+      sandboxId: string,
+      processId: string
+    ): Promise<void> {
+      await withSandboxHandle(
+        workspaceId,
+        providerId,
+        sandboxId,
+        async (handle) => handle.deleteProcess({ processId })
+      );
+    },
+
+    subscribeSandboxProcesses(
+      workspaceId: string,
+      providerId: ProviderId,
+      sandboxId: string,
+      listener: () => void
+    ): () => void {
+      return subscribeSandboxProcesses(workspaceId, providerId, sandboxId, listener);
+    },
+
     async sendSandboxPrompt(input: {
       workspaceId: string;
       providerId: ProviderId;
@@ -661,6 +897,19 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
       sandboxId: string,
     ): Promise<{ providerId: ProviderId; sandboxId: string; state: string; at: number }> {
       return await withSandboxHandle(workspaceId, providerId, sandboxId, async (handle) => handle.providerState());
+    },
+
+    async getSandboxAgentConnection(
+      workspaceId: string,
+      providerId: ProviderId,
+      sandboxId: string
+    ): Promise<{ endpoint: string; token?: string }> {
+      return await withSandboxHandle(
+        workspaceId,
+        providerId,
+        sandboxId,
+        async (handle) => handle.sandboxAgentConnection()
+      );
     },
 
     async getWorkbench(workspaceId: string): Promise<HandoffWorkbenchSnapshot> {

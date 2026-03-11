@@ -1,5 +1,17 @@
 import type { AgentType } from "@openhandoff/shared";
-import type { ListEventsRequest, ListPage, ListPageRequest, SessionEvent, SessionPersistDriver, SessionRecord } from "sandbox-agent";
+import type {
+  ListEventsRequest,
+  ListPage,
+  ListPageRequest,
+  ProcessCreateRequest,
+  ProcessInfo,
+  ProcessLogFollowQuery,
+  ProcessLogsResponse,
+  ProcessSignalQuery,
+  SessionEvent,
+  SessionPersistDriver,
+  SessionRecord
+} from "sandbox-agent";
 import { SandboxAgent } from "sandbox-agent";
 
 export type AgentId = AgentType | "opencode";
@@ -197,6 +209,39 @@ export class SandboxAgentClient {
   async listEvents(request: ListEventsRequest): Promise<ListPage<SessionEvent>> {
     const sdk = await this.sdk();
     return sdk.getEvents(request);
+  }
+
+  async createProcess(request: ProcessCreateRequest): Promise<ProcessInfo> {
+    const sdk = await this.sdk();
+    return await sdk.createProcess(request);
+  }
+
+  async listProcesses(): Promise<{ processes: ProcessInfo[] }> {
+    const sdk = await this.sdk();
+    return await sdk.listProcesses();
+  }
+
+  async getProcessLogs(
+    processId: string,
+    query: ProcessLogFollowQuery = {}
+  ): Promise<ProcessLogsResponse> {
+    const sdk = await this.sdk();
+    return await sdk.getProcessLogs(processId, query);
+  }
+
+  async stopProcess(processId: string, query?: ProcessSignalQuery): Promise<ProcessInfo> {
+    const sdk = await this.sdk();
+    return await sdk.stopProcess(processId, query);
+  }
+
+  async killProcess(processId: string, query?: ProcessSignalQuery): Promise<ProcessInfo> {
+    const sdk = await this.sdk();
+    return await sdk.killProcess(processId, query);
+  }
+
+  async deleteProcess(processId: string): Promise<void> {
+    const sdk = await this.sdk();
+    await sdk.deleteProcess(processId);
   }
 
   async sendPrompt(request: SandboxSessionPromptRequest): Promise<void> {

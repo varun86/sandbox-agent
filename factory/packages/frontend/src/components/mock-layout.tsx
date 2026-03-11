@@ -1,5 +1,16 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { useNavigate } from "@tanstack/react-router";
+import { useStyletron } from "baseui";
 
 import { DiffContent } from "./mock-layout/diff-content";
 import { MessageList } from "./mock-layout/message-list";
@@ -7,6 +18,7 @@ import { PromptComposer } from "./mock-layout/prompt-composer";
 import { RightSidebar } from "./mock-layout/right-sidebar";
 import { Sidebar } from "./mock-layout/sidebar";
 import { TabStrip } from "./mock-layout/tab-strip";
+import { TerminalPane } from "./mock-layout/terminal-pane";
 import { TranscriptHeader } from "./mock-layout/transcript-header";
 import { PROMPT_TEXTAREA_MAX_HEIGHT, PROMPT_TEXTAREA_MIN_HEIGHT, SPanel, ScrollBody, Shell } from "./mock-layout/ui";
 import {
@@ -546,6 +558,157 @@ const TranscriptPanel = memo(function TranscriptPanel({
   );
 });
 
+const RIGHT_RAIL_MIN_SECTION_HEIGHT = 180;
+const RIGHT_RAIL_SPLITTER_HEIGHT = 10;
+const DEFAULT_TERMINAL_HEIGHT = 320;
+const TERMINAL_HEIGHT_STORAGE_KEY = "openhandoff:foundry-terminal-height";
+
+const RightRail = memo(function RightRail({
+  workspaceId,
+  handoff,
+  activeTabId,
+  onOpenDiff,
+  onArchive,
+  onRevertFile,
+  onPublishPr,
+}: {
+  workspaceId: string;
+  handoff: Handoff;
+  activeTabId: string | null;
+  onOpenDiff: (path: string) => void;
+  onArchive: () => void;
+  onRevertFile: (path: string) => void;
+  onPublishPr: () => void;
+}) {
+  const [css] = useStyletron();
+  const railRef = useRef<HTMLDivElement>(null);
+  const [terminalHeight, setTerminalHeight] = useState(() => {
+    if (typeof window === "undefined") {
+      return DEFAULT_TERMINAL_HEIGHT;
+    }
+
+    const stored = window.localStorage.getItem(TERMINAL_HEIGHT_STORAGE_KEY);
+    const parsed = stored ? Number.parseInt(stored, 10) : Number.NaN;
+    return Number.isFinite(parsed) ? parsed : DEFAULT_TERMINAL_HEIGHT;
+  });
+
+  const clampTerminalHeight = useCallback((nextHeight: number) => {
+    const railHeight = railRef.current?.getBoundingClientRect().height ?? 0;
+    const maxHeight = Math.max(
+      RIGHT_RAIL_MIN_SECTION_HEIGHT,
+      railHeight - RIGHT_RAIL_MIN_SECTION_HEIGHT - RIGHT_RAIL_SPLITTER_HEIGHT,
+    );
+
+    return Math.min(Math.max(nextHeight, RIGHT_RAIL_MIN_SECTION_HEIGHT), maxHeight);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(TERMINAL_HEIGHT_STORAGE_KEY, String(terminalHeight));
+  }, [terminalHeight]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setTerminalHeight((current) => clampTerminalHeight(current));
+    };
+
+    window.addEventListener("resize", handleResize);
+    handleResize();
+    return () => window.removeEventListener("resize", handleResize);
+  }, [clampTerminalHeight]);
+
+  const startResize = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+
+      const startY = event.clientY;
+      const startHeight = terminalHeight;
+      document.body.style.cursor = "ns-resize";
+
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        const deltaY = moveEvent.clientY - startY;
+        setTerminalHeight(clampTerminalHeight(startHeight - deltaY));
+      };
+
+      const stopResize = () => {
+        document.body.style.cursor = "";
+        window.removeEventListener("pointermove", handlePointerMove);
+        window.removeEventListener("pointerup", stopResize);
+      };
+
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", stopResize, { once: true });
+    },
+    [clampTerminalHeight, terminalHeight],
+  );
+
+  return (
+    <div
+      ref={railRef}
+      className={css({
+        minHeight: 0,
+        display: "flex",
+        flexDirection: "column",
+        backgroundColor: "#090607",
+      })}
+    >
+      <div
+        className={css({
+          minHeight: `${RIGHT_RAIL_MIN_SECTION_HEIGHT}px`,
+          flex: 1,
+          minWidth: 0,
+        })}
+      >
+        <RightSidebar
+          handoff={handoff}
+          activeTabId={activeTabId}
+          onOpenDiff={onOpenDiff}
+          onArchive={onArchive}
+          onRevertFile={onRevertFile}
+          onPublishPr={onPublishPr}
+        />
+      </div>
+      <div
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize terminal panel"
+        onPointerDown={startResize}
+        className={css({
+          height: `${RIGHT_RAIL_SPLITTER_HEIGHT}px`,
+          flexShrink: 0,
+          cursor: "ns-resize",
+          position: "relative",
+          backgroundColor: "#050505",
+          ":before": {
+            content: '""',
+            position: "absolute",
+            left: "50%",
+            top: "50%",
+            width: "42px",
+            height: "4px",
+            borderRadius: "999px",
+            transform: "translate(-50%, -50%)",
+            backgroundColor: "rgba(255, 255, 255, 0.14)",
+          },
+        })}
+      />
+      <div
+        className={css({
+          height: `${terminalHeight}px`,
+          minHeight: `${RIGHT_RAIL_MIN_SECTION_HEIGHT}px`,
+          backgroundColor: "#080506",
+          overflow: "hidden",
+        })}
+      >
+        <TerminalPane workspaceId={workspaceId} handoffId={handoff.id} />
+      </div>
+    </div>
+  );
+});
+
 interface MockLayoutProps {
   workspaceId: string;
   selectedHandoffId?: string | null;
@@ -1032,7 +1195,8 @@ export function MockLayout({ workspaceId, selectedHandoffId, selectedSessionId }
             setOpenDiffsByHandoff((current) => ({ ...current, [activeHandoff.id]: paths }));
           }}
         />
-        <RightSidebar
+        <RightRail
+          workspaceId={workspaceId}
           handoff={activeHandoff}
           activeTabId={activeTabId}
           onOpenDiff={openDiffTab}
