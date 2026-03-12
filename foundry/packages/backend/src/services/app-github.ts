@@ -73,6 +73,14 @@ export interface GitHubAppClientOptions {
   webhookSecret?: string;
 }
 
+function normalizePem(value: string | undefined): string | undefined {
+  if (!value) {
+    return value;
+  }
+
+  return value.includes("\\n") ? value.replace(/\\n/g, "\n") : value;
+}
+
 export class GitHubAppClient {
   private readonly apiBaseUrl: string;
   private readonly authBaseUrl: string;
@@ -90,7 +98,7 @@ export class GitHubAppClient {
     this.clientSecret = options.clientSecret ?? process.env.GITHUB_CLIENT_SECRET;
     this.redirectUri = options.redirectUri ?? process.env.GITHUB_REDIRECT_URI;
     this.appId = options.appId ?? process.env.GITHUB_APP_ID;
-    this.appPrivateKey = options.appPrivateKey ?? process.env.GITHUB_APP_PRIVATE_KEY;
+    this.appPrivateKey = normalizePem(options.appPrivateKey ?? process.env.GITHUB_APP_PRIVATE_KEY);
     this.webhookSecret = options.webhookSecret ?? process.env.GITHUB_WEBHOOK_SECRET;
   }
 
@@ -143,7 +151,7 @@ export class GitHubAppClient {
     const url = new URL(`${this.authBaseUrl}/login/oauth/authorize`);
     url.searchParams.set("client_id", this.clientId);
     url.searchParams.set("redirect_uri", this.redirectUri);
-    url.searchParams.set("scope", "read:user user:email read:org");
+    url.searchParams.set("scope", "read:user user:email read:org repo");
     url.searchParams.set("state", state);
     return url.toString();
   }
@@ -273,7 +281,7 @@ export class GitHubAppClient {
       full_name: string;
       clone_url: string;
       private: boolean;
-    }>("/user/repos?per_page=100&affiliation=owner&sort=updated", accessToken);
+    }>("/user/repos?per_page=100&affiliation=owner,collaborator,organization_member&sort=updated", accessToken);
 
     return repositories.map((repository) => ({
       fullName: repository.full_name,

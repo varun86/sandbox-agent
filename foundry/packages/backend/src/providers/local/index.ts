@@ -149,7 +149,7 @@ export class LocalProvider implements SandboxProvider {
     const sandboxId = req.taskId || `local-${randomUUID()}`;
     const repoDir = this.repoDir(req.workspaceId, sandboxId);
     mkdirSync(dirname(repoDir), { recursive: true });
-    await this.git.ensureCloned(req.repoRemote, repoDir);
+    await this.git.ensureCloned(req.repoRemote, repoDir, { githubToken: req.githubToken });
     await checkoutBranch(repoDir, req.branchName, this.git);
     return this.sandboxHandle(req.workspaceId, sandboxId, repoDir);
   }

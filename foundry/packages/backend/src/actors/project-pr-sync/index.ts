@@ -4,6 +4,7 @@ import { getActorRuntimeContext } from "../context.js";
 import { getProject, selfProjectPrSync } from "../handles.js";
 import { logActorWarning, resolveErrorMessage, resolveErrorStack } from "../logging.js";
 import { type PollingControlState, runWorkflowPollingLoop } from "../polling.js";
+import { resolveWorkspaceGithubAuth } from "../../services/github-auth.js";
 
 export interface ProjectPrSyncInput {
   workspaceId: string;
@@ -31,7 +32,8 @@ const CONTROL = {
 
 async function pollPrs(c: { state: ProjectPrSyncState }): Promise<void> {
   const { driver } = getActorRuntimeContext();
-  const items = await driver.github.listPullRequests(c.state.repoPath);
+  const auth = await resolveWorkspaceGithubAuth(c, c.state.workspaceId);
+  const items = await driver.github.listPullRequests(c.state.repoPath, { githubToken: auth?.githubToken ?? null });
   const parent = getProject(c, c.state.workspaceId, c.state.repoId);
   await parent.applyPrSyncResult({ items, at: Date.now() });
 }

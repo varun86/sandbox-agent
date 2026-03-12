@@ -56,6 +56,10 @@ function splitScopes(value: string): string[] {
     .filter((entry) => entry.length > 0);
 }
 
+function hasRepoScope(scopes: string[]): boolean {
+  return scopes.some((scope) => scope === "repo" || scope.startsWith("repo:"));
+}
+
 function parseEligibleOrganizationIds(value: string): string[] {
   try {
     const parsed = JSON.parse(value);
@@ -568,6 +572,32 @@ export const workspaceAppActions = {
     return await buildAppSnapshot(c, input.sessionId);
   },
 
+  async resolveAppGithubToken(
+    c: any,
+    input: { organizationId: string; requireRepoScope?: boolean },
+  ): Promise<{ accessToken: string; scopes: string[] } | null> {
+    assertAppWorkspace(c);
+    const rows = await c.db.select().from(appSessions).orderBy(desc(appSessions.updatedAt)).all();
+
+    for (const row of rows) {
+      if (row.activeOrganizationId !== input.organizationId || !row.githubAccessToken) {
+        continue;
+      }
+
+      const scopes = splitScopes(row.githubScope);
+      if (input.requireRepoScope !== false && !hasRepoScope(scopes)) {
+        continue;
+      }
+
+      return {
+        accessToken: row.githubAccessToken,
+        scopes,
+      };
+    }
+
+    return null;
+  },
+
   async startAppGithubAuth(c: any, input: { sessionId: string }): Promise<{ url: string }> {
     assertAppWorkspace(c);
     const { appShell } = getActorRuntimeContext();
@@ -702,18 +732,34 @@ export const workspaceAppActions = {
     });
 
     try {
-      const repositories =
-        organization.snapshot.kind === "personal"
-          ? await appShell.github.listUserRepositories(session.githubAccessToken)
-          : organization.githubInstallationId
-            ? await appShell.github.listInstallationRepositories(organization.githubInstallationId)
-            : (() => {
-                throw new GitHubAppError("GitHub App installation required before importing repositories", 400);
-              })();
+      let repositories;
+      let installationStatus = organization.snapshot.github.installationStatus;
+
+      if (organization.snapshot.kind === "personal") {
+        repositories = await appShell.github.listUserRepositories(session.githubAccessToken);
+        installationStatus = "connected";
+      } else if (organization.githubInstallationId) {
+        try {
+          repositories = await appShell.github.listInstallationRepositories(organization.githubInstallationId);
+        } catch (error) {
+          if (!(error instanceof GitHubAppError) || (error.status !== 403 && error.status !== 404)) {
+            throw error;
+          }
+          repositories = (await appShell.github.listUserRepositories(session.githubAccessToken)).filter((repository) =>
+            repository.fullName.startsWith(`${organization.githubLogin}/`),
+          );
+          installationStatus = "reconnect_required";
+        }
+      } else {
+        repositories = (await appShell.github.listUserRepositories(session.githubAccessToken)).filter((repository) =>
+          repository.fullName.startsWith(`${organization.githubLogin}/`),
+        );
+        installationStatus = "reconnect_required";
+      }
 
       await workspace.applyOrganizationSyncCompleted({
         repositories,
-        installationStatus: organization.snapshot.kind === "personal" ? "connected" : organization.snapshot.github.installationStatus,
+        installationStatus,
         lastSyncLabel: repositories.length > 0 ? "Synced just now" : "No repositories available",
       });
     } catch (error) {

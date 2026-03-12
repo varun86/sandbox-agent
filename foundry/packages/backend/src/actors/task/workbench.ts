@@ -2,7 +2,8 @@
 import { basename } from "node:path";
 import { asc, eq } from "drizzle-orm";
 import { getActorRuntimeContext } from "../context.js";
-import { getOrCreateTaskStatusSync, getOrCreateProject, getOrCreateWorkspace, getSandboxInstance } from "../handles.js";
+import { getOrCreateTaskStatusSync, getOrCreateProject, getOrCreateWorkspace, getSandboxInstance, selfTask } from "../handles.js";
+import { resolveWorkspaceGithubAuth } from "../../services/github-auth.js";
 import { task as taskTable, taskRuntime, taskWorkbenchSessions } from "./db/schema.js";
 import { getCurrentRecord } from "./workflow/common.js";
 
@@ -547,7 +548,26 @@ export async function renameWorkbenchBranch(c: any, value: string): Promise<void
 }
 
 export async function createWorkbenchSession(c: any, model?: string): Promise<{ tabId: string }> {
-  const record = await ensureWorkbenchSeeded(c);
+  let record = await ensureWorkbenchSeeded(c);
+  if (!record.activeSandboxId) {
+    const providerId = record.providerId ?? c.state.providerId ?? getActorRuntimeContext().providers.defaultProviderId();
+    await selfTask(c).provision({ providerId });
+    record = await ensureWorkbenchSeeded(c);
+  }
+
+  if (record.activeSessionId) {
+    const existingSessions = await listSessionMetaRows(c);
+    if (existingSessions.length === 0) {
+      await ensureSessionMeta(c, {
+        sessionId: record.activeSessionId,
+        model: model ?? defaultModelForAgent(record.agentType),
+        sessionName: "Session 1",
+      });
+      await notifyWorkbenchUpdated(c);
+      return { tabId: record.activeSessionId };
+    }
+  }
+
   if (!record.activeSandboxId) {
     throw new Error("cannot create session without an active sandbox");
   }
@@ -783,7 +803,10 @@ export async function publishWorkbenchPr(c: any): Promise<void> {
     throw new Error("cannot publish PR without a branch");
   }
   const { driver } = getActorRuntimeContext();
-  const created = await driver.github.createPr(c.state.repoLocalPath, record.branchName, record.title ?? c.state.task);
+  const auth = await resolveWorkspaceGithubAuth(c, c.state.workspaceId);
+  const created = await driver.github.createPr(c.state.repoLocalPath, record.branchName, record.title ?? c.state.task, undefined, {
+    githubToken: auth?.githubToken ?? null,
+  });
   await c.db
     .update(taskTable)
     .set({

@@ -2,6 +2,7 @@
 import { eq } from "drizzle-orm";
 import { getActorRuntimeContext } from "../../context.js";
 import { logActorWarning, resolveErrorMessage } from "../../logging.js";
+import { resolveWorkspaceGithubAuth } from "../../../services/github-auth.js";
 import { task as taskTable, taskRuntime, taskSandboxes } from "../db/schema.js";
 import { TASK_ROW_ID, appendHistory, resolveErrorDetail } from "./common.js";
 import { pushActiveBranchActivity } from "./push.js";
@@ -77,8 +78,10 @@ export async function idleSubmitPrActivity(loopCtx: any): Promise<void> {
 
   if (self && self.prSubmitted) return;
 
+  const auth = await resolveWorkspaceGithubAuth(loopCtx, loopCtx.state.workspaceId);
+
   try {
-    await driver.git.fetch(loopCtx.state.repoLocalPath);
+    await driver.git.fetch(loopCtx.state.repoLocalPath, { githubToken: auth?.githubToken ?? null });
   } catch (error) {
     logActorWarning("task.status-sync", "fetch before PR submit failed", {
       workspaceId: loopCtx.state.workspaceId,
@@ -98,7 +101,9 @@ export async function idleSubmitPrActivity(loopCtx: any): Promise<void> {
       historyKind: "task.push.auto",
     });
 
-    const pr = await driver.github.createPr(loopCtx.state.repoLocalPath, loopCtx.state.branchName, loopCtx.state.title);
+    const pr = await driver.github.createPr(loopCtx.state.repoLocalPath, loopCtx.state.branchName, loopCtx.state.title, undefined, {
+      githubToken: auth?.githubToken ?? null,
+    });
 
     await db.update(taskTable).set({ prSubmitted: 1, updatedAt: Date.now() }).where(eq(taskTable.id, TASK_ROW_ID)).run();
 

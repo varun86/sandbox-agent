@@ -142,10 +142,14 @@ export const task = actor({
 
     async provision(c, cmd: InitializeCommand): Promise<{ ok: true }> {
       const self = selfTask(c);
-      await self.send(taskWorkflowQueueName("task.command.provision"), cmd ?? {}, {
+      const result = await self.send(taskWorkflowQueueName("task.command.provision"), cmd ?? {}, {
         wait: true,
         timeout: 30 * 60_000,
       });
+      const response = expectQueueResponse<{ ok: boolean; error?: string }>(result);
+      if (!response.ok) {
+        throw new Error(response.error ?? "task provisioning failed");
+      }
       return { ok: true };
     },
 

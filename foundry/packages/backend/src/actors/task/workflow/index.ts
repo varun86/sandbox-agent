@@ -104,7 +104,10 @@ const commandHandlers: Record<TaskQueueName, WorkflowHandler> = {
       await msg.complete({ ok: true });
     } catch (error) {
       await loopCtx.step("init-failed-v2", async () => initFailedActivity(loopCtx, error));
-      await msg.complete({ ok: false });
+      await msg.complete({
+        ok: false,
+        error: resolveErrorMessage(error),
+      });
     }
   },
 

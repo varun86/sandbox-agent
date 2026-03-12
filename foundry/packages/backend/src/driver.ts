@@ -40,13 +40,13 @@ import { SandboxAgentClient } from "./integrations/sandbox-agent/client.js";
 import { DaytonaClient } from "./integrations/daytona/client.js";
 
 export interface GitDriver {
-  validateRemote(remoteUrl: string): Promise<void>;
-  ensureCloned(remoteUrl: string, targetPath: string): Promise<void>;
-  fetch(repoPath: string): Promise<void>;
-  listRemoteBranches(repoPath: string): Promise<BranchSnapshot[]>;
+  validateRemote(remoteUrl: string, options?: { githubToken?: string | null }): Promise<void>;
+  ensureCloned(remoteUrl: string, targetPath: string, options?: { githubToken?: string | null }): Promise<void>;
+  fetch(repoPath: string, options?: { githubToken?: string | null }): Promise<void>;
+  listRemoteBranches(repoPath: string, options?: { githubToken?: string | null }): Promise<BranchSnapshot[]>;
   remoteDefaultBaseRef(repoPath: string): Promise<string>;
   revParse(repoPath: string, ref: string): Promise<string>;
-  ensureRemoteBranch(repoPath: string, branchName: string): Promise<void>;
+  ensureRemoteBranch(repoPath: string, branchName: string, options?: { githubToken?: string | null }): Promise<void>;
   diffStatForBranch(repoPath: string, branchName: string): Promise<string>;
   conflictsWithMain(repoPath: string, branchName: string): Promise<boolean>;
 }
@@ -68,9 +68,15 @@ export interface StackDriver {
 }
 
 export interface GithubDriver {
-  listPullRequests(repoPath: string): Promise<PullRequestSnapshot[]>;
-  createPr(repoPath: string, headBranch: string, title: string, body?: string): Promise<{ number: number; url: string }>;
-  starRepository(repoFullName: string): Promise<void>;
+  listPullRequests(repoPath: string, options?: { githubToken?: string | null }): Promise<PullRequestSnapshot[]>;
+  createPr(
+    repoPath: string,
+    headBranch: string,
+    title: string,
+    body?: string,
+    options?: { githubToken?: string | null },
+  ): Promise<{ number: number; url: string }>;
+  starRepository(repoFullName: string, options?: { githubToken?: string | null }): Promise<void>;
 }
 
 export interface SandboxAgentClientLike {

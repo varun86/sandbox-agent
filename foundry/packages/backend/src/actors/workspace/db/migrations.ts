@@ -181,9 +181,7 @@ SET \`github_sync_status\` = CASE
   ELSE 'pending'
 END;
 `,
-    m0010: `ALTER TABLE \`app_sessions\` ADD COLUMN \`starter_repo_status\` text NOT NULL DEFAULT 'pending';
-ALTER TABLE \`app_sessions\` ADD COLUMN \`starter_repo_starred_at\` integer;
-ALTER TABLE \`app_sessions\` ADD COLUMN \`starter_repo_skipped_at\` integer;
+    m0010: `-- no-op: starter_repo_* columns are already present in m0007 app_sessions
 `,
   } as const,
 };

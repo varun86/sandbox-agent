@@ -10,8 +10,12 @@ const DEFAULT_GIT_VALIDATE_REMOTE_TIMEOUT_MS = 15_000;
 const DEFAULT_GIT_FETCH_TIMEOUT_MS = 2 * 60_000;
 const DEFAULT_GIT_CLONE_TIMEOUT_MS = 5 * 60_000;
 
-function resolveGithubToken(): string | null {
-  const token = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN ?? process.env.HF_GITHUB_TOKEN ?? process.env.HF_GH_TOKEN ?? null;
+interface GitAuthOptions {
+  githubToken?: string | null;
+}
+
+function resolveGithubToken(options?: GitAuthOptions): string | null {
+  const token = options?.githubToken ?? process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN ?? process.env.HF_GITHUB_TOKEN ?? process.env.HF_GH_TOKEN ?? null;
   if (!token) return null;
   const trimmed = token.trim();
   return trimmed.length > 0 ? trimmed : null;
@@ -47,19 +51,34 @@ function ensureAskpassScript(): string {
   return path;
 }
 
-function gitEnv(): Record<string, string> {
+function gitEnv(options?: GitAuthOptions): Record<string, string> {
   const env: Record<string, string> = { ...(process.env as Record<string, string>) };
   env.GIT_TERMINAL_PROMPT = "0";
 
-  const token = resolveGithubToken();
+  const token = resolveGithubToken(options);
   if (token) {
     env.GIT_ASKPASS = ensureAskpassScript();
     // Some tooling expects these vars; keep them aligned.
-    env.GITHUB_TOKEN = env.GITHUB_TOKEN || token;
-    env.GH_TOKEN = env.GH_TOKEN || token;
+    env.GITHUB_TOKEN = token;
+    env.GH_TOKEN = token;
   }
 
   return env;
+}
+
+async function configureGithubAuth(repoPath: string, options?: GitAuthOptions): Promise<void> {
+  const token = resolveGithubToken(options);
+  if (!token) {
+    return;
+  }
+
+  const authHeader = Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");
+  await execFileAsync("git", ["-C", repoPath, "config", "--local", "credential.helper", ""], {
+    env: gitEnv(options),
+  });
+  await execFileAsync("git", ["-C", repoPath, "config", "--local", "http.https://github.com/.extraheader", `AUTHORIZATION: basic ${authHeader}`], {
+    env: gitEnv(options),
+  });
 }
 
 export interface BranchSnapshot {
@@ -67,10 +86,10 @@ export interface BranchSnapshot {
   commitSha: string;
 }
 
-export async function fetch(repoPath: string): Promise<void> {
+export async function fetch(repoPath: string, options?: GitAuthOptions): Promise<void> {
   await execFileAsync("git", ["-C", repoPath, "fetch", "--prune"], {
     timeout: DEFAULT_GIT_FETCH_TIMEOUT_MS,
-    env: gitEnv(),
+    env: gitEnv(options),
   });
 }
 
@@ -79,7 +98,7 @@ export async function revParse(repoPath: string, ref: string): Promise<string> {
   return stdout.trim();
 }
 
-export async function validateRemote(remoteUrl: string): Promise<void> {
+export async function validateRemote(remoteUrl: string, options?: GitAuthOptions): Promise<void> {
   const remote = remoteUrl.trim();
   if (!remote) {
     throw new Error("remoteUrl is required");
@@ -91,7 +110,7 @@ export async function validateRemote(remoteUrl: string): Promise<void> {
       cwd: tmpdir(),
       maxBuffer: 1024 * 1024,
       timeout: DEFAULT_GIT_VALIDATE_REMOTE_TIMEOUT_MS,
-      env: gitEnv(),
+      env: gitEnv(options),
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -103,7 +122,7 @@ function isGitRepo(path: string): boolean {
   return existsSync(resolve(path, ".git"));
 }
 
-export async function ensureCloned(remoteUrl: string, targetPath: string): Promise<void> {
+export async function ensureCloned(remoteUrl: string, targetPath: string, options?: GitAuthOptions): Promise<void> {
   const remote = remoteUrl.trim();
   if (!remote) {
     throw new Error("remoteUrl is required");
@@ -118,9 +137,10 @@ export async function ensureCloned(remoteUrl: string, targetPath: string): Promi
     await execFileAsync("git", ["-C", targetPath, "remote", "set-url", "origin", remote], {
       maxBuffer: 1024 * 1024,
       timeout: DEFAULT_GIT_FETCH_TIMEOUT_MS,
-      env: gitEnv(),
+      env: gitEnv(options),
     });
-    await fetch(targetPath);
+    await configureGithubAuth(targetPath, options);
+    await fetch(targetPath, options);
     return;
   }
 
@@ -128,9 +148,40 @@ export async function ensureCloned(remoteUrl: string, targetPath: string): Promi
   await execFileAsync("git", ["clone", remote, targetPath], {
     maxBuffer: 1024 * 1024 * 8,
     timeout: DEFAULT_GIT_CLONE_TIMEOUT_MS,
+    env: gitEnv(options),
+  });
+  await configureGithubAuth(targetPath, options);
+  await fetch(targetPath, options);
+  await ensureLocalBaseBranch(targetPath);
+}
+
+async function hasLocalBranches(repoPath: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync("git", ["-C", repoPath, "for-each-ref", "--format=%(refname:short)", "refs/heads"], {
+      env: gitEnv(),
+    });
+    return stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .some(Boolean);
+  } catch {
+    return false;
+  }
+}
+
+async function ensureLocalBaseBranch(repoPath: string): Promise<void> {
+  if (await hasLocalBranches(repoPath)) {
+    return;
+  }
+
+  const baseRef = await remoteDefaultBaseRef(repoPath);
+  const localBranch = baseRef.replace(/^origin\//, "");
+
+  await execFileAsync("git", ["-C", repoPath, "checkout", "-B", localBranch, baseRef], {
+    maxBuffer: 1024 * 1024,
+    timeout: DEFAULT_GIT_FETCH_TIMEOUT_MS,
     env: gitEnv(),
   });
-  await fetch(targetPath);
 }
 
 export async function remoteDefaultBaseRef(repoPath: string): Promise<string> {
@@ -157,10 +208,11 @@ export async function remoteDefaultBaseRef(repoPath: string): Promise<string> {
   return "origin/main";
 }
 
-export async function listRemoteBranches(repoPath: string): Promise<BranchSnapshot[]> {
+export async function listRemoteBranches(repoPath: string, options?: GitAuthOptions): Promise<BranchSnapshot[]> {
+  await fetch(repoPath, options);
   const { stdout } = await execFileAsync("git", ["-C", repoPath, "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/remotes/origin"], {
     maxBuffer: 1024 * 1024,
-    env: gitEnv(),
+    env: gitEnv(options),
   });
 
   return stdout
@@ -185,8 +237,9 @@ async function remoteBranchExists(repoPath: string, branchName: string): Promise
   }
 }
 
-export async function ensureRemoteBranch(repoPath: string, branchName: string): Promise<void> {
-  await fetch(repoPath);
+export async function ensureRemoteBranch(repoPath: string, branchName: string, options?: GitAuthOptions): Promise<void> {
+  await fetch(repoPath, options);
+  await ensureLocalBaseBranch(repoPath);
   if (await remoteBranchExists(repoPath, branchName)) {
     return;
   }
@@ -194,9 +247,9 @@ export async function ensureRemoteBranch(repoPath: string, branchName: string): 
   const baseRef = await remoteDefaultBaseRef(repoPath);
   await execFileAsync("git", ["-C", repoPath, "push", "origin", `${baseRef}:refs/heads/${branchName}`], {
     maxBuffer: 1024 * 1024 * 2,
-    env: gitEnv(),
+    env: gitEnv(options),
   });
-  await fetch(repoPath);
+  await fetch(repoPath, options);
 }
 
 export async function diffStatForBranch(repoPath: string, branchName: string): Promise<string> {

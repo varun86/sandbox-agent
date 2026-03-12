@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { desc, eq } from "drizzle-orm";
 import { resolveCreateFlowDecision } from "../../../services/create-flow.js";
+import { resolveWorkspaceGithubAuth } from "../../../services/github-auth.js";
 import { getActorRuntimeContext } from "../../context.js";
 import { getOrCreateTaskStatusSync, getOrCreateHistory, getOrCreateProject, getOrCreateSandboxInstance, getSandboxInstance, selfTask } from "../../handles.js";
 import { logActorWarning, resolveErrorMessage } from "../../logging.js";
@@ -150,8 +151,9 @@ export async function initEnsureNameActivity(loopCtx: any): Promise<void> {
   }
 
   const { driver } = getActorRuntimeContext();
+  const auth = await resolveWorkspaceGithubAuth(loopCtx, loopCtx.state.workspaceId);
   try {
-    await driver.git.fetch(loopCtx.state.repoLocalPath);
+    await driver.git.fetch(loopCtx.state.repoLocalPath, { githubToken: auth?.githubToken ?? null });
   } catch (error) {
     logActorWarning("task.init", "fetch before naming failed", {
       workspaceId: loopCtx.state.workspaceId,
@@ -160,7 +162,9 @@ export async function initEnsureNameActivity(loopCtx: any): Promise<void> {
       error: resolveErrorMessage(error),
     });
   }
-  const remoteBranches = (await driver.git.listRemoteBranches(loopCtx.state.repoLocalPath)).map((branch: any) => branch.branchName);
+  const remoteBranches = (await driver.git.listRemoteBranches(loopCtx.state.repoLocalPath, { githubToken: auth?.githubToken ?? null })).map(
+    (branch: any) => branch.branchName,
+  );
 
   const project = await getOrCreateProject(loopCtx, loopCtx.state.workspaceId, loopCtx.state.repoId, loopCtx.state.repoRemote);
   const reservedBranches = await project.listReservedBranches({});
@@ -274,6 +278,7 @@ export async function initCreateSandboxActivity(loopCtx: any, body: any): Promis
   });
 
   try {
+    const auth = await resolveWorkspaceGithubAuth(loopCtx, loopCtx.state.workspaceId);
     const sandbox = await withActivityTimeout(timeoutMs, "createSandbox", async () =>
       provider.createSandbox({
         workspaceId: loopCtx.state.workspaceId,
@@ -281,6 +286,7 @@ export async function initCreateSandboxActivity(loopCtx: any, body: any): Promis
         repoRemote: loopCtx.state.repoRemote,
         branchName: loopCtx.state.branchName,
         taskId: loopCtx.state.taskId,
+        githubToken: auth?.githubToken ?? null,
         debug: (message, context) => debugInit(loopCtx, message, context),
       }),
     );

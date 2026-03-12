@@ -11,6 +11,7 @@ export interface CreateSandboxRequest {
   repoRemote: string;
   branchName: string;
   taskId: string;
+  githubToken?: string | null;
   debug?: (message: string, context?: Record<string, unknown>) => void;
   options?: Record<string, unknown>;
 }

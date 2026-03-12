@@ -34,6 +34,7 @@ import { getActorRuntimeContext } from "../context.js";
 import { getTask, getOrCreateHistory, getOrCreateProject, selfWorkspace } from "../handles.js";
 import { logActorWarning, resolveErrorMessage } from "../logging.js";
 import { normalizeRemoteUrl, repoIdFromRemote } from "../../services/repo.js";
+import { resolveWorkspaceGithubAuth } from "../../services/github-auth.js";
 import { taskLookup, repos, providerProfiles } from "./db/schema.js";
 import { agentTypeForModel } from "../task/workbench.js";
 import { expectQueueResponse } from "../../services/queue.js";
@@ -213,7 +214,8 @@ async function addRepoMutation(c: any, input: AddRepoInput): Promise<RepoRecord>
   }
 
   const { driver } = getActorRuntimeContext();
-  await driver.git.validateRemote(remoteUrl);
+  const auth = await resolveWorkspaceGithubAuth(c, c.state.workspaceId);
+  await driver.git.validateRemote(remoteUrl, { githubToken: auth?.githubToken ?? null });
 
   const repoId = repoIdFromRemote(remoteUrl);
   const now = Date.now();
@@ -439,7 +441,7 @@ export const workspaceActions = {
     c.broadcast("workbenchUpdated", { at: Date.now() });
   },
 
-  async createWorkbenchTask(c: any, input: TaskWorkbenchCreateTaskInput): Promise<{ taskId: string }> {
+  async createWorkbenchTask(c: any, input: TaskWorkbenchCreateTaskInput): Promise<{ taskId: string; tabId?: string }> {
     const created = await workspaceActions.createTask(c, {
       workspaceId: c.state.workspaceId,
       repoId: input.repoId,
@@ -448,7 +450,12 @@ export const workspaceActions = {
       ...(input.branch ? { explicitBranchName: input.branch } : {}),
       ...(input.model ? { agentType: agentTypeForModel(input.model) } : {}),
     });
-    return { taskId: created.taskId };
+    const task = await requireWorkbenchTask(c, created.taskId);
+    const snapshot = await task.getWorkbench({});
+    return {
+      taskId: created.taskId,
+      tabId: snapshot.tabs[0]?.id,
+    };
   },
 
   async markWorkbenchUnread(c: any, input: TaskWorkbenchSelectInput): Promise<void> {

@@ -7,6 +7,7 @@ import { getActorRuntimeContext } from "../context.js";
 import { getTask, getOrCreateTask, getOrCreateHistory, getOrCreateProjectBranchSync, getOrCreateProjectPrSync, selfProject } from "../handles.js";
 import { isActorNotFoundError, logActorWarning, resolveErrorMessage } from "../logging.js";
 import { foundryRepoClonePath } from "../../services/foundry-paths.js";
+import { resolveWorkspaceGithubAuth } from "../../services/github-auth.js";
 import { expectQueueResponse } from "../../services/queue.js";
 import { withRepoGitLock } from "../../services/repo-git-lock.js";
 import { branches, taskIndex, prCache, repoMeta } from "./db/schema.js";
@@ -112,7 +113,8 @@ export function projectWorkflowQueueName(name: ProjectQueueName): ProjectQueueNa
 async function ensureLocalClone(c: any, remoteUrl: string): Promise<string> {
   const { config, driver } = getActorRuntimeContext();
   const localPath = foundryRepoClonePath(config, c.state.workspaceId, c.state.repoId);
-  await driver.git.ensureCloned(remoteUrl, localPath);
+  const auth = await resolveWorkspaceGithubAuth(c, c.state.workspaceId);
+  await driver.git.ensureCloned(remoteUrl, localPath, { githubToken: auth?.githubToken ?? null });
   c.state.localPath = localPath;
   return localPath;
 }
@@ -301,6 +303,26 @@ async function enrichTaskRecord(c: any, record: TaskRecord): Promise<TaskRecord>
   };
 }
 
+async function reinsertTaskIndexRow(c: any, taskId: string, branchName: string | null, updatedAt: number): Promise<void> {
+  const now = Date.now();
+  await c.db
+    .insert(taskIndex)
+    .values({
+      taskId,
+      branchName,
+      createdAt: updatedAt || now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: taskIndex.taskId,
+      set: {
+        branchName,
+        updatedAt: now,
+      },
+    })
+    .run();
+}
+
 async function ensureProjectMutation(c: any, cmd: EnsureProjectCommand): Promise<EnsureProjectResult> {
   c.state.remoteUrl = cmd.remoteUrl;
   const localPath = await ensureLocalClone(c, cmd.remoteUrl);
@@ -454,9 +476,10 @@ async function registerTaskBranchMutation(c: any, cmd: RegisterTaskBranchCommand
   let headSha = "";
   let trackedInStack = false;
   let parentBranch: string | null = null;
+  const auth = await resolveWorkspaceGithubAuth(c, c.state.workspaceId);
 
   await withRepoGitLock(localPath, async () => {
-    await driver.git.fetch(localPath);
+    await driver.git.fetch(localPath, { githubToken: auth?.githubToken ?? null });
     const baseRef = await driver.git.remoteDefaultBaseRef(localPath);
     const normalizedBase = normalizeBaseBranchName(baseRef);
 
@@ -467,8 +490,8 @@ async function registerTaskBranchMutation(c: any, cmd: RegisterTaskBranchCommand
         throw new Error(`Remote branch not found: ${branchName}`);
       }
     } else {
-      await driver.git.ensureRemoteBranch(localPath, branchName);
-      await driver.git.fetch(localPath);
+      await driver.git.ensureRemoteBranch(localPath, branchName, { githubToken: auth?.githubToken ?? null });
+      await driver.git.fetch(localPath, { githubToken: auth?.githubToken ?? null });
       try {
         headSha = await driver.git.revParse(localPath, `origin/${branchName}`);
       } catch {
@@ -947,7 +970,17 @@ export const projectActions = {
 
     const row = await c.db.select({ taskId: taskIndex.taskId }).from(taskIndex).where(eq(taskIndex.taskId, cmd.taskId)).get();
     if (!row) {
-      throw new Error(`Unknown task in repo ${c.state.repoId}: ${cmd.taskId}`);
+      try {
+        const h = getTask(c, c.state.workspaceId, c.state.repoId, cmd.taskId);
+        const record = await h.get();
+        await reinsertTaskIndexRow(c, cmd.taskId, record.branchName ?? null, record.updatedAt ?? Date.now());
+        return await enrichTaskRecord(c, record);
+      } catch (error) {
+        if (isStaleTaskReferenceError(error)) {
+          throw new Error(`Unknown task in repo ${c.state.repoId}: ${cmd.taskId}`);
+        }
+        throw error;
+      }
     }
 
     try {

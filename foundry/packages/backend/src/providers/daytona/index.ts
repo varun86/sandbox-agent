@@ -145,6 +145,18 @@ export class DaytonaProvider implements SandboxProvider {
     return envVars;
   }
 
+  private buildShellExports(extra: Record<string, string> = {}): string[] {
+    const merged = {
+      ...this.buildEnvVars(),
+      ...extra,
+    };
+
+    return Object.entries(merged).map(([key, value]) => {
+      const encoded = Buffer.from(value, "utf8").toString("base64");
+      return `export ${key}="$(printf %s ${JSON.stringify(encoded)} | base64 -d)"`;
+    });
+  }
+
   private buildSnapshotImage() {
     // Use Daytona image build + snapshot caching so base tooling (git + sandbox-agent)
     // is prepared once and reused for subsequent sandboxes.
@@ -240,13 +252,18 @@ export class DaytonaProvider implements SandboxProvider {
             "set -euo pipefail",
             "export GIT_TERMINAL_PROMPT=0",
             "export GIT_ASKPASS=/bin/echo",
+            `TOKEN=${JSON.stringify(req.githubToken ?? "")}`,
+            'if [ -z "$TOKEN" ]; then TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"; fi',
+            "GIT_AUTH_ARGS=()",
+            `if [ -n "$TOKEN" ] && [[ "${req.repoRemote}" == https://github.com/* ]]; then AUTH_HEADER="$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\\n')"; GIT_AUTH_ARGS=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $AUTH_HEADER"); fi`,
             `rm -rf "${repoDir}"`,
             `mkdir -p "${repoDir}"`,
             `rmdir "${repoDir}"`,
-            // Clone without embedding credentials. Auth for pushing is configured by the agent at runtime.
-            `git clone "${req.repoRemote}" "${repoDir}"`,
+            // Foundry test repos can be private, so clone/fetch must use the sandbox's GitHub token when available.
+            `git "\${GIT_AUTH_ARGS[@]}" clone "${req.repoRemote}" "${repoDir}"`,
             `cd "${repoDir}"`,
-            `git fetch origin --prune`,
+            `if [ -n "$TOKEN" ] && [[ "${req.repoRemote}" == https://github.com/* ]]; then git config --local credential.helper ""; git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $AUTH_HEADER"; fi`,
+            `git "\${GIT_AUTH_ARGS[@]}" fetch origin --prune`,
             // The task branch may not exist remotely yet (agent push creates it). Base off current branch (default branch).
             `if git show-ref --verify --quiet "refs/remotes/origin/${req.branchName}"; then git checkout -B "${req.branchName}" "origin/${req.branchName}"; else git checkout -B "${req.branchName}" "$(git branch --show-current 2>/dev/null || echo main)"; fi`,
             `git config user.email "foundry@local" >/dev/null 2>&1 || true`,
@@ -337,6 +354,9 @@ export class DaytonaProvider implements SandboxProvider {
   async ensureSandboxAgent(req: EnsureAgentRequest): Promise<AgentEndpoint> {
     const client = this.requireClient();
     const acpRequestTimeoutMs = this.getAcpRequestTimeoutMs();
+    const sandboxAgentExports = this.buildShellExports({
+      SANDBOX_AGENT_ACP_REQUEST_TIMEOUT_MS: acpRequestTimeoutMs.toString(),
+    });
 
     await this.ensureStarted(req.sandboxId);
 
@@ -387,7 +407,17 @@ export class DaytonaProvider implements SandboxProvider {
       [
         "bash",
         "-lc",
-        `'set -euo pipefail; export PATH="$HOME/.local/bin:$PATH"; command -v sandbox-agent >/dev/null 2>&1; if pgrep -x sandbox-agent >/dev/null; then exit 0; fi; nohup env SANDBOX_AGENT_ACP_REQUEST_TIMEOUT_MS=${acpRequestTimeoutMs} sandbox-agent server --no-token --host 0.0.0.0 --port ${DaytonaProvider.SANDBOX_AGENT_PORT} >/tmp/sandbox-agent.log 2>&1 &'`,
+        JSON.stringify(
+          [
+            "set -euo pipefail",
+            'export PATH="$HOME/.local/bin:$PATH"',
+            ...sandboxAgentExports,
+            "command -v sandbox-agent >/dev/null 2>&1",
+            "if pgrep -x sandbox-agent >/dev/null; then exit 0; fi",
+            'rm -f "$HOME/.codex/auth.json" "$HOME/.config/codex/auth.json"',
+            `nohup sandbox-agent server --no-token --host 0.0.0.0 --port ${DaytonaProvider.SANDBOX_AGENT_PORT} >/tmp/sandbox-agent.log 2>&1 &`,
+          ].join("; "),
+        ),
       ].join(" "),
       "start sandbox-agent",
     );

@@ -25,7 +25,7 @@ import {
   type ModelId,
 } from "./mock-layout/view-model";
 import { activeMockOrganization, useMockAppSnapshot } from "../lib/mock-app";
-import { taskWorkbenchClient } from "../lib/workbench";
+import { getTaskWorkbenchClient } from "../lib/workbench";
 
 function firstAgentTabId(task: Task): string | null {
   return task.tabs[0]?.id ?? null;
@@ -61,6 +61,7 @@ function sanitizeActiveTabId(task: Task, tabId: string | null | undefined, openD
 }
 
 const TranscriptPanel = memo(function TranscriptPanel({
+  taskWorkbenchClient,
   task,
   activeTabId,
   lastAgentTabId,
@@ -70,6 +71,7 @@ const TranscriptPanel = memo(function TranscriptPanel({
   onSetLastAgentTabId,
   onSetOpenDiffs,
 }: {
+  taskWorkbenchClient: ReturnType<typeof getTaskWorkbenchClient>;
   task: Task;
   activeTabId: string | null;
   lastAgentTabId: string | null;
@@ -858,6 +860,7 @@ function MockWorkspaceOrgBar() {
 
 export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: MockLayoutProps) {
   const navigate = useNavigate();
+  const taskWorkbenchClient = useMemo(() => getTaskWorkbenchClient(workspaceId), [workspaceId]);
   const viewModel = useSyncExternalStore(
     taskWorkbenchClient.subscribe.bind(taskWorkbenchClient),
     taskWorkbenchClient.getSnapshot.bind(taskWorkbenchClient),
@@ -887,10 +890,12 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
   const [activeTabIdByTask, setActiveTabIdByTask] = useState<Record<string, string | null>>({});
   const [lastAgentTabIdByTask, setLastAgentTabIdByTask] = useState<Record<string, string | null>>({});
   const [openDiffsByTask, setOpenDiffsByTask] = useState<Record<string, string[]>>({});
+  const [selectedNewTaskRepoId, setSelectedNewTaskRepoId] = useState("");
   const [leftWidth, setLeftWidth] = useState(() => readStoredWidth(LEFT_WIDTH_STORAGE_KEY, LEFT_SIDEBAR_DEFAULT_WIDTH));
   const [rightWidth, setRightWidth] = useState(() => readStoredWidth(RIGHT_WIDTH_STORAGE_KEY, RIGHT_SIDEBAR_DEFAULT_WIDTH));
   const leftWidthRef = useRef(leftWidth);
   const rightWidthRef = useRef(rightWidth);
+  const autoCreatingSessionForTaskRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     leftWidthRef.current = leftWidth;
@@ -1001,9 +1006,49 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
     });
   }, [activeTask, lastAgentTabIdByTask, selectedSessionId, syncRouteSession]);
 
+  useEffect(() => {
+    if (selectedNewTaskRepoId && viewModel.repos.some((repo) => repo.id === selectedNewTaskRepoId)) {
+      return;
+    }
+
+    const fallbackRepoId =
+      activeTask?.repoId && viewModel.repos.some((repo) => repo.id === activeTask.repoId) ? activeTask.repoId : (viewModel.repos[0]?.id ?? "");
+    if (fallbackRepoId !== selectedNewTaskRepoId) {
+      setSelectedNewTaskRepoId(fallbackRepoId);
+    }
+  }, [activeTask?.repoId, selectedNewTaskRepoId, viewModel.repos]);
+
+  useEffect(() => {
+    if (!activeTask) {
+      return;
+    }
+    if (activeTask.tabs.length > 0) {
+      autoCreatingSessionForTaskRef.current.delete(activeTask.id);
+      return;
+    }
+    if (selectedSessionId) {
+      return;
+    }
+    if (autoCreatingSessionForTaskRef.current.has(activeTask.id)) {
+      return;
+    }
+
+    autoCreatingSessionForTaskRef.current.add(activeTask.id);
+    void (async () => {
+      try {
+        const { tabId } = await taskWorkbenchClient.addTab({ taskId: activeTask.id });
+        syncRouteSession(activeTask.id, tabId, true);
+      } catch (error) {
+        console.error("failed to auto-create workbench session", error);
+      } finally {
+        autoCreatingSessionForTaskRef.current.delete(activeTask.id);
+      }
+    })();
+  }, [activeTask, selectedSessionId, syncRouteSession, taskWorkbenchClient]);
+
   const createTask = useCallback(() => {
     void (async () => {
-      const repoId = activeTask?.repoId ?? viewModel.repos[0]?.id ?? "";
+      const repoId = selectedNewTaskRepoId;
       if (!repoId) {
         throw new Error("Cannot create a task without an available repo");
       }
@@ -1023,7 +1068,7 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
         search: { sessionId: tabId ?? undefined },
       });
     })();
-  }, [activeTask?.repoId, navigate, viewModel.repos, workspaceId]);
+  }, [navigate, selectedNewTaskRepoId, workspaceId]);
 
   const openDiffTab = useCallback(
     (path: string) => {
@@ -1158,9 +1203,12 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
           <div style={{ width: `${leftWidth}px`, flexShrink: 0, minWidth: 0, display: "flex", flexDirection: "column" }}>
             <Sidebar
               projects={projects}
+              newTaskRepos={viewModel.repos}
+              selectedNewTaskRepoId={selectedNewTaskRepoId}
               activeId=""
               onSelect={selectTask}
               onCreate={createTask}
+              onSelectNewTaskRepo={setSelectedNewTaskRepoId}
               onMarkUnread={markTaskUnread}
               onRenameTask={renameTask}
               onRenameBranch={renameBranch}
@@ -1190,10 +1238,32 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
                 >
                   <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 600 }}>Create your first task</h2>
                   <p style={{ margin: 0, opacity: 0.75 }}>
-                    {viewModel.repos.length > 0
-                      ? "Start from the sidebar to create a task on the first available repo."
-                      : "No repos are available in this workspace yet."}
+                    {viewModel.repos.length > 0 ? "Choose a repo, then create a task." : "No repos are available in this workspace yet."}
                   </p>
+                  {viewModel.repos.length > 0 ? (
+                    <label style={{ display: "flex", flexDirection: "column", gap: "6px", textAlign: "left" }}>
+                      <span style={{ fontSize: "11px", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", opacity: 0.7 }}>Repo</span>
+                      <select
+                        value={selectedNewTaskRepoId}
+                        onChange={(event) => {
+                          setSelectedNewTaskRepoId(event.currentTarget.value);
+                        }}
+                        style={{
+                          borderRadius: "10px",
+                          border: "1px solid rgba(255,255,255,0.12)",
+                          padding: "10px 12px",
+                          background: "rgba(255,255,255,0.05)",
+                          color: "#f4f4f5",
+                        }}
+                      >
+                        {viewModel.repos.map((repo) => (
+                          <option key={repo.id} value={repo.id}>
+                            {repo.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
                   <button
                     type="button"
                     onClick={createTask}
@@ -1231,9 +1301,12 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
         <div style={{ width: `${leftWidth}px`, flexShrink: 0, minWidth: 0, display: "flex", flexDirection: "column" }}>
           <Sidebar
             projects={projects}
+            newTaskRepos={viewModel.repos}
+            selectedNewTaskRepoId={selectedNewTaskRepoId}
             activeId={activeTask.id}
             onSelect={selectTask}
             onCreate={createTask}
+            onSelectNewTaskRepo={setSelectedNewTaskRepoId}
             onMarkUnread={markTaskUnread}
             onRenameTask={renameTask}
             onRenameBranch={renameBranch}
@@ -1243,6 +1316,7 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
         <PanelResizeHandle onResizeStart={onLeftResizeStart} onResize={onLeftResize} />
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
           <TranscriptPanel
+            taskWorkbenchClient={taskWorkbenchClient}
             task={activeTask}
             activeTabId={activeTabId}
             lastAgentTabId={lastAgentTabId}

@@ -17,6 +17,28 @@ export interface BackendStartOptions {
   port?: number;
 }
 
+function isRetryableAppActorError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Actor not ready") || message.includes("socket connection was closed unexpectedly");
+}
+
+async function withRetries<T>(run: () => Promise<T>, attempts = 20, delayMs = 250): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableAppActorError(error) || attempt === attempts) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 export async function startBackend(options: BackendStartOptions = {}): Promise<void> {
   // sandbox-agent agent plugins vary on which env var they read for OpenAI/Codex auth.
   // Normalize to keep local dev + docker-compose simple.
@@ -48,9 +70,9 @@ export async function startBackend(options: BackendStartOptions = {}): Promise<v
   initActorRuntimeContext(config, providers, notifications, driver, createDefaultAppShellServices());
 
   registry.startRunner();
-  const inner = registry.serve();
+  const managerOrigin = `http://127.0.0.1:${resolveManagerPort()}`;
   const actorClient = createClient({
-    endpoint: `http://127.0.0.1:${resolveManagerPort()}`,
+    endpoint: managerOrigin,
     disableMetadataLookup: true,
   }) as any;
 
@@ -98,8 +120,12 @@ export async function startBackend(options: BackendStartOptions = {}): Promise<v
   );
   const forward = async (c: any) => {
     try {
-      // RivetKit serverless handler is configured with basePath `/api/rivet` by default.
-      return await inner.fetch(c.req.raw);
+      // Proxy /api/rivet traffic to the long-lived RivetKit manager rather than
+      // invoking RivetKit's serverless entrypoints in-process.
+      const requestUrl = new URL(c.req.url);
+      const managerPath = requestUrl.pathname.replace(/^\/api\/rivet(?=\/|$)/, "") || "/";
+      const targetUrl = new URL(`${managerPath}${requestUrl.search}`, managerOrigin);
+      return await fetch(new Request(targetUrl, c.req.raw));
     } catch (err) {
       if (err instanceof URIError) {
         return c.text("Bad Request: Malformed URI", 400);
@@ -109,27 +135,32 @@ export async function startBackend(options: BackendStartOptions = {}): Promise<v
   };
 
   const appWorkspace = async () =>
-    await actorClient.workspace.getOrCreate(workspaceKey(APP_SHELL_WORKSPACE_ID), {
-      createWithInput: APP_SHELL_WORKSPACE_ID,
-    });
+    await withRetries(
+      async () =>
+        await actorClient.workspace.getOrCreate(workspaceKey(APP_SHELL_WORKSPACE_ID), {
+          createWithInput: APP_SHELL_WORKSPACE_ID,
+        }),
+    );
+
+  const appWorkspaceAction = async <T>(run: (workspace: any) => Promise<T>): Promise<T> => await withRetries(async () => await run(await appWorkspace()));
 
   const resolveSessionId = async (c: any): Promise<string> => {
     const requested = c.req.header("x-foundry-session");
-    const { sessionId } = await (await appWorkspace()).ensureAppSession({
-      requestedSessionId: requested ?? null,
-    });
+    const { sessionId } = await appWorkspaceAction(
+      async (workspace) => await workspace.ensureAppSession(requested && requested.trim().length > 0 ? { requestedSessionId: requested } : {}),
+    );
     c.header("x-foundry-session", sessionId);
     return sessionId;
   };
 
   app.get("/api/rivet/app/snapshot", async (c) => {
     const sessionId = await resolveSessionId(c);
-    return c.json(await (await appWorkspace()).getAppSnapshot({ sessionId }));
+    return c.json(await appWorkspaceAction(async (workspace) => await workspace.getAppSnapshot({ sessionId })));
   });
 
   app.get("/api/rivet/app/auth/github/start", async (c) => {
     const sessionId = await resolveSessionId(c);
-    const result = await (await appWorkspace()).startAppGithubAuth({ sessionId });
+    const result = await appWorkspaceAction(async (workspace) => await workspace.startAppGithubAuth({ sessionId }));
     return Response.redirect(result.url, 302);
   });
 
@@ -139,38 +170,44 @@ export async function startBackend(options: BackendStartOptions = {}): Promise<v
     if (!code || !state) {
       return c.text("Missing GitHub OAuth callback parameters", 400);
     }
-    const result = await (await appWorkspace()).completeAppGithubAuth({ code, state });
+    const result = await appWorkspaceAction(async (workspace) => await workspace.completeAppGithubAuth({ code, state }));
     c.header("x-foundry-session", result.sessionId);
     return Response.redirect(result.redirectTo, 302);
   });
 
   app.post("/api/rivet/app/sign-out", async (c) => {
     const sessionId = await resolveSessionId(c);
-    return c.json(await (await appWorkspace()).signOutApp({ sessionId }));
+    return c.json(await appWorkspaceAction(async (workspace) => await workspace.signOutApp({ sessionId })));
   });
 
   app.post("/api/rivet/app/onboarding/starter-repo/skip", async (c) => {
     const sessionId = await resolveSessionId(c);
-    return c.json(await (await appWorkspace()).skipAppStarterRepo({ sessionId }));
+    return c.json(await appWorkspaceAction(async (workspace) => await workspace.skipAppStarterRepo({ sessionId })));
   });
 
   app.post("/api/rivet/app/organizations/:organizationId/starter-repo/star", async (c) => {
     const sessionId = await resolveSessionId(c);
     return c.json(
-      await (await appWorkspace()).starAppStarterRepo({
-        sessionId,
-        organizationId: c.req.param("organizationId"),
-      }),
+      await appWorkspaceAction(
+        async (workspace) =>
+          await workspace.starAppStarterRepo({
+            sessionId,
+            organizationId: c.req.param("organizationId"),
+          }),
+      ),
     );
   });
 
   app.post("/api/rivet/app/organizations/:organizationId/select", async (c) => {
     const sessionId = await resolveSessionId(c);
     return c.json(
-      await (await appWorkspace()).selectAppOrganization({
-        sessionId,
-        organizationId: c.req.param("organizationId"),
-      }),
+      await appWorkspaceAction(
+        async (workspace) =>
+          await workspace.selectAppOrganization({
+            sessionId,
+            organizationId: c.req.param("organizationId"),
+          }),
+      ),
     );
   });
 
@@ -178,33 +215,42 @@ export async function startBackend(options: BackendStartOptions = {}): Promise<v
     const sessionId = await resolveSessionId(c);
     const body = await c.req.json();
     return c.json(
-      await (await appWorkspace()).updateAppOrganizationProfile({
-        sessionId,
-        organizationId: c.req.param("organizationId"),
-        displayName: typeof body?.displayName === "string" ? body.displayName : "",
-        slug: typeof body?.slug === "string" ? body.slug : "",
-        primaryDomain: typeof body?.primaryDomain === "string" ? body.primaryDomain : "",
-      }),
+      await appWorkspaceAction(
+        async (workspace) =>
+          await workspace.updateAppOrganizationProfile({
+            sessionId,
+            organizationId: c.req.param("organizationId"),
+            displayName: typeof body?.displayName === "string" ? body.displayName : "",
+            slug: typeof body?.slug === "string" ? body.slug : "",
+            primaryDomain: typeof body?.primaryDomain === "string" ? body.primaryDomain : "",
+          }),
+      ),
     );
   });
 
   app.post("/api/rivet/app/organizations/:organizationId/import", async (c) => {
     const sessionId = await resolveSessionId(c);
     return c.json(
-      await (await appWorkspace()).triggerAppRepoImport({
-        sessionId,
-        organizationId: c.req.param("organizationId"),
-      }),
+      await appWorkspaceAction(
+        async (workspace) =>
+          await workspace.triggerAppRepoImport({
+            sessionId,
+            organizationId: c.req.param("organizationId"),
+          }),
+      ),
     );
   });
 
   app.post("/api/rivet/app/organizations/:organizationId/reconnect", async (c) => {
     const sessionId = await resolveSessionId(c);
     return c.json(
-      await (await appWorkspace()).beginAppGithubInstall({
-        sessionId,
-        organizationId: c.req.param("organizationId"),
-      }),
+      await appWorkspaceAction(
+        async (workspace) =>
+          await workspace.beginAppGithubInstall({
+            sessionId,
+            organizationId: c.req.param("organizationId"),
+          }),
+      ),
     );
   });
 

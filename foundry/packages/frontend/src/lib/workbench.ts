@@ -1,9 +1,20 @@
-import { createTaskWorkbenchClient } from "@sandbox-agent/foundry-client";
+import { createTaskWorkbenchClient, type TaskWorkbenchClient } from "@sandbox-agent/foundry-client";
 import { backendClient } from "./backend";
-import { defaultWorkspaceId, frontendClientMode } from "./env";
+import { frontendClientMode } from "./env";
 
-export const taskWorkbenchClient = createTaskWorkbenchClient({
-  mode: frontendClientMode,
-  backend: backendClient,
-  workspaceId: defaultWorkspaceId,
-});
+const workbenchClients = new Map<string, TaskWorkbenchClient>();
+
+export function getTaskWorkbenchClient(workspaceId: string): TaskWorkbenchClient {
+  const existing = workbenchClients.get(workspaceId);
+  if (existing) {
+    return existing;
+  }
+
+  const created = createTaskWorkbenchClient({
+    mode: frontendClientMode,
+    backend: backendClient,
+    workspaceId,
+  });
+  workbenchClients.set(workspaceId, created);
+  return created;
+}

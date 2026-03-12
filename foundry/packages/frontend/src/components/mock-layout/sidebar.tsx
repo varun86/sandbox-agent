@@ -24,18 +24,24 @@ function projectIconColor(label: string): string {
 
 export const Sidebar = memo(function Sidebar({
   projects,
+  newTaskRepos,
+  selectedNewTaskRepoId,
   activeId,
   onSelect,
   onCreate,
+  onSelectNewTaskRepo,
   onMarkUnread,
   onRenameTask,
   onRenameBranch,
   onReorderProjects,
 }: {
   projects: ProjectSection[];
+  newTaskRepos: Array<{ id: string; label: string }>;
+  selectedNewTaskRepoId: string;
   activeId: string;
   onSelect: (id: string) => void;
   onCreate: () => void;
+  onSelectNewTaskRepo: (repoId: string) => void;
   onMarkUnread: (id: string) => void;
   onRenameTask: (id: string) => void;
   onRenameBranch: (id: string) => void;
@@ -68,28 +74,69 @@ export const Sidebar = memo(function Sidebar({
         <div
           role="button"
           tabIndex={0}
-          onClick={onCreate}
+          aria-disabled={newTaskRepos.length === 0}
+          onClick={() => {
+            if (newTaskRepos.length === 0) {
+              return;
+            }
+            onCreate();
+          }}
           onKeyDown={(event) => {
+            if (newTaskRepos.length === 0) {
+              return;
+            }
             if (event.key === "Enter" || event.key === " ") onCreate();
           }}
           className={css({
             width: "26px",
             height: "26px",
             borderRadius: "8px",
-            backgroundColor: "rgba(255, 255, 255, 0.12)",
+            backgroundColor: newTaskRepos.length > 0 ? "rgba(255, 255, 255, 0.12)" : "rgba(255, 255, 255, 0.06)",
             color: "#e4e4e7",
-            cursor: "pointer",
+            cursor: newTaskRepos.length > 0 ? "pointer" : "not-allowed",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
             transition: "background 200ms ease",
             flexShrink: 0,
-            ":hover": { backgroundColor: "rgba(255, 255, 255, 0.20)" },
+            opacity: newTaskRepos.length > 0 ? 1 : 0.6,
+            ":hover": newTaskRepos.length > 0 ? { backgroundColor: "rgba(255, 255, 255, 0.20)" } : undefined,
           })}
         >
           <Plus size={14} style={{ display: "block" }} />
         </div>
       </PanelHeaderBar>
+      <div className={css({ padding: "0 8px 8px", display: "flex", flexDirection: "column", gap: "6px" })}>
+        <LabelXSmall color={theme.colors.contentTertiary} $style={{ textTransform: "uppercase", letterSpacing: "0.04em" }}>
+          Repo
+        </LabelXSmall>
+        <select
+          value={selectedNewTaskRepoId}
+          disabled={newTaskRepos.length === 0}
+          onChange={(event) => {
+            onSelectNewTaskRepo(event.currentTarget.value);
+          }}
+          className={css({
+            width: "100%",
+            borderRadius: "8px",
+            border: "1px solid rgba(255, 255, 255, 0.10)",
+            backgroundColor: "rgba(255, 255, 255, 0.05)",
+            color: "#f4f4f5",
+            fontSize: "12px",
+            padding: "8px 10px",
+            outline: "none",
+            cursor: newTaskRepos.length > 0 ? "pointer" : "not-allowed",
+            opacity: newTaskRepos.length > 0 ? 1 : 0.6,
+          })}
+        >
+          {newTaskRepos.length === 0 ? <option value="">No repos available</option> : null}
+          {newTaskRepos.map((repo) => (
+            <option key={repo.id} value={repo.id}>
+              {repo.label}
+            </option>
+          ))}
+        </select>
+      </div>
       <ScrollBody>
         <div className={css({ padding: "8px", display: "flex", flexDirection: "column", gap: "4px" })}>
           {projects.map((project, projectIndex) => {

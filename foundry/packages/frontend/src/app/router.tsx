@@ -12,7 +12,7 @@ import {
 } from "../components/mock-onboarding";
 import { defaultWorkspaceId, isMockFrontendClient } from "../lib/env";
 import { activeMockOrganization, getMockOrganizationById, isAppSnapshotBootstrapping, useMockAppClient, useMockAppSnapshot } from "../lib/mock-app";
-import { taskWorkbenchClient } from "../lib/workbench";
+import { getTaskWorkbenchClient } from "../lib/workbench";
 
 const rootRoute = createRootRoute({
   component: RootLayout,
@@ -304,6 +304,7 @@ function AppWorkspaceGate({ workspaceId, children }: { workspaceId: string; chil
 }
 
 function RepoRouteInner({ workspaceId, repoId }: { workspaceId: string; repoId: string }) {
+  const taskWorkbenchClient = getTaskWorkbenchClient(workspaceId);
   useEffect(() => {
     setFrontendErrorContext({
       workspaceId,
