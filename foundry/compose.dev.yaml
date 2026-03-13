@@ -10,7 +10,6 @@ services:
     environment:
       HF_BACKEND_HOST: "0.0.0.0"
       HF_BACKEND_PORT: "7741"
-      HF_RIVET_MANAGER_PORT: "8750"
       RIVETKIT_STORAGE_PATH: "/root/.local/share/foundry/rivetkit"
       # Pass through credentials needed for agent execution + PR creation in dev/e2e.
       # Do not hardcode secrets; set these in your environment when starting compose.
@@ -43,8 +42,6 @@ services:
       HF_DAYTONA_API_KEY: "${HF_DAYTONA_API_KEY:-}"
     ports:
       - "7741:7741"
-      # RivetKit manager (used by browser clients after /api/rivet metadata redirect in dev)
-      - "8750:8750"
     volumes:
       - "..:/app"
       # The linked RivetKit checkout resolves from Foundry packages to /task/rivet-checkout in-container.

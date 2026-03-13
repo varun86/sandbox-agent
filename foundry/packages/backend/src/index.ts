@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { initActorRuntimeContext } from "./actors/context.js";
-import { registry, resolveManagerPort } from "./actors/index.js";
+import { registry } from "./actors/index.js";
 import { workspaceKey } from "./actors/keys.js";
 import { loadConfig } from "./config/backend.js";
 import { createBackends, createNotificationService } from "./notifications/index.js";
@@ -69,17 +69,11 @@ export async function startBackend(options: BackendStartOptions = {}): Promise<v
   const notifications = createNotificationService(backends);
   initActorRuntimeContext(config, providers, notifications, driver, createDefaultAppShellServices());
 
-  registry.startRunner();
-  const managerOrigin = `http://127.0.0.1:${resolveManagerPort()}`;
   const actorClient = createClient({
-    endpoint: managerOrigin,
-    disableMetadataLookup: true,
+    endpoint: `http://127.0.0.1:${config.backend.port}/api/rivet`,
   }) as any;
 
-  // Wrap in a Hono app mounted at /api/rivet to serve on the backend port.
-  // Uses Bun.serve — cannot use @hono/node-server because it conflicts with
-  // RivetKit's internal Bun.serve manager server (Bun bug: mixing Node HTTP
-  // server and Bun.serve in the same process breaks Bun.serve's fetch handler).
+  // Wrap RivetKit and app routes in a single Hono app mounted at /api/rivet.
   const app = new Hono();
   const allowHeaders = [
     "Content-Type",
@@ -118,21 +112,6 @@ export async function startBackend(options: BackendStartOptions = {}): Promise<v
       exposeHeaders,
     }),
   );
-  const forward = async (c: any) => {
-    try {
-      // Proxy /api/rivet traffic to the long-lived RivetKit manager rather than
-      // invoking RivetKit's serverless entrypoints in-process.
-      const requestUrl = new URL(c.req.url);
-      const managerPath = requestUrl.pathname.replace(/^\/api\/rivet(?=\/|$)/, "") || "/";
-      const targetUrl = new URL(`${managerPath}${requestUrl.search}`, managerOrigin);
-      return await fetch(new Request(targetUrl, c.req.raw));
-    } catch (err) {
-      if (err instanceof URIError) {
-        return c.text("Bad Request: Malformed URI", 400);
-      }
-      throw err;
-    }
-  };
 
   const appWorkspace = async () =>
     await withRetries(
@@ -334,8 +313,18 @@ export async function startBackend(options: BackendStartOptions = {}): Promise<v
   app.post("/api/rivet/app/webhooks/stripe", handleStripeWebhook);
   app.post("/api/rivet/app/stripe/webhook", handleStripeWebhook);
 
-  app.all("/api/rivet", forward);
-  app.all("/api/rivet/*", forward);
+  app.post("/api/rivet/app/webhooks/github", async (c) => {
+    const payload = await c.req.text();
+    await (await appWorkspace()).handleAppGithubWebhook({
+      payload,
+      signatureHeader: c.req.header("x-hub-signature-256") ?? null,
+      eventHeader: c.req.header("x-github-event") ?? null,
+    });
+    return c.json({ ok: true });
+  });
+
+  app.all("/api/rivet", (c) => registry.handler(c.req.raw));
+  app.all("/api/rivet/*", (c) => registry.handler(c.req.raw));
 
   const server = Bun.serve({
     fetch: app.fetch,

@@ -45,6 +45,13 @@ Use `pnpm` workspaces and Turborepo.
 - Stop the preview stack: `just foundry-preview-down`
 - Tail preview logs: `just foundry-preview-logs`
 
+## Railway Logs
+
+- Production Foundry Railway logs can be read from a linked workspace with `railway logs --deployment --lines 200` or `railway logs <deployment-id> --deployment --lines 200`.
+- If Railway logs fail because the workspace is not linked to the correct project/service/environment, run:
+  `railway link --project 33e3e2df-32c5-41c5-a4af-dca8654acb1d --environment cf387142-61fd-4668-8cf7-b3559e0983cb --service 91c7e450-d6d2-481a-b2a4-0a916f4160fc`
+- That links this directory to the `sandbox-agent` project, `production` environment, and `foundry-api` service.
+
 ## Frontend + Client Boundary
 
 - Keep a browser-friendly GUI implementation aligned with the TUI interaction model wherever possible.
@@ -96,39 +103,11 @@ For all Rivet/RivetKit implementation:
    pnpm build -F rivetkit
    ```
 
-## Inspector HTTP API (Workflow Debugging)
+## Rivet Routing
 
-- The Inspector HTTP routes come from RivetKit `feat: inspector http api (#4144)` and are served from the RivetKit manager endpoint (not `/api/rivet`).
-- Resolve manager endpoint from backend metadata:
-  ```bash
-  curl -sS http://127.0.0.1:7741/api/rivet/metadata | jq -r '.clientEndpoint'
-  ```
-- List actors:
-  - `GET {manager}/actors?name=task`
-- Inspector endpoints (path prefix: `/gateway/{actorId}/inspector`):
-  - `GET /state`
-  - `PATCH /state`
-  - `GET /connections`
-  - `GET /rpcs`
-  - `POST /action/{name}`
-  - `GET /queue?limit=50`
-  - `GET /traces?startMs=0&endMs=<ms>&limit=1000`
-  - `GET /workflow-history`
-  - `GET /summary`
-- Auth:
-  - Production: send `Authorization: Bearer $RIVET_INSPECTOR_TOKEN`.
-  - Development: auth can be skipped when no inspector token is configured.
-- Task workflow quick inspect:
-  ```bash
-  MGR="$(curl -sS http://127.0.0.1:7741/api/rivet/metadata | jq -r '.clientEndpoint')"
-  HID="7df7656e-bbd2-4b8c-bf0f-30d4df2f619a"
-  AID="$(curl -sS "$MGR/actors?name=task" \
-    | jq -r --arg hid "$HID" '.actors[] | select(.key | endswith("/task/\($hid)")) | .actor_id' \
-    | head -n1)"
-  curl -sS "$MGR/gateway/$AID/inspector/workflow-history" | jq .
-  curl -sS "$MGR/gateway/$AID/inspector/summary" | jq .
-  ```
-- If inspector routes return `404 Not Found (RivetKit)`, the running backend is on a RivetKit build that predates `#4144`; rebuild linked RivetKit and restart backend.
+- Mount RivetKit directly on `/api/rivet` via `registry.handler(c.req.raw)`.
+- Do not add an extra proxy or manager-specific route layer in the backend.
+- Let RivetKit own metadata/public endpoint behavior for `/api/rivet`.
 
 ## Workspace + Actor Rules
 
