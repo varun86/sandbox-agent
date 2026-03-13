@@ -1,5 +1,6 @@
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { createErrorContext, createFoundryLogger } from "@sandbox-agent/foundry-shared";
 
 type Journal = {
   entries?: Array<{
@@ -10,6 +11,10 @@ type Journal = {
     version?: string;
   }>;
 };
+
+const logger = createFoundryLogger({
+  service: "foundry-backend-migrations",
+});
 
 function padMigrationKey(idx: number): string {
   return `m${String(idx).padStart(4, "0")}`;
@@ -128,8 +133,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
-  // eslint-disable-next-line no-console
-  console.error(message);
+  logger.error(createErrorContext(error), "generate_actor_migrations_failed");
   process.exitCode = 1;
 });

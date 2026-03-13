@@ -1,4 +1,5 @@
 import { createHmac, createPrivateKey, createSign, timingSafeEqual } from "node:crypto";
+import { logger } from "../logging.js";
 
 export class GitHubAppError extends Error {
   readonly status: number;
@@ -50,6 +51,10 @@ interface GitHubPageResponse<T> {
   items: T[];
   nextUrl: string | null;
 }
+
+const githubOAuthLogger = logger.child({
+  scope: "github-oauth",
+});
 
 export interface GitHubWebhookEvent {
   action?: string;
@@ -161,21 +166,40 @@ export class GitHubAppClient {
       throw new GitHubAppError("GitHub OAuth is not configured", 500);
     }
 
+    const exchangeBody = {
+      client_id: this.clientId,
+      client_secret: this.clientSecret,
+      code,
+      redirect_uri: this.redirectUri,
+    };
+    githubOAuthLogger.debug(
+      {
+        url: `${this.authBaseUrl}/login/oauth/access_token`,
+        clientId: this.clientId,
+        redirectUri: this.redirectUri,
+        codeLength: code.length,
+        codePrefix: code.slice(0, 6),
+      },
+      "exchange_code_request",
+    );
+
     const response = await fetch(`${this.authBaseUrl}/login/oauth/access_token`, {
       method: "POST",
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        client_id: this.clientId,
-        client_secret: this.clientSecret,
-        code,
-        redirect_uri: this.redirectUri,
-      }),
+      body: JSON.stringify(exchangeBody),
     });
 
     const responseText = await response.text();
+    githubOAuthLogger.debug(
+      {
+        status: response.status,
+        bodyPreview: responseText.slice(0, 300),
+      },
+      "exchange_code_response",
+    );
     let payload: GitHubTokenResponse;
     try {
       payload = JSON.parse(responseText) as GitHubTokenResponse;

@@ -145,7 +145,7 @@ function transcriptIncludesAgentText(transcript: WorkbenchTranscriptEvent[], exp
 
 describe("e2e(client): workbench flows", () => {
   it.skipIf(!RUN_WORKBENCH_E2E)("creates a task, adds sessions, exchanges messages, and manages workbench state", { timeout: 20 * 60_000 }, async () => {
-    const endpoint = process.env.HF_E2E_BACKEND_ENDPOINT?.trim() || "http://127.0.0.1:7741/api/rivet";
+    const endpoint = process.env.HF_E2E_BACKEND_ENDPOINT?.trim() || "http://127.0.0.1:7741/v1/rivet";
     const workspaceId = process.env.HF_E2E_WORKSPACE?.trim() || "default";
     const repoRemote = requiredEnv("HF_E2E_GITHUB_REPO");
     const model = workbenchModelEnv("HF_E2E_MODEL", "gpt-4o");

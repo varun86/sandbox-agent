@@ -1,3 +1,5 @@
+import { logger } from "../logging.js";
+
 export function resolveErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -17,11 +19,11 @@ export function resolveErrorStack(error: unknown): string | undefined {
 }
 
 export function logActorWarning(scope: string, message: string, context?: Record<string, unknown>): void {
-  const payload = {
-    scope,
+  logger.warn(
+    {
+      scope,
+      ...(context ?? {}),
+    },
     message,
-    ...(context ?? {}),
-  };
-  // eslint-disable-next-line no-console
-  console.warn("[foundry][actor:warn]", payload);
+  );
 }

@@ -2,6 +2,7 @@ import type { AppConfig, TaskRecord } from "@sandbox-agent/foundry-shared";
 import { spawnSync } from "node:child_process";
 import { createBackendClientFromConfig, filterTasks, formatRelativeAge, groupTaskStatus } from "@sandbox-agent/foundry-client";
 import { CLI_BUILD_ID } from "./build-id.js";
+import { writeStdout } from "./io.js";
 import { resolveTuiTheme, type TuiTheme } from "./theme.js";
 
 interface KeyEventLike {
@@ -412,7 +413,7 @@ export async function runTui(config: AppConfig, workspaceId: string): Promise<vo
     process.off("SIGTERM", handleSignal);
     renderer.destroy();
     if (output) {
-      console.log(output);
+      writeStdout(output);
     }
     resolveDone();
   };

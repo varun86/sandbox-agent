@@ -1,9 +1,5 @@
 # Project Instructions
 
-## Breaking Changes
-
-Do not preserve legacy compatibility. Implement the best current architecture, even if breaking.
-
 ## Language Policy
 
 Use TypeScript for all source code.
@@ -48,16 +44,18 @@ Use `pnpm` workspaces and Turborepo.
 ## Railway Logs
 
 - Production Foundry Railway logs can be read from a linked workspace with `railway logs --deployment --lines 200` or `railway logs <deployment-id> --deployment --lines 200`.
+- Production deploys should go through `git push` to the deployment branch/workflow. Do not use `railway up` for Foundry deploys.
 - If Railway logs fail because the workspace is not linked to the correct project/service/environment, run:
   `railway link --project 33e3e2df-32c5-41c5-a4af-dca8654acb1d --environment cf387142-61fd-4668-8cf7-b3559e0983cb --service 91c7e450-d6d2-481a-b2a4-0a916f4160fc`
 - That links this directory to the `sandbox-agent` project, `production` environment, and `foundry-api` service.
+- Production proxy chain: `api.sandboxagent.dev` routes through Cloudflare → Fastly/Varnish → Railway. When debugging request duplication, timeouts, or retry behavior, check headers like `cf-ray`, `x-varnish`, `x-railway-edge`, and `cdn-loop` to identify which layer is involved.
 
 ## Frontend + Client Boundary
 
 - Keep a browser-friendly GUI implementation aligned with the TUI interaction model wherever possible.
 - Do not import `rivetkit` directly in CLI or GUI packages. RivetKit client access must stay isolated inside `packages/client`.
 - All backend interaction (actor calls, metadata/health checks, backend HTTP endpoint access) must go through the dedicated client library in `packages/client`.
-- Outside `packages/client`, do not call backend endpoints directly (for example `fetch(.../api/rivet...)`), except in black-box E2E tests that intentionally exercise raw transport behavior.
+- Outside `packages/client`, do not call backend endpoints directly (for example `fetch(.../v1/rivet...)`), except in black-box E2E tests that intentionally exercise raw transport behavior.
 - GUI state should update in realtime (no manual refresh buttons). Prefer RivetKit push reactivity and actor-driven events; do not add polling/refetch for normal product flows.
 - Keep the mock workbench types and mock client in `packages/shared` + `packages/client` up to date with the frontend contract. The mock is the UI testing reference implementation while backend functionality catches up.
 - Keep frontend route/state coverage current in code and tests; there is no separate page-inventory doc to maintain.
@@ -105,9 +103,9 @@ For all Rivet/RivetKit implementation:
 
 ## Rivet Routing
 
-- Mount RivetKit directly on `/api/rivet` via `registry.handler(c.req.raw)`.
+- Mount RivetKit directly on `/v1/rivet` via `registry.handler(c.req.raw)`.
 - Do not add an extra proxy or manager-specific route layer in the backend.
-- Let RivetKit own metadata/public endpoint behavior for `/api/rivet`.
+- Let RivetKit own metadata/public endpoint behavior for `/v1/rivet`.
 
 ## Workspace + Actor Rules
 
@@ -121,6 +119,14 @@ For all Rivet/RivetKit implementation:
 - Keep strict single-writer ownership: each table/row has exactly one actor writer.
 - Parent actors (`workspace`, `project`, `task`, `history`, `sandbox-instance`) use command-only loops with no timeout.
 - Periodic syncing lives in dedicated child actors with one timeout cadence each.
+- Do not build blocking flows that wait on external systems to become ready or complete. Prefer push-based progression driven by actor messages, events, webhooks, or queue/workflow state changes.
+- Use workflows/background commands for any repo sync, sandbox provisioning, agent install, branch restack/rebase, or other multi-step external work. Do not keep user-facing actions/requests open while that work runs.
+- `send` policy: always `await` the `send(...)` call itself so enqueue failures surface immediately, but default to `wait: false`.
+- Only use `send(..., { wait: true })` for short, bounded mutations that should finish quickly and do not depend on external readiness, polling actors, provider setup, repo/network I/O, or long-running queue drains.
+- Request/action contract: wait only until the minimum resource needed for the client's next step exists. Example: task creation may wait for task actor creation/identity, but not for sandbox provisioning or session bootstrap.
+- Read paths must not force refresh/sync work inline. Serve the latest cached projection, mark staleness explicitly, and trigger background refresh separately when needed.
+- If a workflow needs to resume after some external work completes, model that as workflow state plus follow-up messages/events instead of holding the original request open.
+- Do not rely on retries for correctness or normal control flow. If a queue/workflow/external dependency is not ready yet, model that explicitly and resume from a push/event, instead of polling or retry loops.
 - Actor handle policy:
 - Prefer explicit `get` or explicit `create` based on workflow intent; do not default to `getOrCreate`.
 - Use `get`/`getForId` when the actor is expected to already exist; if missing, surface an explicit `Actor not found` error with recovery context.
@@ -142,7 +148,7 @@ For all Rivet/RivetKit implementation:
 - All external service calls (git CLI, GitHub CLI, sandbox-agent HTTP, tmux) must go through the `BackendDriver` interface on the runtime context.
 - Integration tests use `setupTest()` from `rivetkit/test` and are gated behind `HF_ENABLE_ACTOR_INTEGRATION_TESTS=1`.
 - End-to-end testing must run against the dev backend started via `docker compose -f compose.dev.yaml up` (host -> container). Do not run E2E against an in-process test runtime.
-  - E2E tests should talk to the backend over HTTP (default `http://127.0.0.1:7741/api/rivet`) and use real GitHub repos/PRs.
+  - E2E tests should talk to the backend over HTTP (default `http://127.0.0.1:7741/v1/rivet`) and use real GitHub repos/PRs.
   - For Foundry live verification, use `rivet-dev/sandbox-agent-testing` as the default testing repo unless the task explicitly says otherwise.
   - Secrets (e.g. `OPENAI_API_KEY`, `GITHUB_TOKEN`/`GH_TOKEN`) must be provided via environment variables, never hardcoded in the repo.
   - `~/misc/env.txt` and `~/misc/the-foundry.env` contain the expected local OpenAI + GitHub OAuth/App config for dev.

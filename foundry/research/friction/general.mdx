@@ -1,5 +1,33 @@
 # General Friction Log
 
+## 2026-03-13 - uncommitted
+
+### What I Was Working On
+
+Debugging slow GitHub OAuth sign-in in production after deploying backend request logging (d0ed0a4).
+
+### Friction / Issue
+
+Production logs showed two separate HTTP requests (different request IDs, ~9s apart) hitting `GET /v1/auth/github/callback` with the same `code` and `state` parameters. The first request succeeded (`exchangeCode` returned a token) but took ~18s total due to `syncGithubSessionFromToken` making multiple sequential GitHub API calls. The second request arrived while the first was still syncing, passed the oauth state validation (state was never cleared), and attempted `exchangeCode` with the already-consumed code, which GitHub rejected with `bad_verification_code`.
+
+The root cause of the duplicate HTTP request is unknown. It is not `appWorkspaceAction` (no retry logic in the current version), not Railway proxy retry (no such config), and not a frontend double-navigation (the SPA is not involved during the OAuth redirect chain). Best hypothesis is the user refreshing during the ~18s blank page wait, but unconfirmed.
+
+### Attempted Fix / Workaround
+
+1. Made `completeAppGithubAuth` clear `oauthState`/`oauthStateExpiresAt` immediately after validation and before `exchangeCode`, so any duplicate request fails the state check instead of hitting GitHub with a consumed code.
+2. Split `syncGithubSessionFromToken` into a fast path (`initGithubSession` — exchange code, get viewer, store token+identity) and a slow path (`syncGithubOrganizations` — list orgs, list installations, sync each workspace).
+3. `completeAppGithubAuth` now uses the fast path and enqueues the slow org sync to the workspace workflow queue (`workspace.command.syncGithubSession`, fire-and-forget). The HTTP callback returns a 302 redirect in ~2s instead of ~18s, eliminating the proxy timeout window.
+4. The frontend already polls `getAppSnapshot` every 500ms when any org has `syncStatus === "syncing"`, so the deferred sync is transparent to the user.
+5. `bootstrapAppGithubSession` (dev-only) still calls the full synchronous `syncGithubSessionFromToken` since proxy timeouts are not a concern in dev and it needs the session fully populated before returning.
+
+### Outcome
+
+- OAuth callback responds in ~2s (exchangeCode + getViewer) instead of ~18s.
+- Proxy retry window is eliminated — no duplicate requests should occur.
+- Duplicate requests are still guarded by the state-clearing idempotency check.
+- Organization data populates asynchronously via the workflow queue; the frontend shows loading state and polls until complete.
+- Root cause of the duplicate HTTP request (likely Railway/Cloudflare proxy retry on slow GET) remains uninvestigated but is no longer a practical problem.
+
 ## 2026-03-05 - uncommitted
 
 ### What I Was Working On

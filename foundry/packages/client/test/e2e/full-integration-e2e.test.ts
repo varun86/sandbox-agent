@@ -107,7 +107,7 @@ async function ensureRemoteBranchExists(token: string, fullName: string, branchN
 
 describe("e2e(client): full integration stack workflow", () => {
   it.skipIf(!RUN_FULL_E2E)("adds repo, loads branch graph, and executes a stack restack action", { timeout: 8 * 60_000 }, async () => {
-    const endpoint = process.env.HF_E2E_BACKEND_ENDPOINT?.trim() || "http://127.0.0.1:7741/api/rivet";
+    const endpoint = process.env.HF_E2E_BACKEND_ENDPOINT?.trim() || "http://127.0.0.1:7741/v1/rivet";
     const workspaceId = process.env.HF_E2E_WORKSPACE?.trim() || "default";
     const repoRemote = requiredEnv("HF_E2E_GITHUB_REPO");
     const githubToken = requiredEnv("GITHUB_TOKEN");

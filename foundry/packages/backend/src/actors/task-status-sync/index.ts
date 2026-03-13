@@ -55,6 +55,8 @@ export const taskStatusSync = actor({
     [CONTROL.force]: queue(),
   },
   options: {
+    name: "Task Status Sync",
+    icon: "signal",
     // Polling actors rely on timer-based wakeups; sleeping would pause the timer and stop polling.
     noSleep: true,
   },

@@ -6,14 +6,8 @@ const journal = {
   entries: [
     {
       idx: 0,
-      when: 1770924375604,
-      tag: "0000_broad_tyrannus",
-      breakpoints: true,
-    },
-    {
-      idx: 1,
-      when: 1776482400000,
-      tag: "0001_sandbox_sessions",
+      when: 1773376224446,
+      tag: "0000_smooth_sauron",
       breakpoints: true,
     },
   ],
@@ -28,18 +22,7 @@ export default {
 	\`status\` text NOT NULL,
 	\`updated_at\` integer NOT NULL
 );
-`,
-    m0001: `CREATE TABLE \`sandbox_sessions\` (
-	\`id\` text PRIMARY KEY NOT NULL,
-	\`agent\` text NOT NULL,
-	\`agent_session_id\` text NOT NULL,
-	\`last_connection_id\` text NOT NULL,
-	\`created_at\` integer NOT NULL,
-	\`destroyed_at\` integer,
-	\`session_init_json\` text
-);
 --> statement-breakpoint
-
 CREATE TABLE \`sandbox_session_events\` (
 	\`id\` text PRIMARY KEY NOT NULL,
 	\`session_id\` text NOT NULL,
@@ -50,12 +33,16 @@ CREATE TABLE \`sandbox_session_events\` (
 	\`payload_json\` text NOT NULL
 );
 --> statement-breakpoint
-
-CREATE INDEX \`sandbox_sessions_created_at_idx\` ON \`sandbox_sessions\` (\`created_at\`);
---> statement-breakpoint
-CREATE INDEX \`sandbox_session_events_session_id_event_index_idx\` ON \`sandbox_session_events\` (\`session_id\`,\`event_index\`);
---> statement-breakpoint
-CREATE INDEX \`sandbox_session_events_session_id_created_at_idx\` ON \`sandbox_session_events\` (\`session_id\`,\`created_at\`);
+CREATE UNIQUE INDEX \`sandbox_session_events_session_id_event_index_unique\` ON \`sandbox_session_events\` (\`session_id\`,\`event_index\`);--> statement-breakpoint
+CREATE TABLE \`sandbox_sessions\` (
+	\`id\` text PRIMARY KEY NOT NULL,
+	\`agent\` text NOT NULL,
+	\`agent_session_id\` text NOT NULL,
+	\`last_connection_id\` text NOT NULL,
+	\`created_at\` integer NOT NULL,
+	\`destroyed_at\` integer,
+	\`session_init_json\` text
+);
 `,
   } as const,
 };

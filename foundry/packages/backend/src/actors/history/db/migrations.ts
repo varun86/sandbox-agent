@@ -6,8 +6,8 @@ const journal = {
   entries: [
     {
       idx: 0,
-      when: 1770924375133,
-      tag: "0000_watery_bushwacker",
+      when: 1773376223815,
+      tag: "0000_fluffy_kid_colt",
       breakpoints: true,
     },
   ],

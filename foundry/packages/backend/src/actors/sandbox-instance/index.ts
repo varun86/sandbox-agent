@@ -458,6 +458,8 @@ export const sandboxInstance = actor({
   db: sandboxInstanceDb,
   queues: Object.fromEntries(SANDBOX_INSTANCE_QUEUE_NAMES.map((name) => [name, queue()])),
   options: {
+    name: "Sandbox Instance",
+    icon: "box",
     actionTimeout: 5 * 60_000,
   },
   createState: (_c, input: SandboxInstanceInput) => ({

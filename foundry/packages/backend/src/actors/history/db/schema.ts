@@ -5,6 +5,7 @@ export const events = sqliteTable("events", {
   taskId: text("task_id"),
   branchName: text("branch_name"),
   kind: text("kind").notNull(),
+  // Structured by the history event kind definitions in application code.
   payloadJson: text("payload_json").notNull(),
   createdAt: integer("created_at").notNull(),
 });

@@ -7,6 +7,8 @@ export const workspace = actor({
   db: workspaceDb,
   queues: Object.fromEntries(WORKSPACE_QUEUE_NAMES.map((name) => [name, queue()])),
   options: {
+    name: "Workspace",
+    icon: "compass",
     actionTimeout: 5 * 60_000,
   },
   createState: (_c, workspaceId: string) => ({

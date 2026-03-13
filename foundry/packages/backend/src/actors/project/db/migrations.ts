@@ -6,26 +6,8 @@ const journal = {
   entries: [
     {
       idx: 0,
-      when: 1770924376062,
-      tag: "0000_stormy_the_hunter",
-      breakpoints: true,
-    },
-    {
-      idx: 1,
-      when: 1770947252449,
-      tag: "0001_wild_carlie_cooper",
-      breakpoints: true,
-    },
-    {
-      idx: 2,
-      when: 1771276338465,
-      tag: "0002_far_war_machine",
-      breakpoints: true,
-    },
-    {
-      idx: 3,
-      when: 1771369000000,
-      tag: "0003_busy_legacy",
+      when: 1773376221848,
+      tag: "0000_useful_la_nuit",
       breakpoints: true,
     },
   ],
@@ -37,11 +19,11 @@ export default {
     m0000: `CREATE TABLE \`branches\` (
 	\`branch_name\` text PRIMARY KEY NOT NULL,
 	\`commit_sha\` text NOT NULL,
-	\`worktree_path\` text,
 	\`parent_branch\` text,
+	\`tracked_in_stack\` integer DEFAULT 0 NOT NULL,
 	\`diff_stat\` text,
-	\`has_unpushed\` integer,
-	\`conflicts_with_main\` integer,
+	\`has_unpushed\` integer DEFAULT 0 NOT NULL,
+	\`conflicts_with_main\` integer DEFAULT 0 NOT NULL,
 	\`first_seen_at\` integer,
 	\`last_seen_at\` integer,
 	\`updated_at\` integer NOT NULL
@@ -54,28 +36,26 @@ CREATE TABLE \`pr_cache\` (
 	\`title\` text NOT NULL,
 	\`pr_url\` text,
 	\`pr_author\` text,
-	\`is_draft\` integer,
+	\`is_draft\` integer DEFAULT 0 NOT NULL,
 	\`ci_status\` text,
 	\`review_status\` text,
 	\`reviewer\` text,
 	\`fetched_at\` integer,
 	\`updated_at\` integer NOT NULL
 );
-`,
-    m0001: `CREATE TABLE \`repo_meta\` (
+--> statement-breakpoint
+CREATE TABLE \`repo_meta\` (
 	\`id\` integer PRIMARY KEY NOT NULL,
 	\`remote_url\` text NOT NULL,
 	\`updated_at\` integer NOT NULL
 );
 --> statement-breakpoint
-ALTER TABLE \`branches\` DROP COLUMN \`worktree_path\`;`,
-    m0002: `CREATE TABLE \`task_index\` (
+CREATE TABLE \`task_index\` (
 	\`task_id\` text PRIMARY KEY NOT NULL,
 	\`branch_name\` text,
 	\`created_at\` integer NOT NULL,
 	\`updated_at\` integer NOT NULL
 );
 `,
-    m0003: `ALTER TABLE \`branches\` ADD \`tracked_in_stack\` integer;`,
   } as const,
 };

@@ -1,9 +1,11 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useStyletron } from "baseui";
+import { createErrorContext } from "@sandbox-agent/foundry-shared";
 
 import { PanelLeft, PanelRight } from "lucide-react";
 import { useFoundryTokens } from "../app/theme";
+import { logger } from "../logging.js";
 
 import { DiffContent } from "./mock-layout/diff-content";
 import { MessageList } from "./mock-layout/message-list";
@@ -437,7 +439,13 @@ const TranscriptPanel = memo(function TranscriptPanel({
       await window.navigator.clipboard.writeText(message.text);
       setCopiedMessageId(message.id);
     } catch (error) {
-      console.error("Failed to copy transcript message", error);
+      logger.error(
+        {
+          messageId: message.id,
+          ...createErrorContext(error),
+        },
+        "failed_to_copy_transcript_message",
+      );
     }
   }, []);
 
@@ -1108,7 +1116,13 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
         const { tabId } = await taskWorkbenchClient.addTab({ taskId: activeTask.id });
         syncRouteSession(activeTask.id, tabId, true);
       } catch (error) {
-        console.error("failed to auto-create workbench session", error);
+        logger.error(
+          {
+            taskId: activeTask.id,
+            ...createErrorContext(error),
+          },
+          "failed_to_auto_create_workbench_session",
+        );
       } finally {
         autoCreatingSessionForTaskRef.current.delete(activeTask.id);
       }

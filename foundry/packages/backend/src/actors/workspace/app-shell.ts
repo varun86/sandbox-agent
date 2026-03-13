@@ -11,15 +11,24 @@ import type {
   UpdateFoundryOrganizationProfileInput,
 } from "@sandbox-agent/foundry-shared";
 import { getActorRuntimeContext } from "../context.js";
-import { getOrCreateWorkspace } from "../handles.js";
+import { getOrCreateWorkspace, selfWorkspace } from "../handles.js";
 import { GitHubAppError } from "../../services/app-github.js";
 import { repoIdFromRemote, repoLabelFromRemote } from "../../services/repo.js";
+import { logger } from "../../logging.js";
 import { appSessions, invoices, organizationMembers, organizationProfile, repos, seatAssignments, stripeLookup } from "./db/schema.js";
 
 export const APP_SHELL_WORKSPACE_ID = "app";
 
+const githubWebhookLogger = logger.child({
+  scope: "github-webhook",
+});
+
 const PROFILE_ROW_ID = "profile";
 const OAUTH_TTL_MS = 10 * 60_000;
+
+function roundDurationMs(start: number): number {
+  return Math.round((performance.now() - start) * 100) / 100;
+}
 
 function assertAppWorkspace(c: any): void {
   if (c.state.workspaceId !== APP_SHELL_WORKSPACE_ID) {
@@ -222,22 +231,67 @@ async function getOrganizationState(workspace: any) {
 
 async function buildAppSnapshot(c: any, sessionId: string): Promise<FoundryAppSnapshot> {
   assertAppWorkspace(c);
+  const startedAt = performance.now();
   const session = await requireAppSessionRow(c, sessionId);
   const eligibleOrganizationIds = parseEligibleOrganizationIds(session.eligibleOrganizationIdsJson);
 
-  const organizations: FoundryOrganization[] = [];
-  for (const organizationId of eligibleOrganizationIds) {
-    try {
-      const workspace = await getOrCreateWorkspace(c, organizationId);
-      const organizationState = await getOrganizationState(workspace);
-      organizations.push(organizationState.snapshot);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!message.includes("Actor not found")) {
-        throw error;
-      }
-    }
-  }
+  logger.info(
+    {
+      sessionId,
+      workspaceId: c.state.workspaceId,
+      eligibleOrganizationCount: eligibleOrganizationIds.length,
+      eligibleOrganizationIds,
+    },
+    "build_app_snapshot_started",
+  );
+
+  const organizations = (
+    await Promise.all(
+      eligibleOrganizationIds.map(async (organizationId) => {
+        const organizationStartedAt = performance.now();
+        try {
+          const workspace = await getOrCreateWorkspace(c, organizationId);
+          const organizationState = await getOrganizationState(workspace);
+          logger.info(
+            {
+              sessionId,
+              workspaceId: c.state.workspaceId,
+              organizationId,
+              durationMs: roundDurationMs(organizationStartedAt),
+            },
+            "build_app_snapshot_organization_completed",
+          );
+          return organizationState.snapshot;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (!message.includes("Actor not found")) {
+            logger.error(
+              {
+                sessionId,
+                workspaceId: c.state.workspaceId,
+                organizationId,
+                durationMs: roundDurationMs(organizationStartedAt),
+                errorMessage: message,
+                errorStack: error instanceof Error ? error.stack : undefined,
+              },
+              "build_app_snapshot_organization_failed",
+            );
+            throw error;
+          }
+          logger.info(
+            {
+              sessionId,
+              workspaceId: c.state.workspaceId,
+              organizationId,
+              durationMs: roundDurationMs(organizationStartedAt),
+            },
+            "build_app_snapshot_organization_missing",
+          );
+          return null;
+        }
+      }),
+    )
+  ).filter((organization): organization is FoundryOrganization => organization !== null);
 
   const currentUser: FoundryUser | null = session.currentUserId
     ? {
@@ -257,7 +311,7 @@ async function buildAppSnapshot(c: any, sessionId: string): Promise<FoundryAppSn
         ? (organizations[0]?.id ?? null)
         : null;
 
-  return {
+  const snapshot = {
     auth: {
       status: currentUser ? "signed_in" : "signed_out",
       currentUserId: currentUser?.id ?? null,
@@ -275,6 +329,19 @@ async function buildAppSnapshot(c: any, sessionId: string): Promise<FoundryAppSn
     users: currentUser ? [currentUser] : [],
     organizations,
   };
+
+  logger.info(
+    {
+      sessionId,
+      workspaceId: c.state.workspaceId,
+      eligibleOrganizationCount: eligibleOrganizationIds.length,
+      organizationCount: organizations.length,
+      durationMs: roundDurationMs(startedAt),
+    },
+    "build_app_snapshot_completed",
+  );
+
+  return snapshot;
 }
 
 async function requireSignedInSession(c: any, sessionId: string) {
@@ -364,11 +431,50 @@ async function safeListInstallations(accessToken: string): Promise<any[]> {
   }
 }
 
-async function syncGithubSessionFromToken(c: any, sessionId: string, accessToken: string): Promise<{ sessionId: string; redirectTo: string }> {
+/**
+ * Fast path: resolve viewer identity, store user + token in the session,
+ * and return the redirect URL. Does NOT sync organizations — that work is
+ * deferred to `syncGithubOrganizations` via the workflow queue so the HTTP
+ * callback can respond before any proxy timeout triggers a retry.
+ */
+async function initGithubSession(c: any, sessionId: string, accessToken: string, scopes: string[]): Promise<{ sessionId: string; redirectTo: string }> {
   assertAppWorkspace(c);
   const { appShell } = getActorRuntimeContext();
+  const viewer = await appShell.github.getViewer(accessToken);
+  const userId = `user-${slugify(viewer.login)}`;
+
+  await updateAppSession(c, sessionId, {
+    currentUserId: userId,
+    currentUserName: viewer.name || viewer.login,
+    currentUserEmail: viewer.email ?? `${viewer.login}@users.noreply.github.com`,
+    currentUserGithubLogin: viewer.login,
+    currentUserRoleLabel: "GitHub user",
+    githubAccessToken: accessToken,
+    githubScope: scopes.join(","),
+    oauthState: null,
+    oauthStateExpiresAt: null,
+  });
+
+  return {
+    sessionId,
+    redirectTo: `${appShell.appUrl}/organizations?foundrySession=${encodeURIComponent(sessionId)}`,
+  };
+}
+
+/**
+ * Slow path: list GitHub orgs + installations, sync each org workspace,
+ * and update the session's eligible organization list. Called from the
+ * workflow queue so it runs in the background after the callback has
+ * already returned a redirect to the browser.
+ *
+ * Also used synchronously by bootstrapAppGithubSession (dev-only) where
+ * proxy timeouts are not a concern.
+ */
+export async function syncGithubOrganizations(c: any, input: { sessionId: string; accessToken: string }): Promise<void> {
+  assertAppWorkspace(c);
+  const { appShell } = getActorRuntimeContext();
+  const { sessionId, accessToken } = input;
   const session = await requireAppSessionRow(c, sessionId);
-  const token = { accessToken, scopes: splitScopes(session.githubScope) };
   const viewer = await appShell.github.getViewer(accessToken);
   const organizations = await safeListOrganizations(accessToken);
   const installations = await safeListInstallations(accessToken);
@@ -419,24 +525,75 @@ async function syncGithubSessionFromToken(c: any, sessionId: string, accessToken
         ? (linkedOrganizationIds[0] ?? null)
         : null;
 
-  await updateAppSession(c, session.id, {
-    currentUserId: userId,
-    currentUserName: viewer.name || viewer.login,
-    currentUserEmail: viewer.email ?? `${viewer.login}@users.noreply.github.com`,
-    currentUserGithubLogin: viewer.login,
-    currentUserRoleLabel: "GitHub user",
+  await updateAppSession(c, sessionId, {
     eligibleOrganizationIdsJson: encodeEligibleOrganizationIds(linkedOrganizationIds),
     activeOrganizationId,
-    githubAccessToken: accessToken,
-    githubScope: token.scopes.join(","),
-    oauthState: null,
-    oauthStateExpiresAt: null,
   });
+}
 
-  return {
-    sessionId: session.id,
-    redirectTo: `${appShell.appUrl}/organizations?foundrySession=${encodeURIComponent(session.id)}`,
-  };
+export async function syncGithubOrganizationRepos(c: any, input: { sessionId: string; organizationId: string }): Promise<void> {
+  assertAppWorkspace(c);
+  const session = await requireSignedInSession(c, input.sessionId);
+  requireEligibleOrganization(session, input.organizationId);
+
+  const { appShell } = getActorRuntimeContext();
+  const workspace = await getOrCreateWorkspace(c, input.organizationId);
+  const organization = await getOrganizationState(workspace);
+
+  try {
+    let repositories;
+    let installationStatus = organization.snapshot.github.installationStatus;
+
+    if (organization.snapshot.kind === "personal") {
+      repositories = await appShell.github.listUserRepositories(session.githubAccessToken);
+      installationStatus = "connected";
+    } else if (organization.githubInstallationId) {
+      try {
+        repositories = await appShell.github.listInstallationRepositories(organization.githubInstallationId);
+      } catch (error) {
+        if (!(error instanceof GitHubAppError) || (error.status !== 403 && error.status !== 404)) {
+          throw error;
+        }
+        repositories = (await appShell.github.listUserRepositories(session.githubAccessToken)).filter((repository) =>
+          repository.fullName.startsWith(`${organization.githubLogin}/`),
+        );
+        installationStatus = "reconnect_required";
+      }
+    } else {
+      repositories = (await appShell.github.listUserRepositories(session.githubAccessToken)).filter((repository) =>
+        repository.fullName.startsWith(`${organization.githubLogin}/`),
+      );
+      installationStatus = "reconnect_required";
+    }
+
+    await workspace.applyOrganizationSyncCompleted({
+      repositories,
+      installationStatus,
+      lastSyncLabel: repositories.length > 0 ? "Synced just now" : "No repositories available",
+    });
+  } catch (error) {
+    const installationStatus =
+      error instanceof GitHubAppError && (error.status === 403 || error.status === 404)
+        ? "reconnect_required"
+        : organization.snapshot.github.installationStatus;
+    await workspace.markOrganizationSyncFailed({
+      message: error instanceof Error ? error.message : "GitHub import failed",
+      installationStatus,
+    });
+  }
+}
+
+/**
+ * Full synchronous sync: init session + sync orgs in one call.
+ * Used by bootstrapAppGithubSession (dev-only) where there is no proxy
+ * timeout concern and we want the session fully populated before returning.
+ */
+async function syncGithubSessionFromToken(c: any, sessionId: string, accessToken: string): Promise<{ sessionId: string; redirectTo: string }> {
+  const session = await requireAppSessionRow(c, sessionId);
+  const scopes = splitScopes(session.githubScope);
+  const result = await initGithubSession(c, sessionId, accessToken, scopes);
+  await syncGithubOrganizations(c, { sessionId, accessToken });
+  return result;
 }
 
 async function readOrganizationProfileRow(c: any) {
@@ -489,13 +646,14 @@ async function listOrganizationRepoCatalog(c: any): Promise<string[]> {
 }
 
 async function buildOrganizationState(c: any) {
+  const startedAt = performance.now();
   const row = await requireOrganizationProfileRow(c);
   const repoCatalog = await listOrganizationRepoCatalog(c);
   const members = await listOrganizationMembers(c);
   const seatAssignmentEmails = await listOrganizationSeatAssignments(c);
   const invoiceRows = await listOrganizationInvoices(c);
 
-  return {
+  const state = {
     id: c.state.workspaceId,
     workspaceId: c.state.workspaceId,
     kind: row.kind,
@@ -540,6 +698,21 @@ async function buildOrganizationState(c: any) {
       repoCatalog,
     },
   };
+
+  logger.info(
+    {
+      workspaceId: c.state.workspaceId,
+      githubLogin: row.githubLogin,
+      repoCount: repoCatalog.length,
+      memberCount: members.length,
+      seatAssignmentCount: seatAssignmentEmails.length,
+      invoiceCount: invoiceRows.length,
+      durationMs: roundDurationMs(startedAt),
+    },
+    "build_organization_state_completed",
+  );
+
+  return state;
 }
 
 async function applySubscriptionState(
@@ -621,11 +794,37 @@ export const workspaceAppActions = {
       throw new Error("GitHub OAuth state is invalid or expired");
     }
 
-    const token = await appShell.github.exchangeCode(input.code);
+    // Clear state before exchangeCode — GitHub codes are single-use and
+    // duplicate callback requests (from proxy retries or user refresh)
+    // must fail the state check rather than attempt a second exchange.
+    // See research/friction/general.mdx 2026-03-13 entry.
     await updateAppSession(c, session.id, {
-      githubScope: token.scopes.join(","),
+      oauthState: null,
+      oauthStateExpiresAt: null,
     });
-    return await syncGithubSessionFromToken(c, session.id, token.accessToken);
+
+    const token = await appShell.github.exchangeCode(input.code);
+
+    // Fast path: store token + user identity and return the redirect
+    // immediately. The slow org sync (list orgs, list installations,
+    // sync each workspace) runs in the workflow queue so the HTTP
+    // response lands before any proxy/infra timeout triggers a retry.
+    // The frontend already polls when it sees syncStatus === "syncing".
+    const result = await initGithubSession(c, session.id, token.accessToken, token.scopes);
+
+    // Enqueue the slow org sync to the workflow. fire-and-forget (wait: false)
+    // because the redirect does not depend on org data — the frontend will
+    // poll getAppSnapshot until organizations are populated.
+    const self = selfWorkspace(c);
+    await self.send(
+      "workspace.command.syncGithubSession",
+      { sessionId: session.id, accessToken: token.accessToken },
+      {
+        wait: false,
+      },
+    );
+
+    return result;
   },
 
   async bootstrapAppGithubSession(c: any, input: { accessToken: string; sessionId?: string | null }): Promise<{ sessionId: string; redirectTo: string }> {
@@ -697,7 +896,22 @@ export const workspaceAppActions = {
     const workspace = await getOrCreateWorkspace(c, input.organizationId);
     const organization = await getOrganizationState(workspace);
     if (organization.snapshot.github.syncStatus !== "synced") {
-      return await workspaceAppActions.triggerAppRepoImport(c, input);
+      if (organization.snapshot.github.syncStatus !== "syncing") {
+        await workspace.markOrganizationSyncStarted({
+          label: "Importing repository catalog...",
+        });
+
+        const self = selfWorkspace(c);
+        await self.send(
+          "workspace.command.syncGithubOrganizationRepos",
+          { sessionId: input.sessionId, organizationId: input.organizationId },
+          {
+            wait: false,
+          },
+        );
+      }
+
+      return await buildAppSnapshot(c, input.sessionId);
     }
     return await buildAppSnapshot(c, input.sessionId);
   },
@@ -723,55 +937,24 @@ export const workspaceAppActions = {
     const session = await requireSignedInSession(c, input.sessionId);
     requireEligibleOrganization(session, input.organizationId);
 
-    const { appShell } = getActorRuntimeContext();
     const workspace = await getOrCreateWorkspace(c, input.organizationId);
     const organization = await getOrganizationState(workspace);
+    if (organization.snapshot.github.syncStatus === "syncing") {
+      return await buildAppSnapshot(c, input.sessionId);
+    }
 
     await workspace.markOrganizationSyncStarted({
       label: "Importing repository catalog...",
     });
 
-    try {
-      let repositories;
-      let installationStatus = organization.snapshot.github.installationStatus;
-
-      if (organization.snapshot.kind === "personal") {
-        repositories = await appShell.github.listUserRepositories(session.githubAccessToken);
-        installationStatus = "connected";
-      } else if (organization.githubInstallationId) {
-        try {
-          repositories = await appShell.github.listInstallationRepositories(organization.githubInstallationId);
-        } catch (error) {
-          if (!(error instanceof GitHubAppError) || (error.status !== 403 && error.status !== 404)) {
-            throw error;
-          }
-          repositories = (await appShell.github.listUserRepositories(session.githubAccessToken)).filter((repository) =>
-            repository.fullName.startsWith(`${organization.githubLogin}/`),
-          );
-          installationStatus = "reconnect_required";
-        }
-      } else {
-        repositories = (await appShell.github.listUserRepositories(session.githubAccessToken)).filter((repository) =>
-          repository.fullName.startsWith(`${organization.githubLogin}/`),
-        );
-        installationStatus = "reconnect_required";
-      }
-
-      await workspace.applyOrganizationSyncCompleted({
-        repositories,
-        installationStatus,
-        lastSyncLabel: repositories.length > 0 ? "Synced just now" : "No repositories available",
-      });
-    } catch (error) {
-      const installationStatus =
-        error instanceof GitHubAppError && (error.status === 403 || error.status === 404)
-          ? "reconnect_required"
-          : organization.snapshot.github.installationStatus;
-      await workspace.markOrganizationSyncFailed({
-        message: error instanceof Error ? error.message : "GitHub import failed",
-        installationStatus,
-      });
-    }
+    const self = selfWorkspace(c);
+    await self.send(
+      "workspace.command.syncGithubOrganizationRepos",
+      { sessionId: input.sessionId, organizationId: input.organizationId },
+      {
+        wait: false,
+      },
+    );
 
     return await buildAppSnapshot(c, input.sessionId);
   },
@@ -832,7 +1015,7 @@ export const workspaceAppActions = {
           customerId,
           customerEmail: session.currentUserEmail,
           planId: input.planId,
-          successUrl: `${appShell.appUrl}/api/rivet/app/billing/checkout/complete?organizationId=${encodeURIComponent(
+          successUrl: `${appShell.apiUrl}/v1/billing/checkout/complete?organizationId=${encodeURIComponent(
             input.organizationId,
           )}&foundrySession=${encodeURIComponent(input.sessionId)}&session_id={CHECKOUT_SESSION_ID}`,
           cancelUrl: `${appShell.appUrl}/organizations/${input.organizationId}/billing?foundrySession=${encodeURIComponent(input.sessionId)}`,
@@ -1014,7 +1197,14 @@ export const workspaceAppActions = {
     const accountLogin = body.installation?.account?.login;
     const accountType = body.installation?.account?.type;
     if (!accountLogin) {
-      console.log(`[github-webhook] Ignoring ${event}.${body.action ?? ""}: no installation account`);
+      githubWebhookLogger.info(
+        {
+          event,
+          action: body.action ?? null,
+          reason: "missing_installation_account",
+        },
+        "ignored",
+      );
       return { ok: true };
     }
 
@@ -1022,7 +1212,15 @@ export const workspaceAppActions = {
     const organizationId = organizationWorkspaceId(kind, accountLogin);
 
     if (event === "installation" && (body.action === "created" || body.action === "deleted" || body.action === "suspend" || body.action === "unsuspend")) {
-      console.log(`[github-webhook] ${event}.${body.action} for ${accountLogin} (org=${organizationId})`);
+      githubWebhookLogger.info(
+        {
+          event,
+          action: body.action,
+          accountLogin,
+          organizationId,
+        },
+        "installation_event",
+      );
       if (body.action === "deleted") {
         const workspace = await getOrCreateWorkspace(c, organizationId);
         await workspace.applyGithubInstallationRemoved({});
@@ -1036,8 +1234,16 @@ export const workspaceAppActions = {
     }
 
     if (event === "installation_repositories") {
-      console.log(
-        `[github-webhook] ${event}.${body.action} for ${accountLogin}: +${body.repositories_added?.length ?? 0} -${body.repositories_removed?.length ?? 0}`,
+      githubWebhookLogger.info(
+        {
+          event,
+          action: body.action ?? null,
+          accountLogin,
+          organizationId,
+          repositoriesAdded: body.repositories_added?.length ?? 0,
+          repositoriesRemoved: body.repositories_removed?.length ?? 0,
+        },
+        "repository_membership_changed",
       );
       const workspace = await getOrCreateWorkspace(c, organizationId);
       await workspace.applyGithubRepositoryChanges({
@@ -1063,13 +1269,30 @@ export const workspaceAppActions = {
     ) {
       const repoFullName = body.repository?.full_name;
       if (repoFullName) {
-        console.log(`[github-webhook] ${event}.${body.action ?? ""} for ${repoFullName}`);
+        githubWebhookLogger.info(
+          {
+            event,
+            action: body.action ?? null,
+            accountLogin,
+            organizationId,
+            repoFullName,
+          },
+          "repository_event",
+        );
         // TODO: Dispatch to GitHubStateActor / downstream actors
       }
       return { ok: true };
     }
 
-    console.log(`[github-webhook] Unhandled event: ${event}.${body.action ?? ""}`);
+    githubWebhookLogger.info(
+      {
+        event,
+        action: body.action ?? null,
+        accountLogin,
+        organizationId,
+      },
+      "unhandled_event",
+    );
     return { ok: true };
   },
 

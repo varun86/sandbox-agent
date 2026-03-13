@@ -3,6 +3,7 @@ import { integer, sqliteTable, text } from "rivetkit/db/drizzle";
 // SQLite is per workspace actor instance, so no workspaceId column needed.
 export const providerProfiles = sqliteTable("provider_profiles", {
   providerId: text("provider_id").notNull().primaryKey(),
+  // Structured by the provider profile snapshot returned by provider integrations.
   profileJson: text("profile_json").notNull(),
   updatedAt: integer("updated_at").notNull(),
 });
@@ -80,6 +81,7 @@ export const appSessions = sqliteTable("app_sessions", {
   currentUserEmail: text("current_user_email"),
   currentUserGithubLogin: text("current_user_github_login"),
   currentUserRoleLabel: text("current_user_role_label"),
+  // Structured as a JSON array of eligible organization ids for the session.
   eligibleOrganizationIdsJson: text("eligible_organization_ids_json").notNull(),
   activeOrganizationId: text("active_organization_id"),
   githubAccessToken: text("github_access_token"),

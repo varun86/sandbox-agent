@@ -2,10 +2,17 @@ import { execSync } from "node:child_process";
 import { mkdirSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createFoundryLogger } from "@sandbox-agent/foundry-shared";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const desktopRoot = resolve(__dirname, "..");
 const sidecarDir = resolve(desktopRoot, "src-tauri/sidecars");
+const logger = createFoundryLogger({
+  service: "foundry-desktop-build",
+  bindings: {
+    script: "build-sidecar",
+  },
+});
 
 const isDev = process.argv.includes("--dev");
 
@@ -35,7 +42,7 @@ const targets: Array<{ bunTarget: string; tripleTarget: string }> = isDev
     ];
 
 function run(cmd: string, opts?: { cwd?: string; env?: NodeJS.ProcessEnv }) {
-  console.log(`> ${cmd}`);
+  logger.info({ command: cmd, cwd: opts?.cwd ?? desktopRoot }, "run_command");
   execSync(cmd, {
     stdio: "inherit",
     cwd: opts?.cwd ?? desktopRoot,
@@ -44,7 +51,7 @@ function run(cmd: string, opts?: { cwd?: string; env?: NodeJS.ProcessEnv }) {
 }
 
 // Step 1: Build the backend with tsup
-console.log("\n=== Building backend with tsup ===\n");
+logger.info("building_backend");
 run("pnpm --filter @sandbox-agent/foundry-backend build", {
   cwd: resolve(desktopRoot, "../../.."),
 });
@@ -55,14 +62,14 @@ mkdirSync(sidecarDir, { recursive: true });
 const backendEntry = resolve(desktopRoot, "../backend/dist/index.js");
 
 if (!existsSync(backendEntry)) {
-  console.error(`Backend build output not found at ${backendEntry}`);
+  logger.error({ backendEntry }, "backend_build_output_not_found");
   process.exit(1);
 }
 
 for (const { bunTarget, tripleTarget } of targets) {
   const outfile = resolve(sidecarDir, `foundry-backend-${tripleTarget}`);
-  console.log(`\n=== Compiling sidecar for ${tripleTarget} ===\n`);
+  logger.info({ bunTarget, tripleTarget, outfile }, "compiling_sidecar");
   run(`bun build --compile --target ${bunTarget} ${backendEntry} --outfile ${outfile}`);
 }
 
-console.log("\n=== Sidecar build complete ===\n");
+logger.info({ targets: targets.map((target) => target.tripleTarget) }, "sidecar_build_complete");

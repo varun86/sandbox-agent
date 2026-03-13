@@ -47,12 +47,14 @@ export type AppShellStripeClient = Pick<
 
 export interface AppShellServices {
   appUrl: string;
+  apiUrl: string;
   github: AppShellGithubClient;
   stripe: AppShellStripeClient;
 }
 
 export interface CreateAppShellServicesOptions {
   appUrl?: string;
+  apiUrl?: string;
   github?: AppShellGithubClient;
   stripe?: AppShellStripeClient;
 }
@@ -60,6 +62,7 @@ export interface CreateAppShellServicesOptions {
 export function createDefaultAppShellServices(options: CreateAppShellServicesOptions = {}): AppShellServices {
   return {
     appUrl: (options.appUrl ?? process.env.APP_URL ?? "http://localhost:4173").replace(/\/$/, ""),
+    apiUrl: (options.apiUrl ?? process.env.BETTER_AUTH_URL ?? process.env.APP_URL ?? "http://localhost:7741").replace(/\/$/, ""),
     github: options.github ?? new GitHubAppClient(),
     stripe: options.stripe ?? new StripeAppClient(),
   };

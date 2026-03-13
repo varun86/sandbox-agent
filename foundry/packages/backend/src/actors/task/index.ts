@@ -111,6 +111,8 @@ export const task = actor({
   db: taskDb,
   queues: Object.fromEntries(TASK_QUEUE_NAMES.map((name) => [name, queue()])),
   options: {
+    name: "Task",
+    icon: "wrench",
     actionTimeout: 5 * 60_000,
   },
   createState: (_c, input: TaskInput) => ({

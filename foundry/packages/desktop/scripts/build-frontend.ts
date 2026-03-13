@@ -2,15 +2,22 @@ import { execSync } from "node:child_process";
 import { cpSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createFoundryLogger } from "@sandbox-agent/foundry-shared";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const desktopRoot = resolve(__dirname, "..");
 const repoRoot = resolve(desktopRoot, "../../..");
 const frontendDist = resolve(desktopRoot, "../frontend/dist");
 const destDir = resolve(desktopRoot, "frontend-dist");
+const logger = createFoundryLogger({
+  service: "foundry-desktop-build",
+  bindings: {
+    script: "build-frontend",
+  },
+});
 
 function run(cmd: string, opts?: { cwd?: string; env?: NodeJS.ProcessEnv }) {
-  console.log(`> ${cmd}`);
+  logger.info({ command: cmd, cwd: opts?.cwd ?? repoRoot }, "run_command");
   execSync(cmd, {
     stdio: "inherit",
     cwd: opts?.cwd ?? repoRoot,
@@ -19,15 +26,15 @@ function run(cmd: string, opts?: { cwd?: string; env?: NodeJS.ProcessEnv }) {
 }
 
 // Step 1: Build the frontend with the desktop-specific backend endpoint
-console.log("\n=== Building frontend for desktop ===\n");
+logger.info("building_frontend");
 run("pnpm --filter @sandbox-agent/foundry-frontend build", {
   env: {
-    VITE_HF_BACKEND_ENDPOINT: "http://127.0.0.1:7741/api/rivet",
+    VITE_HF_BACKEND_ENDPOINT: "http://127.0.0.1:7741/v1/rivet",
   },
 });
 
 // Step 2: Copy dist to frontend-dist/
-console.log("\n=== Copying frontend build output ===\n");
+logger.info({ frontendDist, destDir }, "copying_frontend_dist");
 if (existsSync(destDir)) {
   rmSync(destDir, { recursive: true });
 }
@@ -39,4 +46,4 @@ let html = readFileSync(indexPath, "utf-8");
 html = html.replace(/<script\s+src="https:\/\/unpkg\.com\/react-scan\/dist\/auto\.global\.js"[^>]*><\/script>\s*/g, "");
 writeFileSync(indexPath, html);
 
-console.log("\n=== Frontend build complete ===\n");
+logger.info({ indexPath }, "frontend_build_complete");

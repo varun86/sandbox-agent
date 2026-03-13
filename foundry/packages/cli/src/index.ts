@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { AgentTypeSchema, CreateTaskInputSchema, type TaskRecord } from "@sandbox-agent/foundry-shared";
 import { readBackendMetadata, createBackendClientFromConfig, formatRelativeAge, groupTaskStatus, summarizeTasks } from "@sandbox-agent/foundry-client";
 import { ensureBackendRunning, getBackendStatus, parseBackendPort, stopBackend } from "./backend/manager.js";
+import { writeStderr, writeStdout } from "./io.js";
 import { openEditorForTask } from "./task-editor.js";
 import { spawnCreateTmuxWindow } from "./tmux.js";
 import { loadConfig, resolveWorkspace, saveConfig } from "./workspace/config.js";
@@ -87,7 +88,7 @@ function positionals(args: string[]): string[] {
 }
 
 function printUsage(): void {
-  console.log(`
+  writeStdout(`
 Usage:
   hf backend start [--host HOST] [--port PORT]
   hf backend stop [--host HOST] [--port PORT]
@@ -120,7 +121,7 @@ Tips:
 }
 
 function printStatusUsage(): void {
-  console.log(`
+  writeStdout(`
 Usage:
   hf status [--workspace WS] [--json]
 
@@ -146,7 +147,7 @@ JSON Output:
 }
 
 function printHistoryUsage(): void {
-  console.log(`
+  writeStdout(`
 Usage:
   hf history [--workspace WS] [--limit N] [--branch NAME] [--task ID] [--json]
 
@@ -195,13 +196,13 @@ async function handleBackend(args: string[]): Promise<void> {
     const pid = status.pid ?? "unknown";
     const version = status.version ?? "unknown";
     const stale = status.running && !status.versionCurrent ? " [outdated]" : "";
-    console.log(`running=true pid=${pid} version=${version}${stale} log=${status.logPath}`);
+    writeStdout(`running=true pid=${pid} version=${version}${stale} log=${status.logPath}`);
     return;
   }
 
   if (sub === "stop") {
     await stopBackend(host, port);
-    console.log(`running=false host=${host} port=${port}`);
+    writeStdout(`running=false host=${host} port=${port}`);
     return;
   }
 
@@ -210,21 +211,21 @@ async function handleBackend(args: string[]): Promise<void> {
     const pid = status.pid ?? "unknown";
     const version = status.version ?? "unknown";
     const stale = status.running && !status.versionCurrent ? " [outdated]" : "";
-    console.log(`running=${status.running} pid=${pid} version=${version}${stale} host=${host} port=${port} log=${status.logPath}`);
+    writeStdout(`running=${status.running} pid=${pid} version=${version}${stale} host=${host} port=${port} log=${status.logPath}`);
     return;
   }
 
   if (sub === "inspect") {
     await ensureBackendRunning(backendConfig);
     const metadata = await readBackendMetadata({
-      endpoint: `http://${host}:${port}/api/rivet`,
+      endpoint: `http://${host}:${port}/v1/rivet`,
       timeoutMs: 4_000,
     });
     const managerEndpoint = metadata.clientEndpoint ?? `http://${host}:${port}`;
     const inspectorUrl = `https://inspect.rivet.dev?u=${encodeURIComponent(managerEndpoint)}`;
     const openCmd = process.platform === "darwin" ? "open" : "xdg-open";
     spawnSync(openCmd, [inspectorUrl], { stdio: "ignore" });
-    console.log(inspectorUrl);
+    writeStdout(inspectorUrl);
     return;
   }
 
@@ -253,7 +254,7 @@ async function handleWorkspace(args: string[]): Promise<void> {
     // Backend may not be running yet. Config is already updated.
   }
 
-  console.log(`workspace=${name}`);
+  writeStdout(`workspace=${name}`);
 }
 
 async function handleList(args: string[]): Promise<void> {
@@ -265,12 +266,12 @@ async function handleList(args: string[]): Promise<void> {
   const rows = await client.listTasks(workspaceId);
 
   if (format === "json") {
-    console.log(JSON.stringify(rows, null, 2));
+    writeStdout(JSON.stringify(rows, null, 2));
     return;
   }
 
   if (rows.length === 0) {
-    console.log("no tasks");
+    writeStdout("no tasks");
     return;
   }
 
@@ -281,7 +282,7 @@ async function handleList(args: string[]): Promise<void> {
       const task = row.task.length > 60 ? `${row.task.slice(0, 57)}...` : row.task;
       line += `\t${row.title}\t${task}\t${row.activeSessionId ?? "-"}\t${row.activeSandboxId ?? "-"}`;
     }
-    console.log(line);
+    writeStdout(line);
   }
 }
 
@@ -294,7 +295,7 @@ async function handlePush(args: string[]): Promise<void> {
   const workspaceId = resolveWorkspace(readOption(args, "--workspace"), config);
   const client = createBackendClientFromConfig(config);
   await client.runAction(workspaceId, taskId, "push");
-  console.log("ok");
+  writeStdout("ok");
 }
 
 async function handleSync(args: string[]): Promise<void> {
@@ -306,7 +307,7 @@ async function handleSync(args: string[]): Promise<void> {
   const workspaceId = resolveWorkspace(readOption(args, "--workspace"), config);
   const client = createBackendClientFromConfig(config);
   await client.runAction(workspaceId, taskId, "sync");
-  console.log("ok");
+  writeStdout("ok");
 }
 
 async function handleKill(args: string[]): Promise<void> {
@@ -320,15 +321,15 @@ async function handleKill(args: string[]): Promise<void> {
   const abandon = hasFlag(args, "--abandon");
 
   if (deleteBranch) {
-    console.log("info: --delete-branch flag set, branch will be deleted after kill");
+    writeStdout("info: --delete-branch flag set, branch will be deleted after kill");
   }
   if (abandon) {
-    console.log("info: --abandon flag set, Graphite abandon will be attempted");
+    writeStdout("info: --abandon flag set, Graphite abandon will be attempted");
   }
 
   const client = createBackendClientFromConfig(config);
   await client.runAction(workspaceId, taskId, "kill");
-  console.log("ok");
+  writeStdout("ok");
 }
 
 async function handlePrune(args: string[]): Promise<void> {
@@ -341,26 +342,26 @@ async function handlePrune(args: string[]): Promise<void> {
   const prunable = rows.filter((r) => r.status === "archived" || r.status === "killed");
 
   if (prunable.length === 0) {
-    console.log("nothing to prune");
+    writeStdout("nothing to prune");
     return;
   }
 
   for (const row of prunable) {
     const age = formatRelativeAge(row.updatedAt);
-    console.log(`${dryRun ? "[dry-run] " : ""}${row.taskId}\t${row.branchName}\t${row.status}\t${age}`);
+    writeStdout(`${dryRun ? "[dry-run] " : ""}${row.taskId}\t${row.branchName}\t${row.status}\t${age}`);
   }
 
   if (dryRun) {
-    console.log(`\n${prunable.length} task(s) would be pruned`);
+    writeStdout(`\n${prunable.length} task(s) would be pruned`);
     return;
   }
 
   if (!yes) {
-    console.log("\nnot yet implemented: auto-pruning requires confirmation");
+    writeStdout("\nnot yet implemented: auto-pruning requires confirmation");
     return;
   }
 
-  console.log(`\n${prunable.length} task(s) would be pruned (pruning not yet implemented)`);
+  writeStdout(`\n${prunable.length} task(s) would be pruned (pruning not yet implemented)`);
 }
 
 async function handleStatusline(args: string[]): Promise<void> {
@@ -375,11 +376,11 @@ async function handleStatusline(args: string[]): Promise<void> {
   const errorCount = summary.byStatus.error;
 
   if (format === "claude-code") {
-    console.log(`hf:${running}R/${idle}I/${errorCount}E`);
+    writeStdout(`hf:${running}R/${idle}I/${errorCount}E`);
     return;
   }
 
-  console.log(`running=${running} idle=${idle} error=${errorCount}`);
+  writeStdout(`running=${running} idle=${idle} error=${errorCount}`);
 }
 
 async function handleDb(args: string[]): Promise<void> {
@@ -387,12 +388,12 @@ async function handleDb(args: string[]): Promise<void> {
   if (sub === "path") {
     const config = loadConfig();
     const dbPath = config.backend.dbPath.replace(/^~/, homedir());
-    console.log(dbPath);
+    writeStdout(dbPath);
     return;
   }
 
   if (sub === "nuke") {
-    console.log("WARNING: hf db nuke would delete the entire database. This is a placeholder and does not delete anything.");
+    writeStdout("WARNING: hf db nuke would delete the entire database. This is a placeholder and does not delete anything.");
     return;
   }
 
@@ -465,12 +466,12 @@ async function handleCreate(args: string[]): Promise<void> {
   const switched = await client.switchTask(workspaceId, task.taskId);
   const attached = await client.attachTask(workspaceId, task.taskId);
 
-  console.log(`Branch:   ${task.branchName ?? "-"}`);
-  console.log(`Task:  ${task.taskId}`);
-  console.log(`Provider: ${task.providerId}`);
-  console.log(`Session:  ${attached.sessionId ?? "none"}`);
-  console.log(`Target:   ${switched.switchTarget || attached.target}`);
-  console.log(`Title:    ${task.title ?? "-"}`);
+  writeStdout(`Branch:   ${task.branchName ?? "-"}`);
+  writeStdout(`Task:  ${task.taskId}`);
+  writeStdout(`Provider: ${task.providerId}`);
+  writeStdout(`Session:  ${attached.sessionId ?? "none"}`);
+  writeStdout(`Target:   ${switched.switchTarget || attached.target}`);
+  writeStdout(`Title:    ${task.title ?? "-"}`);
 
   const tmuxResult = spawnCreateTmuxWindow({
     branchName: task.branchName ?? task.taskId,
@@ -479,14 +480,14 @@ async function handleCreate(args: string[]): Promise<void> {
   });
 
   if (tmuxResult.created) {
-    console.log(`Window:   created (${task.branchName})`);
+    writeStdout(`Window:   created (${task.branchName})`);
     return;
   }
 
-  console.log("");
-  console.log(`Run: hf switch ${task.taskId}`);
+  writeStdout("");
+  writeStdout(`Run: hf switch ${task.taskId}`);
   if ((switched.switchTarget || attached.target).startsWith("/")) {
-    console.log(`cd ${switched.switchTarget || attached.target}`);
+    writeStdout(`cd ${switched.switchTarget || attached.target}`);
   }
 }
 
@@ -510,7 +511,7 @@ async function handleStatus(args: string[]): Promise<void> {
   const summary = summarizeTasks(rows);
 
   if (hasFlag(args, "--json")) {
-    console.log(
+    writeStdout(
       JSON.stringify(
         {
           workspaceId,
@@ -528,16 +529,16 @@ async function handleStatus(args: string[]): Promise<void> {
     return;
   }
 
-  console.log(`workspace=${workspaceId}`);
-  console.log(`backend running=${backendStatus.running} pid=${backendStatus.pid ?? "unknown"} version=${backendStatus.version ?? "unknown"}`);
-  console.log(`tasks total=${summary.total}`);
-  console.log(
+  writeStdout(`workspace=${workspaceId}`);
+  writeStdout(`backend running=${backendStatus.running} pid=${backendStatus.pid ?? "unknown"} version=${backendStatus.version ?? "unknown"}`);
+  writeStdout(`tasks total=${summary.total}`);
+  writeStdout(
     `status queued=${summary.byStatus.queued} running=${summary.byStatus.running} idle=${summary.byStatus.idle} archived=${summary.byStatus.archived} killed=${summary.byStatus.killed} error=${summary.byStatus.error}`,
   );
   const providerSummary = Object.entries(summary.byProvider)
     .map(([provider, count]) => `${provider}=${count}`)
     .join(" ");
-  console.log(`providers ${providerSummary || "-"}`);
+  writeStdout(`providers ${providerSummary || "-"}`);
 }
 
 async function handleHistory(args: string[]): Promise<void> {
@@ -560,12 +561,12 @@ async function handleHistory(args: string[]): Promise<void> {
   });
 
   if (hasFlag(args, "--json")) {
-    console.log(JSON.stringify(rows, null, 2));
+    writeStdout(JSON.stringify(rows, null, 2));
     return;
   }
 
   if (rows.length === 0) {
-    console.log("no events");
+    writeStdout("no events");
     return;
   }
 
@@ -576,7 +577,7 @@ async function handleHistory(args: string[]): Promise<void> {
     if (payload.length > 120) {
       payload = `${payload.slice(0, 117)}...`;
     }
-    console.log(`${ts}\t${row.kind}\t${target}\t${payload}`);
+    writeStdout(`${ts}\t${row.kind}\t${target}\t${payload}`);
   }
 }
 
@@ -611,19 +612,19 @@ async function handleSwitchLike(cmd: string, args: string[]): Promise<void> {
 
   if (cmd === "switch") {
     const result = await client.switchTask(workspaceId, taskId);
-    console.log(`cd ${result.switchTarget}`);
+    writeStdout(`cd ${result.switchTarget}`);
     return;
   }
 
   if (cmd === "attach") {
     const result = await client.attachTask(workspaceId, taskId);
-    console.log(`target=${result.target} session=${result.sessionId ?? "none"}`);
+    writeStdout(`target=${result.target} session=${result.sessionId ?? "none"}`);
     return;
   }
 
   if (cmd === "merge" || cmd === "archive") {
     await client.runAction(workspaceId, taskId, cmd);
-    console.log("ok");
+    writeStdout("ok");
     return;
   }
 
@@ -726,6 +727,6 @@ async function main(): Promise<void> {
 
 main().catch((err: unknown) => {
   const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
-  console.error(msg);
+  writeStderr(msg);
   process.exit(1);
 });

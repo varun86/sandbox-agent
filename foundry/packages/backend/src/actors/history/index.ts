@@ -65,6 +65,10 @@ export const history = actor({
   queues: {
     "history.command.append": queue(),
   },
+  options: {
+    name: "History",
+    icon: "database",
+  },
   createState: (_c, input: HistoryInput) => ({
     workspaceId: input.workspaceId,
     repoId: input.repoId,

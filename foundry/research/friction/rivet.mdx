@@ -1,5 +1,35 @@
 # Rivet Friction Log
 
+## 2026-03-12 - 63df393
+
+### What I Was Working On
+
+Resolving GitHub OAuth callback failures caused by stale actor state after squashing Drizzle migrations.
+
+### Friction / Issue
+
+1. **Squashing Drizzle migrations breaks existing actors on Rivet Cloud.** When Drizzle migrations are squashed into a new baseline (`0000_*.sql`), the squashed migration has a different hash/name than the original migrations tracked in each actor's `__drizzle_migrations` journal table. On next wake, Drizzle sees the squashed baseline as a "new" migration and attempts to re-run `CREATE TABLE` statements, which fail because the tables already exist. This silently poisons the actor — RivetKit wraps the migration error as a generic "Internal error" on the action response, making root-cause diagnosis difficult.
+
+2. **No programmatic way to list or destroy actors on Rivet Cloud without the service key.** The public runner token (`pk_*`) lacks permissions for actor management (list/destroy). The Cloud API token (`cloud_api_*`) in our `.env` was returning "token not found". The actual working token format is the service key (`sk_*`) from the namespace connection URL. This was not documented — the destroy docs reference "admin tokens" which are described as "currently not supported on Rivet Cloud" ([#3530](https://github.com/rivet-dev/rivet/issues/3530)), but the `sk_*` token works. The disconnect between the docs and reality cost significant debugging time.
+
+3. **Actor errors during `getOrCreate` are opaque.** When the `workspace.completeAppGithubAuth` action triggered `getOrCreate` for org workspace actors, the migration failure inside the newly-woken actor was surfaced as `"Internal error"` with no indication that it was a migration/schema issue. The actual error (`table already exists`) was only visible in actor-level logs, not in the action response or the calling backend's logs.
+
+### Attempted Fix / Workaround
+
+1. Initially tried adding `IF NOT EXISTS` to all `CREATE TABLE`/`CREATE UNIQUE INDEX` statements in the squashed baseline migrations. This masked the symptom but violated Drizzle's migration tracking contract — the journal would still be inconsistent.
+
+2. Reverted the `IF NOT EXISTS` hack and instead destroyed all stale actors via the Rivet Cloud API (`DELETE /actors/{actorId}?namespace={ns}` with the `sk_*` service key). Fresh actors get a clean migration journal matching the squashed baseline.
+
+### Outcome
+
+- All 4 stale workspace actors destroyed (3 org workspaces + 1 old v2-prefixed app workspace).
+- Reverted `IF NOT EXISTS` migration changes so Drizzle migrations remain standard.
+- After redeploy, new actors will be created fresh with the correct squashed migration journal.
+- **RivetKit improvement opportunities:**
+  - Surface migration errors in action responses instead of generic "Internal error".
+  - Document the `sk_*` service key as the correct token for actor management API calls, or make `cloud_api_*` tokens work.
+  - Consider a migration reconciliation mode for Drizzle actors that detects "tables exist but journal doesn't match" and adopts the current schema state instead of failing.
+
 ## 2026-02-18 - uncommitted
 
 ### What I Was Working On

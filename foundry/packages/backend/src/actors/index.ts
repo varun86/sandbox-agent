@@ -7,8 +7,20 @@ import { projectPrSync } from "./project-pr-sync/index.js";
 import { project } from "./project/index.js";
 import { sandboxInstance } from "./sandbox-instance/index.js";
 import { workspace } from "./workspace/index.js";
+import { logger } from "../logging.js";
+
+const RUNNER_VERSION = Math.floor(Date.now() / 1000);
 
 export const registry = setup({
+  serverless: {
+    basePath: "/v1/rivet",
+  },
+  runner: {
+    version: RUNNER_VERSION,
+  },
+  logging: {
+    baseLogger: logger,
+  },
   use: {
     workspace,
     project,

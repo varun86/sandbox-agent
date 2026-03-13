@@ -29,6 +29,7 @@ WorkspaceActor
 - Branch rename is a real git operation, not just metadata.
 - `SandboxInstanceActor` stays separate from `TaskActor`; tasks/sessions reference it by identity.
 - Sync actors are polling workers only. They feed parent actors and should not become the source of truth.
+- When a backend request path must aggregate multiple independent actor calls or reads, prefer bounded parallelism over sequential fan-out when correctness permits. Do not serialize independent work by default.
 
 ## Maintenance
 

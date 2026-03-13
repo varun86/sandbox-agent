@@ -126,6 +126,8 @@ export const projectBranchSync = actor({
     [CONTROL.force]: queue(),
   },
   options: {
+    name: "Project Branch Sync",
+    icon: "code-branch",
     // Polling actors rely on timer-based wakeups; sleeping would pause the timer and stop polling.
     noSleep: true,
   },

@@ -1,8 +1,21 @@
 import { describe, expect, it } from "vitest";
-import type { TaskWorkbenchSnapshot, WorkbenchAgentTab, WorkbenchTask, WorkbenchModelId, WorkbenchTranscriptEvent } from "@sandbox-agent/foundry-shared";
+import {
+  createFoundryLogger,
+  type TaskWorkbenchSnapshot,
+  type WorkbenchAgentTab,
+  type WorkbenchTask,
+  type WorkbenchModelId,
+  type WorkbenchTranscriptEvent,
+} from "@sandbox-agent/foundry-shared";
 import { createBackendClient } from "../../src/backend-client.js";
 
 const RUN_WORKBENCH_LOAD_E2E = process.env.HF_ENABLE_DAEMON_WORKBENCH_LOAD_E2E === "1";
+const logger = createFoundryLogger({
+  service: "foundry-client-e2e",
+  bindings: {
+    suite: "workbench-load",
+  },
+});
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -175,7 +188,7 @@ async function measureWorkbenchSnapshot(
 
 describe("e2e(client): workbench load", () => {
   it.skipIf(!RUN_WORKBENCH_LOAD_E2E)("runs a simple sequential load profile against the real backend", { timeout: 30 * 60_000 }, async () => {
-    const endpoint = process.env.HF_E2E_BACKEND_ENDPOINT?.trim() || "http://127.0.0.1:7741/api/rivet";
+    const endpoint = process.env.HF_E2E_BACKEND_ENDPOINT?.trim() || "http://127.0.0.1:7741/v1/rivet";
     const workspaceId = process.env.HF_E2E_WORKSPACE?.trim() || "default";
     const repoRemote = requiredEnv("HF_E2E_GITHUB_REPO");
     const model = workbenchModelEnv("HF_E2E_MODEL", "gpt-4o");
@@ -269,12 +282,12 @@ describe("e2e(client): workbench load", () => {
 
       const snapshotMetrics = await measureWorkbenchSnapshot(client, workspaceId, 3);
       snapshotSeries.push(snapshotMetrics);
-      console.info(
-        "[workbench-load-snapshot]",
-        JSON.stringify({
+      logger.info(
+        {
           taskIndex: taskIndex + 1,
           ...snapshotMetrics,
-        }),
+        },
+        "workbench_load_snapshot",
       );
     }
 
@@ -296,7 +309,7 @@ describe("e2e(client): workbench load", () => {
       snapshotTranscriptFinalCount: lastSnapshot.transcriptEventCount,
     };
 
-    console.info("[workbench-load-summary]", JSON.stringify(summary));
+    logger.info(summary, "workbench_load_summary");
 
     expect(createTaskLatencies.length).toBe(taskCount);
     expect(provisionLatencies.length).toBe(taskCount);

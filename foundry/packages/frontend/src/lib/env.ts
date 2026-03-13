@@ -12,9 +12,9 @@ declare global {
 
 function resolveDefaultBackendEndpoint(): string {
   if (typeof window !== "undefined" && window.location?.origin) {
-    return `${window.location.origin}/api/rivet`;
+    return `${window.location.origin}/v1/rivet`;
   }
-  return "http://127.0.0.1:7741/api/rivet";
+  return "http://127.0.0.1:7741/v1/rivet";
 }
 
 type FrontendImportMetaEnv = ImportMetaEnv & {

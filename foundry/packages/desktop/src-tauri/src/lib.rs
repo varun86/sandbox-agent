@@ -14,7 +14,7 @@ fn get_backend_url() -> String {
 
 #[tauri::command]
 async fn backend_health() -> Result<bool, String> {
-    match reqwest::get("http://127.0.0.1:7741/api/rivet/metadata").await {
+    match reqwest::get("http://127.0.0.1:7741/v1/rivet/metadata").await {
         Ok(resp) => Ok(resp.status().is_success()),
         Err(_) => Ok(false),
     }
@@ -32,7 +32,7 @@ async fn wait_for_backend(timeout_secs: u64) -> Result<(), String> {
             ));
         }
 
-        match reqwest::get("http://127.0.0.1:7741/api/rivet/metadata").await {
+        match reqwest::get("http://127.0.0.1:7741/v1/rivet/metadata").await {
             Ok(resp) if resp.status().is_success() => return Ok(()),
             _ => {}
         }

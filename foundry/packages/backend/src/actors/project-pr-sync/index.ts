@@ -46,6 +46,8 @@ export const projectPrSync = actor({
     [CONTROL.force]: queue(),
   },
   options: {
+    name: "Project PR Sync",
+    icon: "code-merge",
     // Polling actors rely on timer-based wakeups; sleeping would pause the timer and stop polling.
     noSleep: true,
   },

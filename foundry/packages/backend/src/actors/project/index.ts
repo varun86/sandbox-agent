@@ -13,6 +13,8 @@ export const project = actor({
   db: projectDb,
   queues: Object.fromEntries(PROJECT_QUEUE_NAMES.map((name) => [name, queue()])),
   options: {
+    name: "Project",
+    icon: "folder",
     actionTimeout: 5 * 60_000,
   },
   createState: (_c, input: ProjectInput) => ({

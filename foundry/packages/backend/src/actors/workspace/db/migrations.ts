@@ -6,68 +6,8 @@ const journal = {
   entries: [
     {
       idx: 0,
-      when: 1770924376525,
-      tag: "0000_rare_iron_man",
-      breakpoints: true,
-    },
-    {
-      idx: 1,
-      when: 1770947252912,
-      tag: "0001_sleepy_lady_deathstrike",
-      breakpoints: true,
-    },
-    {
-      idx: 2,
-      when: 1772668800000,
-      tag: "0002_tiny_silver_surfer",
-      breakpoints: true,
-    },
-    {
-      idx: 3,
-      when: 1773100800000,
-      tag: "0003_app_shell_organization_profile",
-      breakpoints: true,
-    },
-    {
-      idx: 4,
-      when: 1773100800001,
-      tag: "0004_app_shell_organization_members",
-      breakpoints: true,
-    },
-    {
-      idx: 5,
-      when: 1773100800002,
-      tag: "0005_app_shell_seat_assignments",
-      breakpoints: true,
-    },
-    {
-      idx: 6,
-      when: 1773100800003,
-      tag: "0006_app_shell_invoices",
-      breakpoints: true,
-    },
-    {
-      idx: 7,
-      when: 1773100800004,
-      tag: "0007_app_shell_sessions",
-      breakpoints: true,
-    },
-    {
-      idx: 8,
-      when: 1773100800005,
-      tag: "0008_app_shell_stripe_lookup",
-      breakpoints: true,
-    },
-    {
-      idx: 9,
-      when: 1773100800006,
-      tag: "0009_github_sync_status",
-      breakpoints: true,
-    },
-    {
-      idx: 10,
-      when: 1772928000000,
-      tag: "0010_app_session_starter_repo",
+      when: 1773376221152,
+      tag: "0000_melted_viper",
       breakpoints: true,
     },
   ],
@@ -76,77 +16,7 @@ const journal = {
 export default {
   journal,
   migrations: {
-    m0000: `CREATE TABLE \`provider_profiles\` (
-	\`provider_id\` text PRIMARY KEY NOT NULL,
-	\`profile_json\` text NOT NULL,
-	\`updated_at\` integer NOT NULL
-);
-`,
-    m0001: `CREATE TABLE \`repos\` (
-	\`repo_id\` text PRIMARY KEY NOT NULL,
-	\`remote_url\` text NOT NULL,
-	\`created_at\` integer NOT NULL,
-	\`updated_at\` integer NOT NULL
-);
-`,
-    m0002: `CREATE TABLE \`task_lookup\` (
-	\`task_id\` text PRIMARY KEY NOT NULL,
-	\`repo_id\` text NOT NULL
-);
-`,
-    m0003: `CREATE TABLE \`organization_profile\` (
-	\`id\` text PRIMARY KEY NOT NULL,
-	\`kind\` text NOT NULL,
-	\`github_account_id\` text NOT NULL,
-	\`github_login\` text NOT NULL,
-	\`github_account_type\` text NOT NULL,
-	\`display_name\` text NOT NULL,
-	\`slug\` text NOT NULL,
-	\`primary_domain\` text NOT NULL,
-	\`default_model\` text NOT NULL,
-	\`auto_import_repos\` integer NOT NULL,
-	\`repo_import_status\` text NOT NULL,
-	\`github_connected_account\` text NOT NULL,
-	\`github_installation_status\` text NOT NULL,
-	\`github_installation_id\` integer,
-	\`github_last_sync_label\` text NOT NULL,
-	\`stripe_customer_id\` text,
-	\`stripe_subscription_id\` text,
-	\`stripe_price_id\` text,
-	\`billing_plan_id\` text NOT NULL,
-	\`billing_status\` text NOT NULL,
-	\`billing_seats_included\` integer NOT NULL,
-	\`billing_trial_ends_at\` text,
-	\`billing_renewal_at\` text,
-	\`billing_payment_method_label\` text NOT NULL,
-	\`created_at\` integer NOT NULL,
-	\`updated_at\` integer NOT NULL
-);
-`,
-    m0004: `CREATE TABLE \`organization_members\` (
-	\`id\` text PRIMARY KEY NOT NULL,
-	\`name\` text NOT NULL,
-	\`email\` text NOT NULL,
-	\`role\` text NOT NULL,
-	\`state\` text NOT NULL,
-	\`updated_at\` integer NOT NULL
-);
-`,
-    m0005: `CREATE TABLE \`seat_assignments\` (
-	\`email\` text PRIMARY KEY NOT NULL,
-	\`created_at\` integer NOT NULL
-);
-`,
-    m0006: `CREATE TABLE \`invoices\` (
-	\`id\` text PRIMARY KEY NOT NULL,
-	\`label\` text NOT NULL,
-	\`issued_at\` text NOT NULL,
-	\`amount_usd\` integer NOT NULL,
-	\`status\` text NOT NULL,
-	\`created_at\` integer NOT NULL
-);
-`,
-    m0007: `CREATE TABLE \`app_sessions\` (
+    m0000: `CREATE TABLE \`app_sessions\` (
 	\`id\` text PRIMARY KEY NOT NULL,
 	\`current_user_id\` text,
 	\`current_user_name\` text,
@@ -165,23 +35,84 @@ export default {
 	\`created_at\` integer NOT NULL,
 	\`updated_at\` integer NOT NULL
 );
-`,
-    m0008: `CREATE TABLE \`stripe_lookup\` (
+--> statement-breakpoint
+CREATE TABLE \`invoices\` (
+	\`id\` text PRIMARY KEY NOT NULL,
+	\`label\` text NOT NULL,
+	\`issued_at\` text NOT NULL,
+	\`amount_usd\` integer NOT NULL,
+	\`status\` text NOT NULL,
+	\`created_at\` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE \`organization_members\` (
+	\`id\` text PRIMARY KEY NOT NULL,
+	\`name\` text NOT NULL,
+	\`email\` text NOT NULL,
+	\`role\` text NOT NULL,
+	\`state\` text NOT NULL,
+	\`updated_at\` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE \`organization_profile\` (
+	\`id\` text PRIMARY KEY NOT NULL,
+	\`kind\` text NOT NULL,
+	\`github_account_id\` text NOT NULL,
+	\`github_login\` text NOT NULL,
+	\`github_account_type\` text NOT NULL,
+	\`display_name\` text NOT NULL,
+	\`slug\` text NOT NULL,
+	\`primary_domain\` text NOT NULL,
+	\`default_model\` text NOT NULL,
+	\`auto_import_repos\` integer NOT NULL,
+	\`repo_import_status\` text NOT NULL,
+	\`github_connected_account\` text NOT NULL,
+	\`github_installation_status\` text NOT NULL,
+	\`github_sync_status\` text NOT NULL,
+	\`github_installation_id\` integer,
+	\`github_last_sync_label\` text NOT NULL,
+	\`github_last_sync_at\` integer,
+	\`stripe_customer_id\` text,
+	\`stripe_subscription_id\` text,
+	\`stripe_price_id\` text,
+	\`billing_plan_id\` text NOT NULL,
+	\`billing_status\` text NOT NULL,
+	\`billing_seats_included\` integer NOT NULL,
+	\`billing_trial_ends_at\` text,
+	\`billing_renewal_at\` text,
+	\`billing_payment_method_label\` text NOT NULL,
+	\`created_at\` integer NOT NULL,
+	\`updated_at\` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE \`provider_profiles\` (
+	\`provider_id\` text PRIMARY KEY NOT NULL,
+	\`profile_json\` text NOT NULL,
+	\`updated_at\` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE \`repos\` (
+	\`repo_id\` text PRIMARY KEY NOT NULL,
+	\`remote_url\` text NOT NULL,
+	\`created_at\` integer NOT NULL,
+	\`updated_at\` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE \`seat_assignments\` (
+	\`email\` text PRIMARY KEY NOT NULL,
+	\`created_at\` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE \`stripe_lookup\` (
 	\`lookup_key\` text PRIMARY KEY NOT NULL,
 	\`organization_id\` text NOT NULL,
 	\`updated_at\` integer NOT NULL
 );
-`,
-    m0009: `ALTER TABLE \`organization_profile\` ADD COLUMN \`github_sync_status\` text NOT NULL DEFAULT 'pending';
-ALTER TABLE \`organization_profile\` ADD COLUMN \`github_last_sync_at\` integer;
-UPDATE \`organization_profile\`
-SET \`github_sync_status\` = CASE
-  WHEN \`repo_import_status\` = 'ready' THEN 'synced'
-  WHEN \`repo_import_status\` = 'importing' THEN 'syncing'
-  ELSE 'pending'
-END;
-`,
-    m0010: `-- no-op: starter_repo_* columns are already present in m0007 app_sessions
+--> statement-breakpoint
+CREATE TABLE \`task_lookup\` (
+	\`task_id\` text PRIMARY KEY NOT NULL,
+	\`repo_id\` text NOT NULL
+);
 `,
   } as const,
 };

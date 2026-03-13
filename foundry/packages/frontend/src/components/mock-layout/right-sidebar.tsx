@@ -4,6 +4,8 @@ import { LabelSmall } from "baseui/typography";
 import { Archive, ArrowUpFromLine, ChevronRight, FileCode, FilePlus, FileX, FolderOpen, GitPullRequest, PanelRight } from "lucide-react";
 
 import { useFoundryTokens } from "../../app/theme";
+import { createErrorContext } from "@sandbox-agent/foundry-shared";
+import { logger } from "../../logging.js";
 import { type ContextMenuItem, ContextMenuOverlay, PanelHeaderBar, SPanel, ScrollBody, useContextMenu } from "./ui";
 import { type FileTreeNode, type Task, diffTabId } from "./view-model";
 
@@ -131,7 +133,13 @@ export const RightSidebar = memo(function RightSidebar({
 
       await window.navigator.clipboard.writeText(path);
     } catch (error) {
-      console.error("Failed to copy file path", error);
+      logger.error(
+        {
+          path,
+          ...createErrorContext(error),
+        },
+        "failed_to_copy_file_path",
+      );
     }
   }, []);
 

@@ -111,6 +111,7 @@
 
 ## Change Tracking
 
+- If the user asks to "push" changes, treat that as permission to commit and push all current workspace changes, not a hand-picked subset, unless the user explicitly scopes the push.
 - Keep CLI subcommands and HTTP endpoints in sync.
 - Update `docs/cli.mdx` when CLI behavior changes.
 - Regenerate `docs/openapi.json` when HTTP contracts change.
