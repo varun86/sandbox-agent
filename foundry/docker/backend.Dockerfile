@@ -1,36 +1,21 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:22-bookworm-slim AS base
+FROM node:22-bookworm-slim AS build
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
 
-FROM base AS deps
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.base.json ./
-COPY packages/shared/package.json packages/shared/package.json
-COPY packages/backend/package.json packages/backend/package.json
-COPY packages/rivetkit-vendor/rivetkit/package.json packages/rivetkit-vendor/rivetkit/package.json
-COPY packages/rivetkit-vendor/workflow-engine/package.json packages/rivetkit-vendor/workflow-engine/package.json
-COPY packages/rivetkit-vendor/traces/package.json packages/rivetkit-vendor/traces/package.json
-COPY packages/rivetkit-vendor/sqlite-vfs/package.json packages/rivetkit-vendor/sqlite-vfs/package.json
-COPY packages/rivetkit-vendor/sqlite-vfs-linux-x64/package.json packages/rivetkit-vendor/sqlite-vfs-linux-x64/package.json
-COPY packages/rivetkit-vendor/sqlite-vfs-linux-arm64/package.json packages/rivetkit-vendor/sqlite-vfs-linux-arm64/package.json
-COPY packages/rivetkit-vendor/sqlite-vfs-darwin-arm64/package.json packages/rivetkit-vendor/sqlite-vfs-darwin-arm64/package.json
-COPY packages/rivetkit-vendor/sqlite-vfs-darwin-x64/package.json packages/rivetkit-vendor/sqlite-vfs-darwin-x64/package.json
-COPY packages/rivetkit-vendor/sqlite-vfs-win32-x64/package.json packages/rivetkit-vendor/sqlite-vfs-win32-x64/package.json
-COPY packages/rivetkit-vendor/runner/package.json packages/rivetkit-vendor/runner/package.json
-COPY packages/rivetkit-vendor/runner-protocol/package.json packages/rivetkit-vendor/runner-protocol/package.json
-COPY packages/rivetkit-vendor/virtual-websocket/package.json packages/rivetkit-vendor/virtual-websocket/package.json
-RUN pnpm fetch --frozen-lockfile --filter @sandbox-agent/foundry-backend...
-
-FROM base AS build
-COPY --from=deps /pnpm/store /pnpm/store
 COPY . .
-RUN pnpm install --frozen-lockfile --prefer-offline --filter @sandbox-agent/foundry-backend...
+
+RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @sandbox-agent/foundry-shared build
+RUN pnpm --filter acp-http-client build
+RUN pnpm --filter @sandbox-agent/cli-shared build
+RUN SKIP_OPENAPI_GEN=1 pnpm --filter sandbox-agent build
+RUN pnpm --filter @sandbox-agent/persist-rivet build
 RUN pnpm --filter @sandbox-agent/foundry-backend build
-RUN pnpm --filter @sandbox-agent/foundry-backend deploy --prod --legacy /out
+RUN pnpm --filter @sandbox-agent/foundry-backend deploy --prod /out
 
 FROM oven/bun:1.2 AS runtime
 ENV NODE_ENV=production
