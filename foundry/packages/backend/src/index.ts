@@ -143,7 +143,7 @@ export async function startBackend(options: BackendStartOptions = {}): Promise<v
     return Response.redirect(result.url, 302);
   });
 
-  app.get("/api/rivet/app/auth/github/callback", async (c) => {
+  const handleGithubAuthCallback = async (c: any) => {
     const code = c.req.query("code");
     const state = c.req.query("state");
     if (!code || !state) {
@@ -152,7 +152,10 @@ export async function startBackend(options: BackendStartOptions = {}): Promise<v
     const result = await appWorkspaceAction(async (workspace) => await workspace.completeAppGithubAuth({ code, state }));
     c.header("x-foundry-session", result.sessionId);
     return Response.redirect(result.redirectTo, 302);
-  });
+  };
+
+  app.get("/api/rivet/app/auth/github/callback", handleGithubAuthCallback);
+  app.get("/api/auth/callback/github", handleGithubAuthCallback);
 
   app.post("/api/rivet/app/sign-out", async (c) => {
     const sessionId = await resolveSessionId(c);
