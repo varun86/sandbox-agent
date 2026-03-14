@@ -5,7 +5,15 @@ import { dirname, resolve } from "node:path";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { InMemorySessionPersistDriver, SandboxAgent, type SessionEvent } from "../src/index.ts";
+import {
+  InMemorySessionPersistDriver,
+  SandboxAgent,
+  type ListEventsRequest,
+  type ListPage,
+  type SessionEvent,
+  type SessionPersistDriver,
+  type SessionRecord,
+} from "../src/index.ts";
 import { spawnSandboxAgent, isNodeRuntime, type SandboxAgentSpawnHandle } from "../src/spawn.ts";
 import { prepareMockAgentDataHome } from "./helpers/mock-agent.ts";
 import WebSocket from "ws";
@@ -38,6 +46,44 @@ if (!process.env.SANDBOX_AGENT_BIN) {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+class StrictUniqueSessionPersistDriver implements SessionPersistDriver {
+  private readonly events = new InMemorySessionPersistDriver({
+    maxEventsPerSession: 500,
+  });
+  private readonly eventIndexesBySession = new Map<string, Set<number>>();
+
+  async getSession(id: string): Promise<SessionRecord | null> {
+    return this.events.getSession(id);
+  }
+
+  async listSessions(request?: { cursor?: string; limit?: number }): Promise<ListPage<SessionRecord>> {
+    return this.events.listSessions(request);
+  }
+
+  async updateSession(session: SessionRecord): Promise<void> {
+    await this.events.updateSession(session);
+  }
+
+  async listEvents(request: ListEventsRequest): Promise<ListPage<SessionEvent>> {
+    return this.events.listEvents(request);
+  }
+
+  async insertEvent(event: SessionEvent): Promise<void> {
+    await sleep(5);
+
+    const indexes = this.eventIndexesBySession.get(event.sessionId) ?? new Set<number>();
+    if (indexes.has(event.eventIndex)) {
+      throw new Error("UNIQUE constraint failed: sandbox_agent_events.session_id, sandbox_agent_events.event_index");
+    }
+
+    indexes.add(event.eventIndex);
+    this.eventIndexesBySession.set(event.sessionId, indexes);
+
+    await sleep(5);
+    await this.events.insertEvent(event);
+  }
 }
 
 async function waitFor<T>(fn: () => T | undefined | null, timeoutMs = 6000, stepMs = 30): Promise<T> {
@@ -204,6 +250,27 @@ describe("Integration: TypeScript SDK flat session API", () => {
     }
 
     off();
+    await sdk.dispose();
+  });
+
+  it("preserves observed event indexes across session creation follow-up calls", async () => {
+    const persist = new StrictUniqueSessionPersistDriver();
+    const sdk = await SandboxAgent.connect({
+      baseUrl,
+      token,
+      persist,
+    });
+
+    const session = await sdk.createSession({ agent: "mock" });
+    const prompt = await session.prompt([{ type: "text", text: "preserve event indexes" }]);
+    expect(prompt.stopReason).toBe("end_turn");
+
+    const events = await waitForAsync(async () => {
+      const page = await sdk.getEvents({ sessionId: session.id, limit: 200 });
+      return page.items.length >= 4 ? page : null;
+    });
+    expect(new Set(events.items.map((event) => event.eventIndex)).size).toBe(events.items.length);
+
     await sdk.dispose();
   });
 

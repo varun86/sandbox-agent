@@ -56,7 +56,7 @@ describe("workspace isolation", () => {
       workspaceId: "alpha",
       repoId: repoA.repoId,
       task: "task A",
-      providerId: "daytona",
+      providerId: "local",
       explicitBranchName: "feature/a",
       explicitTitle: "A",
     });
@@ -65,7 +65,7 @@ describe("workspace isolation", () => {
       workspaceId: "beta",
       repoId: repoB.repoId,
       task: "task B",
-      providerId: "daytona",
+      providerId: "local",
       explicitBranchName: "feature/b",
       explicitTitle: "B",
     });

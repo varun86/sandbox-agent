@@ -104,6 +104,14 @@ describe("RemoteInterestManager", () => {
     expect(backend.getWorkspaceSummary).toHaveBeenCalledTimes(1);
     expect(manager.getStatus("workspace", params)).toBe("connected");
     expect(manager.getSnapshot("workspace", params)?.taskSummaries[0]?.title).toBe("Initial task");
+    expect(manager.listDebugTopics()).toEqual([
+      expect.objectContaining({
+        topicKey: "workspace",
+        cacheKey: "workspace:ws-1",
+        listenerCount: 2,
+        status: "connected",
+      }),
+    ]);
 
     conn.emit("workspaceUpdated", {
       type: "taskSummaryUpdated",
@@ -123,6 +131,7 @@ describe("RemoteInterestManager", () => {
     expect(manager.getSnapshot("workspace", params)?.taskSummaries[0]?.title).toBe("Updated task");
     expect(listenerA).toHaveBeenCalled();
     expect(listenerB).toHaveBeenCalled();
+    expect(manager.listDebugTopics()[0]?.lastRefreshAt).toEqual(expect.any(Number));
 
     unsubscribeA();
     unsubscribeB();
@@ -140,6 +149,7 @@ describe("RemoteInterestManager", () => {
     unsubscribeA();
 
     vi.advanceTimersByTime(29_000);
+    expect(manager.listDebugTopics()).toEqual([]);
 
     const unsubscribeB = manager.subscribe("workspace", params, () => {});
     await flushAsyncWork();
@@ -148,6 +158,7 @@ describe("RemoteInterestManager", () => {
     expect(conn.disposeCount).toBe(0);
 
     unsubscribeB();
+    expect(manager.listDebugTopics()).toEqual([]);
     vi.advanceTimersByTime(30_000);
 
     expect(conn.disposeCount).toBe(1);

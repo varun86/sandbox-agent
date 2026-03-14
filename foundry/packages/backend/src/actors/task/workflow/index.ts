@@ -1,21 +1,13 @@
 import { Loop } from "rivetkit/workflow";
-import { getActorRuntimeContext } from "../../context.js";
 import { logActorWarning, resolveErrorMessage } from "../../logging.js";
 import { getCurrentRecord } from "./common.js";
 import {
   initAssertNameActivity,
   initBootstrapDbActivity,
   initCompleteActivity,
-  initCreateSandboxActivity,
-  initCreateSessionActivity,
   initEnqueueProvisionActivity,
-  initEnsureAgentActivity,
   initEnsureNameActivity,
-  initExposeSandboxActivity,
   initFailedActivity,
-  initStartSandboxInstanceActivity,
-  initStartStatusSyncActivity,
-  initWriteDbActivity,
 } from "./init.js";
 import {
   handleArchiveActivity,
@@ -27,7 +19,6 @@ import {
   killDestroySandboxActivity,
   killWriteDbActivity,
 } from "./commands.js";
-import { idleNotifyActivity, idleSubmitPrActivity, statusUpdateActivity } from "./status-sync.js";
 import { TASK_QUEUE_NAMES } from "./queue.js";
 import {
   changeWorkbenchModel,
@@ -63,7 +54,6 @@ const commandHandlers: Record<TaskQueueName, WorkflowHandler> = {
     await loopCtx.step("init-enqueue-provision", async () => initEnqueueProvisionActivity(loopCtx, body));
     await loopCtx.removed("init-dispatch-provision-v2", "step");
     const currentRecord = await loopCtx.step("init-read-current-record", async () => getCurrentRecord(loopCtx));
-
     try {
       await msg.complete(currentRecord);
     } catch (error) {
@@ -74,40 +64,26 @@ const commandHandlers: Record<TaskQueueName, WorkflowHandler> = {
   },
 
   "task.command.provision": async (loopCtx, msg) => {
-    const body = msg.body;
     await loopCtx.removed("init-failed", "step");
+    await loopCtx.removed("init-failed-v2", "step");
     try {
-      await loopCtx.step("init-ensure-name", async () => initEnsureNameActivity(loopCtx));
+      await loopCtx.step({
+        name: "init-ensure-name",
+        timeout: 5 * 60_000,
+        run: async () => initEnsureNameActivity(loopCtx),
+      });
       await loopCtx.step("init-assert-name", async () => initAssertNameActivity(loopCtx));
-
-      const sandbox = await loopCtx.step({
-        name: "init-create-sandbox",
-        timeout: 180_000,
-        run: async () => initCreateSandboxActivity(loopCtx, body),
-      });
-      const agent = await loopCtx.step({
-        name: "init-ensure-agent",
-        timeout: 180_000,
-        run: async () => initEnsureAgentActivity(loopCtx, body, sandbox),
-      });
-      const sandboxInstanceReady = await loopCtx.step({
-        name: "init-start-sandbox-instance",
-        timeout: 60_000,
-        run: async () => initStartSandboxInstanceActivity(loopCtx, body, sandbox, agent),
-      });
-      await loopCtx.step("init-expose-sandbox", async () => initExposeSandboxActivity(loopCtx, body, sandbox, sandboxInstanceReady));
-      const session = await loopCtx.step({
-        name: "init-create-session",
-        timeout: 180_000,
-        run: async () => initCreateSessionActivity(loopCtx, body, sandbox, sandboxInstanceReady),
-      });
-
-      await loopCtx.step("init-write-db", async () => initWriteDbActivity(loopCtx, body, sandbox, session, sandboxInstanceReady));
-      await loopCtx.step("init-start-status-sync", async () => initStartStatusSyncActivity(loopCtx, body, sandbox, session));
-      await loopCtx.step("init-complete", async () => initCompleteActivity(loopCtx, body, sandbox, session));
+      await loopCtx.removed("init-create-sandbox", "step");
+      await loopCtx.removed("init-ensure-agent", "step");
+      await loopCtx.removed("init-start-sandbox-instance", "step");
+      await loopCtx.removed("init-expose-sandbox", "step");
+      await loopCtx.removed("init-create-session", "step");
+      await loopCtx.removed("init-write-db", "step");
+      await loopCtx.removed("init-start-status-sync", "step");
+      await loopCtx.step("init-complete", async () => initCompleteActivity(loopCtx, msg.body));
       await msg.complete({ ok: true });
     } catch (error) {
-      await loopCtx.step("init-failed-v2", async () => initFailedActivity(loopCtx, error));
+      await loopCtx.step("init-failed-v3", async () => initFailedActivity(loopCtx, error));
       await msg.complete({
         ok: false,
         error: resolveErrorMessage(error),
@@ -171,7 +147,7 @@ const commandHandlers: Record<TaskQueueName, WorkflowHandler> = {
     try {
       const created = await loopCtx.step({
         name: "workbench-create-session",
-        timeout: 30_000,
+        timeout: 5 * 60_000,
         run: async () => createWorkbenchSession(loopCtx, msg.body?.model),
       });
       await msg.complete(created);
@@ -275,18 +251,6 @@ const commandHandlers: Record<TaskQueueName, WorkflowHandler> = {
       run: async () => revertWorkbenchFile(loopCtx, msg.body.path),
     });
     await msg.complete({ ok: true });
-  },
-
-  "task.status_sync.result": async (loopCtx, msg) => {
-    const transitionedToIdle = await loopCtx.step("status-update", async () => statusUpdateActivity(loopCtx, msg.body));
-
-    if (transitionedToIdle) {
-      const { config } = getActorRuntimeContext();
-      if (config.auto_submit) {
-        await loopCtx.step("idle-submit-pr", async () => idleSubmitPrActivity(loopCtx));
-      }
-      await loopCtx.step("idle-notify", async () => idleNotifyActivity(loopCtx));
-    }
   },
 };
 

@@ -82,6 +82,7 @@ const DEFAULT_BASE_URL = "http://sandbox-agent";
 const DEFAULT_REPLAY_MAX_EVENTS = 50;
 const DEFAULT_REPLAY_MAX_CHARS = 12_000;
 const EVENT_INDEX_SCAN_EVENTS_LIMIT = 500;
+const MAX_EVENT_INDEX_INSERT_RETRIES = 3;
 const SESSION_CANCEL_METHOD = "session/cancel";
 const MANUAL_CANCEL_ERROR = "Manual session/cancel calls are not allowed. Use destroySession(sessionId) instead.";
 const HEALTH_WAIT_MIN_DELAY_MS = 500;
@@ -841,6 +842,7 @@ export class SandboxAgent {
   private readonly pendingPermissionRequests = new Map<string, PendingPermissionRequestState>();
   private readonly nextSessionEventIndexBySession = new Map<string, number>();
   private readonly seedSessionEventIndexBySession = new Map<string, Promise<void>>();
+  private readonly pendingObservedEnvelopePersistenceBySession = new Map<string, Promise<void>>();
 
   constructor(options: SandboxAgentConnectOptions) {
     const baseUrl = options.baseUrl?.trim();
@@ -906,6 +908,7 @@ export class SandboxAgent {
     this.liveConnections.clear();
     const pending = [...this.pendingLiveConnections.values()];
     this.pendingLiveConnections.clear();
+    this.pendingObservedEnvelopePersistenceBySession.clear();
 
     const pendingSettled = await Promise.allSettled(pending);
     for (const item of pendingSettled) {
@@ -969,7 +972,6 @@ export class SandboxAgent {
     };
 
     await this.persist.updateSession(record);
-    this.nextSessionEventIndexBySession.set(record.id, 1);
     live.bindSession(record.id, record.agentSessionId);
     let session = this.upsertSessionHandle(record);
 
@@ -1639,7 +1641,9 @@ export class SandboxAgent {
         agent,
         serverId,
         onObservedEnvelope: (connection, envelope, direction, localSessionId) => {
-          void this.persistObservedEnvelope(connection, envelope, direction, localSessionId);
+          void this.enqueueObservedEnvelopePersistence(connection, envelope, direction, localSessionId).catch((error) => {
+            console.error("Failed to persist observed sandbox-agent envelope", error);
+          });
         },
         onPermissionRequest: async (connection, localSessionId, agentSessionId, request) =>
           this.enqueuePermissionRequest(connection, localSessionId, agentSessionId, request),
@@ -1675,17 +1679,32 @@ export class SandboxAgent {
       return;
     }
 
-    const event: SessionEvent = {
-      id: randomId(),
-      eventIndex: await this.allocateSessionEventIndex(localSessionId),
-      sessionId: localSessionId,
-      createdAt: nowMs(),
-      connectionId: connection.connectionId,
-      sender: direction === "outbound" ? "client" : "agent",
-      payload: cloneEnvelope(envelope),
-    };
+    let event: SessionEvent | null = null;
+    for (let attempt = 0; attempt < MAX_EVENT_INDEX_INSERT_RETRIES; attempt += 1) {
+      event = {
+        id: randomId(),
+        eventIndex: await this.allocateSessionEventIndex(localSessionId),
+        sessionId: localSessionId,
+        createdAt: nowMs(),
+        connectionId: connection.connectionId,
+        sender: direction === "outbound" ? "client" : "agent",
+        payload: cloneEnvelope(envelope),
+      };
 
-    await this.persist.insertEvent(event);
+      try {
+        await this.persist.insertEvent(event);
+        break;
+      } catch (error) {
+        if (!isSessionEventIndexConflict(error) || attempt === MAX_EVENT_INDEX_INSERT_RETRIES - 1) {
+          throw error;
+        }
+      }
+    }
+
+    if (!event) {
+      return;
+    }
+
     await this.persistSessionStateFromEvent(localSessionId, envelope, direction);
 
     const listeners = this.eventListeners.get(localSessionId);
@@ -1695,6 +1714,34 @@ export class SandboxAgent {
 
     for (const listener of listeners) {
       listener(event);
+    }
+  }
+
+  private async enqueueObservedEnvelopePersistence(
+    connection: LiveAcpConnection,
+    envelope: AnyMessage,
+    direction: AcpEnvelopeDirection,
+    localSessionId: string | null,
+  ): Promise<void> {
+    if (!localSessionId) {
+      return;
+    }
+
+    const previous = this.pendingObservedEnvelopePersistenceBySession.get(localSessionId) ?? Promise.resolve();
+    const current = previous
+      .catch(() => {
+        // Keep later envelope persistence moving even if an earlier write failed.
+      })
+      .then(() => this.persistObservedEnvelope(connection, envelope, direction, localSessionId));
+
+    this.pendingObservedEnvelopePersistenceBySession.set(localSessionId, current);
+
+    try {
+      await current;
+    } finally {
+      if (this.pendingObservedEnvelopePersistenceBySession.get(localSessionId) === current) {
+        this.pendingObservedEnvelopePersistenceBySession.delete(localSessionId);
+      }
     }
   }
 
@@ -2064,6 +2111,14 @@ export class SandboxAgent {
       skipReadyWait: true,
     });
   }
+}
+
+function isSessionEventIndexConflict(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return /UNIQUE constraint failed: .*session_id, .*event_index/.test(error.message);
 }
 
 type PendingPermissionRequestState = {

@@ -1,14 +1,16 @@
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import { useStyletron } from "baseui";
 import { LabelSmall } from "baseui/typography";
 import { Clock, PanelLeft, PanelRight } from "lucide-react";
 
 import { useFoundryTokens } from "../../app/theme";
-import { PanelHeaderBar } from "./ui";
+import { deriveHeaderStatus } from "../../features/tasks/status";
+import { HeaderStatusPill, PanelHeaderBar } from "./ui";
 import { type AgentTab, type Task } from "./view-model";
 
 export const TranscriptHeader = memo(function TranscriptHeader({
   task,
+  hasSandbox,
   activeTab,
   editingField,
   editValue,
@@ -26,6 +28,7 @@ export const TranscriptHeader = memo(function TranscriptHeader({
   onNavigateToUsage,
 }: {
   task: Task;
+  hasSandbox: boolean;
   activeTab: AgentTab | null | undefined;
   editingField: "title" | "branch" | null;
   editValue: string;
@@ -46,6 +49,11 @@ export const TranscriptHeader = memo(function TranscriptHeader({
   const t = useFoundryTokens();
   const isDesktop = !!import.meta.env.VITE_DESKTOP;
   const needsTrafficLightInset = isDesktop && sidebarCollapsed;
+  const taskStatus = task.runtimeStatus ?? task.status;
+  const headerStatus = useMemo(
+    () => deriveHeaderStatus(taskStatus, task.statusMessage ?? null, activeTab?.status ?? null, activeTab?.errorMessage ?? null, hasSandbox),
+    [taskStatus, task.statusMessage, activeTab?.status, activeTab?.errorMessage, hasSandbox],
+  );
 
   return (
     <PanelHeaderBar $style={{ backgroundColor: t.surfaceSecondary, borderBottom: "none", paddingLeft: needsTrafficLightInset ? "74px" : "14px" }}>
@@ -161,6 +169,7 @@ export const TranscriptHeader = memo(function TranscriptHeader({
           </span>
         )
       ) : null}
+      <HeaderStatusPill status={headerStatus} />
       <div className={css({ flex: 1 })} />
       <div
         role="button"

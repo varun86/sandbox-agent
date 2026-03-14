@@ -118,10 +118,21 @@ export const UnreadDot = memo(function UnreadDot() {
   );
 });
 
-export const TaskIndicator = memo(function TaskIndicator({ isRunning, hasUnread, isDraft }: { isRunning: boolean; hasUnread: boolean; isDraft: boolean }) {
+export const TaskIndicator = memo(function TaskIndicator({
+  isRunning,
+  isProvisioning,
+  hasUnread,
+  isDraft,
+}: {
+  isRunning: boolean;
+  isProvisioning: boolean;
+  hasUnread: boolean;
+  isDraft: boolean;
+}) {
   const t = useFoundryTokens();
 
   if (isRunning) return <SpinnerDot size={8} />;
+  if (isProvisioning) return <SpinnerDot size={8} />;
   if (hasUnread) return <UnreadDot />;
   if (isDraft) return <GitPullRequestDraft size={12} color={t.textSecondary} />;
   return <GitPullRequest size={12} color={t.statusSuccess} />;
@@ -173,8 +184,75 @@ export const AgentIcon = memo(function AgentIcon({ agent, size = 14 }: { agent: 
   }
 });
 
+export type HeaderStatusVariant = "error" | "warning" | "success" | "neutral";
+
+export interface HeaderStatusInfo {
+  variant: HeaderStatusVariant;
+  label: string;
+  spinning: boolean;
+  tooltip?: string;
+}
+
+export const HeaderStatusPill = memo(function HeaderStatusPill({ status }: { status: HeaderStatusInfo }) {
+  const [css] = useStyletron();
+  const t = useFoundryTokens();
+
+  const colorMap: Record<HeaderStatusVariant, { bg: string; text: string; dot: string }> = {
+    error: { bg: `${t.statusError}18`, text: t.statusError, dot: t.statusError },
+    warning: { bg: `${t.statusWarning}18`, text: t.statusWarning, dot: t.statusWarning },
+    success: { bg: `${t.statusSuccess}18`, text: t.statusSuccess, dot: t.statusSuccess },
+    neutral: { bg: t.interactiveSubtle, text: t.textTertiary, dot: t.textTertiary },
+  };
+  const colors = colorMap[status.variant];
+
+  return (
+    <div
+      title={status.tooltip}
+      className={css({
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "5px",
+        padding: "2px 8px",
+        borderRadius: "999px",
+        backgroundColor: colors.bg,
+        fontSize: "11px",
+        fontWeight: 500,
+        lineHeight: 1,
+        color: colors.text,
+        whiteSpace: "nowrap",
+        flexShrink: 0,
+      })}
+    >
+      {status.spinning ? (
+        <div
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            border: `1.5px solid ${colors.dot}40`,
+            borderTopColor: colors.dot,
+            animation: "hf-spin 0.8s linear infinite",
+            flexShrink: 0,
+          }}
+        />
+      ) : (
+        <div
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: "50%",
+            backgroundColor: colors.dot,
+            flexShrink: 0,
+          }}
+        />
+      )}
+      <span>{status.label}</span>
+    </div>
+  );
+});
+
 export const TabAvatar = memo(function TabAvatar({ tab }: { tab: AgentTab }) {
-  if (tab.status === "running") return <SpinnerDot size={8} />;
+  if (tab.status === "running" || tab.status === "pending_provision" || tab.status === "pending_session_create") return <SpinnerDot size={8} />;
   if (tab.unread) return <UnreadDot />;
   return <AgentIcon agent={tab.agent} size={13} />;
 });

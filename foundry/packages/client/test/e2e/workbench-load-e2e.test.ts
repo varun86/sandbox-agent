@@ -30,8 +30,12 @@ function workbenchModelEnv(name: string, fallback: WorkbenchModelId): WorkbenchM
   switch (value) {
     case "claude-sonnet-4":
     case "claude-opus-4":
-    case "gpt-4o":
-    case "o3":
+    case "gpt-5.3-codex":
+    case "gpt-5.4":
+    case "gpt-5.2-codex":
+    case "gpt-5.1-codex-max":
+    case "gpt-5.2":
+    case "gpt-5.1-codex-mini":
       return value;
     default:
       return fallback;
@@ -191,7 +195,7 @@ describe("e2e(client): workbench load", () => {
     const endpoint = process.env.HF_E2E_BACKEND_ENDPOINT?.trim() || "http://127.0.0.1:7741/v1/rivet";
     const workspaceId = process.env.HF_E2E_WORKSPACE?.trim() || "default";
     const repoRemote = requiredEnv("HF_E2E_GITHUB_REPO");
-    const model = workbenchModelEnv("HF_E2E_MODEL", "gpt-4o");
+    const model = workbenchModelEnv("HF_E2E_MODEL", "gpt-5.3-codex");
     const taskCount = intEnv("HF_LOAD_TASK_COUNT", 3);
     const extraSessionCount = intEnv("HF_LOAD_EXTRA_SESSION_COUNT", 2);
     const pollIntervalMs = intEnv("HF_LOAD_POLL_INTERVAL_MS", 2_000);

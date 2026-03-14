@@ -3,7 +3,6 @@ import { join } from "node:path";
 import { ConfigSchema, type AppConfig } from "@sandbox-agent/foundry-shared";
 import type { BackendDriver } from "../../src/driver.js";
 import { initActorRuntimeContext } from "../../src/actors/context.js";
-import { createProviderRegistry } from "../../src/providers/index.js";
 import { createDefaultAppShellServices } from "../../src/services/app-shell-runtime.js";
 
 export function createTestConfig(overrides?: Partial<AppConfig>): AppConfig {
@@ -21,7 +20,8 @@ export function createTestConfig(overrides?: Partial<AppConfig>): AppConfig {
       backup_retention_days: 7,
     },
     providers: {
-      daytona: { image: "ubuntu:24.04" },
+      local: {},
+      e2b: {},
     },
     ...overrides,
   });
@@ -29,7 +29,6 @@ export function createTestConfig(overrides?: Partial<AppConfig>): AppConfig {
 
 export function createTestRuntimeContext(driver: BackendDriver, configOverrides?: Partial<AppConfig>): { config: AppConfig } {
   const config = createTestConfig(configOverrides);
-  const providers = createProviderRegistry(config, driver);
-  initActorRuntimeContext(config, providers, undefined, driver, createDefaultAppShellServices());
+  initActorRuntimeContext(config, undefined, driver, createDefaultAppShellServices());
   return { config };
 }

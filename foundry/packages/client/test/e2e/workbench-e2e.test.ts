@@ -1,11 +1,8 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import type { TaskWorkbenchSnapshot, WorkbenchAgentTab, WorkbenchTask, WorkbenchModelId, WorkbenchTranscriptEvent } from "@sandbox-agent/foundry-shared";
 import { createBackendClient } from "../../src/backend-client.js";
 
 const RUN_WORKBENCH_E2E = process.env.HF_ENABLE_DAEMON_WORKBENCH_E2E === "1";
-const execFileAsync = promisify(execFile);
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -20,8 +17,12 @@ function workbenchModelEnv(name: string, fallback: WorkbenchModelId): WorkbenchM
   switch (value) {
     case "claude-sonnet-4":
     case "claude-opus-4":
-    case "gpt-4o":
-    case "o3":
+    case "gpt-5.3-codex":
+    case "gpt-5.4":
+    case "gpt-5.2-codex":
+    case "gpt-5.1-codex-max":
+    case "gpt-5.2":
+    case "gpt-5.1-codex-mini":
       return value;
     default:
       return fallback;
@@ -30,16 +31,6 @@ function workbenchModelEnv(name: string, fallback: WorkbenchModelId): WorkbenchM
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function seedSandboxFile(workspaceId: string, taskId: string, filePath: string, content: string): Promise<void> {
-  const repoPath = `/root/.local/share/foundry/local-sandboxes/${workspaceId}/${taskId}/repo`;
-  const script = [
-    `cd ${JSON.stringify(repoPath)}`,
-    `mkdir -p ${JSON.stringify(filePath.includes("/") ? filePath.slice(0, filePath.lastIndexOf("/")) : ".")}`,
-    `printf '%s\\n' ${JSON.stringify(content)} > ${JSON.stringify(filePath)}`,
-  ].join(" && ");
-  await execFileAsync("docker", ["exec", "foundry-backend-1", "bash", "-lc", script]);
 }
 
 async function poll<T>(label: string, timeoutMs: number, intervalMs: number, fn: () => Promise<T>, isDone: (value: T) => boolean): Promise<T> {
@@ -148,7 +139,7 @@ describe("e2e(client): workbench flows", () => {
     const endpoint = process.env.HF_E2E_BACKEND_ENDPOINT?.trim() || "http://127.0.0.1:7741/v1/rivet";
     const workspaceId = process.env.HF_E2E_WORKSPACE?.trim() || "default";
     const repoRemote = requiredEnv("HF_E2E_GITHUB_REPO");
-    const model = workbenchModelEnv("HF_E2E_MODEL", "gpt-4o");
+    const model = workbenchModelEnv("HF_E2E_MODEL", "gpt-5.3-codex");
     const runId = `wb-${Date.now().toString(36)}`;
     const expectedFile = `${runId}.txt`;
     const expectedInitialReply = `WORKBENCH_READY_${runId}`;
@@ -192,17 +183,6 @@ describe("e2e(client): workbench flows", () => {
     expect(findTab(initialCompleted, primaryTab.id).sessionId).toBeTruthy();
     expect(transcriptIncludesAgentText(findTab(initialCompleted, primaryTab.id).transcript, expectedInitialReply)).toBe(true);
 
-    await seedSandboxFile(workspaceId, created.taskId, expectedFile, runId);
-
-    const fileSeeded = await poll(
-      "seeded sandbox file reflected in workbench",
-      30_000,
-      1_000,
-      async () => findTask(await client.getWorkbench(workspaceId), created.taskId),
-      (task) => task.fileChanges.some((file) => file.path === expectedFile),
-    );
-    expect(fileSeeded.fileChanges.some((file) => file.path === expectedFile)).toBe(true);
-
     await client.renameWorkbenchTask(workspaceId, {
       taskId: created.taskId,
       value: `Workbench E2E ${runId} Renamed`,
@@ -227,7 +207,11 @@ describe("e2e(client): workbench flows", () => {
     await client.updateWorkbenchDraft(workspaceId, {
       taskId: created.taskId,
       tabId: secondTab.tabId,
-      text: `Reply with exactly: ${expectedReply}`,
+      text: [
+        `Create a file named ${expectedFile} in the repo root.`,
+        `Write exactly this single line into the file: ${runId}`,
+        `Then reply with exactly: ${expectedReply}`,
+      ].join("\n"),
       attachments: [
         {
           id: `${expectedFile}:1`,
@@ -245,8 +229,19 @@ describe("e2e(client): workbench flows", () => {
     await client.sendWorkbenchMessage(workspaceId, {
       taskId: created.taskId,
       tabId: secondTab.tabId,
-      text: `Reply with exactly: ${expectedReply}`,
-      attachments: [],
+      text: [
+        `Create a file named ${expectedFile} in the repo root.`,
+        `Write exactly this single line into the file: ${runId}`,
+        `Then reply with exactly: ${expectedReply}`,
+      ].join("\n"),
+      attachments: [
+        {
+          id: `${expectedFile}:1`,
+          filePath: expectedFile,
+          lineNumber: 1,
+          lineContent: runId,
+        },
+      ],
     });
 
     const withSecondReply = await poll(
@@ -256,12 +251,15 @@ describe("e2e(client): workbench flows", () => {
       async () => findTask(await client.getWorkbench(workspaceId), created.taskId),
       (task) => {
         const tab = findTab(task, secondTab.tabId);
-        return tab.status === "idle" && transcriptIncludesAgentText(tab.transcript, expectedReply);
+        return (
+          tab.status === "idle" && transcriptIncludesAgentText(tab.transcript, expectedReply) && task.fileChanges.some((file) => file.path === expectedFile)
+        );
       },
     );
 
     const secondTranscript = findTab(withSecondReply, secondTab.tabId).transcript;
     expect(transcriptIncludesAgentText(secondTranscript, expectedReply)).toBe(true);
+    expect(withSecondReply.fileChanges.some((file) => file.path === expectedFile)).toBe(true);
 
     await client.setWorkbenchSessionUnread(workspaceId, {
       taskId: created.taskId,

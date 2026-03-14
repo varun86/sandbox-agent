@@ -28,8 +28,12 @@ export const MODEL_GROUPS: ModelGroup[] = [
   {
     provider: "OpenAI",
     models: [
-      { id: "gpt-4o", label: "GPT-4o" },
-      { id: "o3", label: "o3" },
+      { id: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
+      { id: "gpt-5.4", label: "GPT-5.4" },
+      { id: "gpt-5.2-codex", label: "GPT-5.2 Codex" },
+      { id: "gpt-5.1-codex-max", label: "GPT-5.1 Codex Max" },
+      { id: "gpt-5.2", label: "GPT-5.2" },
+      { id: "gpt-5.1-codex-mini", label: "GPT-5.1 Codex Mini" },
     ],
   },
 ];

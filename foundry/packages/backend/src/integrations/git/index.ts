@@ -87,7 +87,7 @@ export interface BranchSnapshot {
 }
 
 export async function fetch(repoPath: string, options?: GitAuthOptions): Promise<void> {
-  await execFileAsync("git", ["-C", repoPath, "fetch", "--prune"], {
+  await execFileAsync("git", ["-C", repoPath, "fetch", "--prune", "--no-auto-gc"], {
     timeout: DEFAULT_GIT_FETCH_TIMEOUT_MS,
     env: gitEnv(options),
   });

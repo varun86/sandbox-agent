@@ -10,7 +10,7 @@ const base: TaskRecord = {
   branchName: "feature/one",
   title: "Feature one",
   task: "Ship one",
-  providerId: "daytona",
+  providerId: "local",
   status: "running",
   statusMessage: null,
   activeSandboxId: "sandbox-1",
@@ -18,9 +18,9 @@ const base: TaskRecord = {
   sandboxes: [
     {
       sandboxId: "sandbox-1",
-      providerId: "daytona",
+      providerId: "local",
       sandboxActorId: null,
-      switchTarget: "daytona://sandbox-1",
+      switchTarget: "sandbox://local/sandbox-1",
       cwd: null,
       createdAt: 10,
       updatedAt: 10,

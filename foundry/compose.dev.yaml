@@ -39,6 +39,10 @@ services:
       STRIPE_SECRET_KEY: "${STRIPE_SECRET_KEY:-}"
       STRIPE_WEBHOOK_SECRET: "${STRIPE_WEBHOOK_SECRET:-}"
       STRIPE_PRICE_TEAM: "${STRIPE_PRICE_TEAM:-}"
+      FOUNDRY_SANDBOX_PROVIDER: "${FOUNDRY_SANDBOX_PROVIDER:-local}"
+      E2B_API_KEY: "${E2B_API_KEY:-}"
+      E2B_TEMPLATE: "${E2B_TEMPLATE:-}"
+      HF_E2B_TEMPLATE: "${HF_E2B_TEMPLATE:-${E2B_TEMPLATE:-}}"
       DAYTONA_ENDPOINT: "${DAYTONA_ENDPOINT:-}"
       DAYTONA_API_KEY: "${DAYTONA_API_KEY:-}"
       HF_DAYTONA_ENDPOINT: "${HF_DAYTONA_ENDPOINT:-}"
@@ -52,6 +56,7 @@ services:
       - "../../../task/rivet-checkout:/task/rivet-checkout:ro"
       # Reuse the host Codex auth profile for local sandbox-agent Codex sessions in dev.
       - "${HOME}/.codex:/root/.codex"
+      - "/var/run/docker.sock:/var/run/docker.sock"
       # Keep backend dependency installs Linux-native instead of using host node_modules.
       - "foundry_backend_root_node_modules:/app/node_modules"
       - "foundry_backend_backend_node_modules:/app/foundry/packages/backend/node_modules"

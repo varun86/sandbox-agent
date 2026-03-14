@@ -1,39 +1,14 @@
 // @ts-nocheck
-import { desc, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { resolveCreateFlowDecision } from "../../../services/create-flow.js";
 import { resolveWorkspaceGithubAuth } from "../../../services/github-auth.js";
 import { getActorRuntimeContext } from "../../context.js";
-import { getOrCreateTaskStatusSync, getOrCreateHistory, getOrCreateProject, getOrCreateSandboxInstance, getSandboxInstance, selfTask } from "../../handles.js";
+import { getOrCreateHistory, getOrCreateProject, selfTask } from "../../handles.js";
 import { logActorWarning, resolveErrorMessage } from "../../logging.js";
-import { task as taskTable, taskRuntime, taskSandboxes } from "../db/schema.js";
-import { TASK_ROW_ID, appendHistory, buildAgentPrompt, collectErrorMessages, resolveErrorDetail, setTaskState } from "./common.js";
+import { defaultSandboxProviderId } from "../../../sandbox-config.js";
+import { task as taskTable, taskRuntime } from "../db/schema.js";
+import { TASK_ROW_ID, appendHistory, collectErrorMessages, resolveErrorDetail, setTaskState } from "./common.js";
 import { taskWorkflowQueueName } from "./queue.js";
-import { enqueuePendingWorkbenchSessions } from "../workbench.js";
-
-const DEFAULT_INIT_CREATE_SANDBOX_ACTIVITY_TIMEOUT_MS = 180_000;
-
-function getInitCreateSandboxActivityTimeoutMs(): number {
-  const raw = process.env.HF_INIT_CREATE_SANDBOX_ACTIVITY_TIMEOUT_MS;
-  if (!raw) {
-    return DEFAULT_INIT_CREATE_SANDBOX_ACTIVITY_TIMEOUT_MS;
-  }
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return DEFAULT_INIT_CREATE_SANDBOX_ACTIVITY_TIMEOUT_MS;
-  }
-  return Math.floor(parsed);
-}
-
-function debugInit(loopCtx: any, message: string, context?: Record<string, unknown>): void {
-  loopCtx.log.debug({
-    msg: message,
-    scope: "task.init",
-    workspaceId: loopCtx.state.workspaceId,
-    repoId: loopCtx.state.repoId,
-    taskId: loopCtx.state.taskId,
-    ...(context ?? {}),
-  });
-}
 
 async function ensureTaskRuntimeCacheColumns(db: any): Promise<void> {
   await db.execute(`ALTER TABLE task_runtime ADD COLUMN git_state_json text`).catch(() => {});
@@ -42,94 +17,70 @@ async function ensureTaskRuntimeCacheColumns(db: any): Promise<void> {
   await db.execute(`ALTER TABLE task_runtime ADD COLUMN provision_stage_updated_at integer`).catch(() => {});
 }
 
-async function withActivityTimeout<T>(timeoutMs: number, label: string, run: () => Promise<T>): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  try {
-    return await Promise.race([
-      run(),
-      new Promise<T>((_, reject) => {
-        timer = setTimeout(() => {
-          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) {
-      clearTimeout(timer);
-    }
-  }
-}
-
 export async function initBootstrapDbActivity(loopCtx: any, body: any): Promise<void> {
-  const providerId = body?.providerId ?? loopCtx.state.providerId;
   const { config } = getActorRuntimeContext();
+  const providerId = body?.providerId ?? loopCtx.state.providerId ?? defaultSandboxProviderId(config);
   const now = Date.now();
-  const db = loopCtx.db;
   const initialStatusMessage = loopCtx.state.branchName && loopCtx.state.title ? "provisioning" : "naming";
 
-  try {
-    await ensureTaskRuntimeCacheColumns(db);
+  await ensureTaskRuntimeCacheColumns(loopCtx.db);
 
-    await db
-      .insert(taskTable)
-      .values({
-        id: TASK_ROW_ID,
+  await loopCtx.db
+    .insert(taskTable)
+    .values({
+      id: TASK_ROW_ID,
+      branchName: loopCtx.state.branchName,
+      title: loopCtx.state.title,
+      task: loopCtx.state.task,
+      providerId,
+      status: "init_bootstrap_db",
+      agentType: loopCtx.state.agentType ?? config.default_agent,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: taskTable.id,
+      set: {
         branchName: loopCtx.state.branchName,
         title: loopCtx.state.title,
         task: loopCtx.state.task,
         providerId,
         status: "init_bootstrap_db",
         agentType: loopCtx.state.agentType ?? config.default_agent,
-        createdAt: now,
         updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: taskTable.id,
-        set: {
-          branchName: loopCtx.state.branchName,
-          title: loopCtx.state.title,
-          task: loopCtx.state.task,
-          providerId,
-          status: "init_bootstrap_db",
-          agentType: loopCtx.state.agentType ?? config.default_agent,
-          updatedAt: now,
-        },
-      })
-      .run();
+      },
+    })
+    .run();
 
-    await db
-      .insert(taskRuntime)
-      .values({
-        id: TASK_ROW_ID,
+  await loopCtx.db
+    .insert(taskRuntime)
+    .values({
+      id: TASK_ROW_ID,
+      activeSandboxId: null,
+      activeSessionId: null,
+      activeSwitchTarget: null,
+      activeCwd: null,
+      statusMessage: initialStatusMessage,
+      gitStateJson: null,
+      gitStateUpdatedAt: null,
+      provisionStage: "queued",
+      provisionStageUpdatedAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: taskRuntime.id,
+      set: {
         activeSandboxId: null,
         activeSessionId: null,
         activeSwitchTarget: null,
         activeCwd: null,
         statusMessage: initialStatusMessage,
-        gitStateJson: null,
-        gitStateUpdatedAt: null,
         provisionStage: "queued",
         provisionStageUpdatedAt: now,
         updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: taskRuntime.id,
-        set: {
-          activeSandboxId: null,
-          activeSessionId: null,
-          activeSwitchTarget: null,
-          activeCwd: null,
-          statusMessage: initialStatusMessage,
-          provisionStage: "queued",
-          provisionStageUpdatedAt: now,
-          updatedAt: now,
-        },
-      })
-      .run();
-  } catch (error) {
-    const detail = resolveErrorMessage(error);
-    throw new Error(`task init bootstrap db failed: ${detail}`);
-  }
+      },
+    })
+    .run();
 }
 
 export async function initEnqueueProvisionActivity(loopCtx: any, body: any): Promise<void> {
@@ -143,12 +94,13 @@ export async function initEnqueueProvisionActivity(loopCtx: any, body: any): Pro
     })
     .where(eq(taskRuntime.id, TASK_ROW_ID))
     .run();
+
   const self = selfTask(loopCtx);
   try {
     await self.send(taskWorkflowQueueName("task.command.provision"), body, {
       wait: false,
     });
-  } catch (error: unknown) {
+  } catch (error) {
     logActorWarning("task.init", "background provision command failed", {
       workspaceId: loopCtx.state.workspaceId,
       repoId: loopCtx.state.repoId,
@@ -178,8 +130,16 @@ export async function initEnsureNameActivity(loopCtx: any): Promise<void> {
 
   const { driver } = getActorRuntimeContext();
   const auth = await resolveWorkspaceGithubAuth(loopCtx, loopCtx.state.workspaceId);
+  let repoLocalPath = loopCtx.state.repoLocalPath;
+  if (!repoLocalPath) {
+    const project = await getOrCreateProject(loopCtx, loopCtx.state.workspaceId, loopCtx.state.repoId, loopCtx.state.repoRemote);
+    const result = await project.ensure({ remoteUrl: loopCtx.state.repoRemote });
+    repoLocalPath = result.localPath;
+    loopCtx.state.repoLocalPath = repoLocalPath;
+  }
+
   try {
-    await driver.git.fetch(loopCtx.state.repoLocalPath, { githubToken: auth?.githubToken ?? null });
+    await driver.git.fetch(repoLocalPath, { githubToken: auth?.githubToken ?? null });
   } catch (error) {
     logActorWarning("task.init", "fetch before naming failed", {
       workspaceId: loopCtx.state.workspaceId,
@@ -188,13 +148,12 @@ export async function initEnsureNameActivity(loopCtx: any): Promise<void> {
       error: resolveErrorMessage(error),
     });
   }
-  const remoteBranches = (await driver.git.listRemoteBranches(loopCtx.state.repoLocalPath, { githubToken: auth?.githubToken ?? null })).map(
+
+  const remoteBranches = (await driver.git.listRemoteBranches(repoLocalPath, { githubToken: auth?.githubToken ?? null })).map(
     (branch: any) => branch.branchName,
   );
-
   const project = await getOrCreateProject(loopCtx, loopCtx.state.workspaceId, loopCtx.state.repoId, loopCtx.state.repoRemote);
   const reservedBranches = await project.listReservedBranches({});
-
   const resolved = resolveCreateFlowDecision({
     task: loopCtx.state.task,
     explicitTitle: loopCtx.state.explicitTitle ?? undefined,
@@ -248,388 +207,42 @@ export async function initAssertNameActivity(loopCtx: any): Promise<void> {
   }
 }
 
-export async function initCreateSandboxActivity(loopCtx: any, body: any): Promise<any> {
-  await setTaskState(loopCtx, "init_create_sandbox", "creating sandbox");
-  await loopCtx.db
-    .update(taskRuntime)
-    .set({
-      provisionStage: "sandbox_allocated",
-      provisionStageUpdatedAt: Date.now(),
-      updatedAt: Date.now(),
-    })
-    .where(eq(taskRuntime.id, TASK_ROW_ID))
-    .run();
-  const { providers } = getActorRuntimeContext();
-  const providerId = body?.providerId ?? loopCtx.state.providerId;
-  const provider = providers.get(providerId);
-  const timeoutMs = getInitCreateSandboxActivityTimeoutMs();
-  const startedAt = Date.now();
-
-  debugInit(loopCtx, "init_create_sandbox started", {
-    providerId,
-    timeoutMs,
-    supportsSessionReuse: provider.capabilities().supportsSessionReuse,
-  });
-
-  if (provider.capabilities().supportsSessionReuse) {
-    const runtime = await loopCtx.db.select({ activeSandboxId: taskRuntime.activeSandboxId }).from(taskRuntime).where(eq(taskRuntime.id, TASK_ROW_ID)).get();
-
-    const existing = await loopCtx.db
-      .select({ sandboxId: taskSandboxes.sandboxId })
-      .from(taskSandboxes)
-      .where(eq(taskSandboxes.providerId, providerId))
-      .orderBy(desc(taskSandboxes.updatedAt))
-      .limit(1)
-      .get();
-
-    const sandboxId = runtime?.activeSandboxId ?? existing?.sandboxId ?? null;
-    if (sandboxId) {
-      debugInit(loopCtx, "init_create_sandbox attempting resume", { sandboxId });
-      try {
-        const resumed = await withActivityTimeout(timeoutMs, "resumeSandbox", async () =>
-          provider.resumeSandbox({
-            workspaceId: loopCtx.state.workspaceId,
-            sandboxId,
-          }),
-        );
-
-        debugInit(loopCtx, "init_create_sandbox resume succeeded", {
-          sandboxId: resumed.sandboxId,
-          durationMs: Date.now() - startedAt,
-        });
-        return resumed;
-      } catch (error) {
-        logActorWarning("task.init", "resume sandbox failed; creating a new sandbox", {
-          workspaceId: loopCtx.state.workspaceId,
-          repoId: loopCtx.state.repoId,
-          taskId: loopCtx.state.taskId,
-          sandboxId,
-          error: resolveErrorMessage(error),
-        });
-      }
-    }
-  }
-
-  debugInit(loopCtx, "init_create_sandbox creating fresh sandbox", {
-    branchName: loopCtx.state.branchName,
-  });
-
-  try {
-    const auth = await resolveWorkspaceGithubAuth(loopCtx, loopCtx.state.workspaceId);
-    const sandbox = await withActivityTimeout(timeoutMs, "createSandbox", async () =>
-      provider.createSandbox({
-        workspaceId: loopCtx.state.workspaceId,
-        repoId: loopCtx.state.repoId,
-        repoRemote: loopCtx.state.repoRemote,
-        branchName: loopCtx.state.branchName,
-        taskId: loopCtx.state.taskId,
-        githubToken: auth?.githubToken ?? null,
-        debug: (message, context) => debugInit(loopCtx, message, context),
-      }),
-    );
-
-    debugInit(loopCtx, "init_create_sandbox create succeeded", {
-      sandboxId: sandbox.sandboxId,
-      durationMs: Date.now() - startedAt,
-    });
-    return sandbox;
-  } catch (error) {
-    debugInit(loopCtx, "init_create_sandbox failed", {
-      durationMs: Date.now() - startedAt,
-      error: resolveErrorMessage(error),
-    });
-    throw error;
-  }
-}
-
-export async function initEnsureAgentActivity(loopCtx: any, body: any, sandbox: any): Promise<any> {
-  await setTaskState(loopCtx, "init_ensure_agent", "ensuring sandbox agent");
-  await loopCtx.db
-    .update(taskRuntime)
-    .set({
-      provisionStage: "agent_installing",
-      provisionStageUpdatedAt: Date.now(),
-      updatedAt: Date.now(),
-    })
-    .where(eq(taskRuntime.id, TASK_ROW_ID))
-    .run();
-  const { providers } = getActorRuntimeContext();
-  const providerId = body?.providerId ?? loopCtx.state.providerId;
-  const provider = providers.get(providerId);
-  return await provider.ensureSandboxAgent({
-    workspaceId: loopCtx.state.workspaceId,
-    sandboxId: sandbox.sandboxId,
-  });
-}
-
-export async function initStartSandboxInstanceActivity(loopCtx: any, body: any, sandbox: any, agent: any): Promise<any> {
-  await setTaskState(loopCtx, "init_start_sandbox_instance", "starting sandbox runtime");
-  await loopCtx.db
-    .update(taskRuntime)
-    .set({
-      provisionStage: "agent_starting",
-      provisionStageUpdatedAt: Date.now(),
-      updatedAt: Date.now(),
-    })
-    .where(eq(taskRuntime.id, TASK_ROW_ID))
-    .run();
-  try {
-    const providerId = body?.providerId ?? loopCtx.state.providerId;
-    const sandboxInstance = await getOrCreateSandboxInstance(loopCtx, loopCtx.state.workspaceId, providerId, sandbox.sandboxId, {
-      workspaceId: loopCtx.state.workspaceId,
-      providerId,
-      sandboxId: sandbox.sandboxId,
-    });
-
-    await sandboxInstance.ensure({
-      metadata: sandbox.metadata,
-      status: "ready",
-      agentEndpoint: agent.endpoint,
-      agentToken: agent.token,
-    });
-
-    const actorId = typeof (sandboxInstance as any).resolve === "function" ? await (sandboxInstance as any).resolve() : null;
-
-    return {
-      ok: true as const,
-      actorId: typeof actorId === "string" ? actorId : null,
-    };
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    return {
-      ok: false as const,
-      error: `sandbox-instance ensure failed: ${detail}`,
-    };
-  }
-}
-
-export async function initCreateSessionActivity(loopCtx: any, body: any, sandbox: any, sandboxInstanceReady: any): Promise<any> {
-  await setTaskState(loopCtx, "init_create_session", "creating agent session");
-  await loopCtx.db
-    .update(taskRuntime)
-    .set({
-      provisionStage: "session_creating",
-      provisionStageUpdatedAt: Date.now(),
-      updatedAt: Date.now(),
-    })
-    .where(eq(taskRuntime.id, TASK_ROW_ID))
-    .run();
-  if (!sandboxInstanceReady.ok) {
-    return {
-      id: null,
-      status: "error",
-      error: sandboxInstanceReady.error ?? "sandbox instance is not ready",
-    } as const;
-  }
-
-  const { config } = getActorRuntimeContext();
-  const providerId = body?.providerId ?? loopCtx.state.providerId;
-  const sandboxInstance = getSandboxInstance(loopCtx, loopCtx.state.workspaceId, providerId, sandbox.sandboxId);
-
-  const cwd = sandbox.metadata && typeof (sandbox.metadata as any).cwd === "string" ? ((sandbox.metadata as any).cwd as string) : undefined;
-
-  return await sandboxInstance.createSession({
-    prompt: typeof loopCtx.state.initialPrompt === "string" ? loopCtx.state.initialPrompt : buildAgentPrompt(loopCtx.state.task),
-    cwd,
-    agent: (loopCtx.state.agentType ?? config.default_agent) as any,
-  });
-}
-
-export async function initExposeSandboxActivity(loopCtx: any, body: any, sandbox: any, sandboxInstanceReady?: { actorId?: string | null }): Promise<void> {
-  const providerId = body?.providerId ?? loopCtx.state.providerId;
+export async function initCompleteActivity(loopCtx: any, body: any): Promise<void> {
   const now = Date.now();
-  const db = loopCtx.db;
-  const activeCwd = sandbox.metadata && typeof (sandbox.metadata as any).cwd === "string" ? ((sandbox.metadata as any).cwd as string) : null;
-  const sandboxActorId = typeof sandboxInstanceReady?.actorId === "string" && sandboxInstanceReady.actorId.length > 0 ? sandboxInstanceReady.actorId : null;
+  const { config } = getActorRuntimeContext();
+  const providerId = body?.providerId ?? loopCtx.state.providerId ?? defaultSandboxProviderId(config);
 
-  await db
-    .insert(taskSandboxes)
-    .values({
-      sandboxId: sandbox.sandboxId,
-      providerId,
-      sandboxActorId,
-      switchTarget: sandbox.switchTarget,
-      cwd: activeCwd,
-      statusMessage: "sandbox ready",
-      createdAt: now,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: taskSandboxes.sandboxId,
-      set: {
-        providerId,
-        sandboxActorId,
-        switchTarget: sandbox.switchTarget,
-        cwd: activeCwd,
-        statusMessage: "sandbox ready",
-        updatedAt: now,
-      },
-    })
-    .run();
-
-  await db
+  await setTaskState(loopCtx, "init_complete", "task initialized");
+  await loopCtx.db
     .update(taskRuntime)
     .set({
-      activeSandboxId: sandbox.sandboxId,
-      activeSwitchTarget: sandbox.switchTarget,
-      activeCwd,
-      statusMessage: "sandbox ready",
-      updatedAt: now,
-    })
-    .where(eq(taskRuntime.id, TASK_ROW_ID))
-    .run();
-}
-
-export async function initWriteDbActivity(
-  loopCtx: any,
-  body: any,
-  sandbox: any,
-  session: any,
-  sandboxInstanceReady?: { actorId?: string | null },
-): Promise<void> {
-  await setTaskState(loopCtx, "init_write_db", "persisting task runtime");
-  const providerId = body?.providerId ?? loopCtx.state.providerId;
-  const { config } = getActorRuntimeContext();
-  const now = Date.now();
-  const db = loopCtx.db;
-  const sessionId = session?.id ?? null;
-  const sessionHealthy = Boolean(sessionId) && session?.status !== "error";
-  const activeSessionId = sessionHealthy ? sessionId : null;
-  const statusMessage = sessionHealthy ? "session created" : session?.status === "error" ? (session.error ?? "session create failed") : "session unavailable";
-
-  const activeCwd = sandbox.metadata && typeof (sandbox.metadata as any).cwd === "string" ? ((sandbox.metadata as any).cwd as string) : null;
-  const sandboxActorId = typeof sandboxInstanceReady?.actorId === "string" && sandboxInstanceReady.actorId.length > 0 ? sandboxInstanceReady.actorId : null;
-
-  await db
-    .update(taskTable)
-    .set({
-      providerId,
-      status: sessionHealthy ? "running" : "error",
-      agentType: loopCtx.state.agentType ?? config.default_agent,
-      updatedAt: now,
-    })
-    .where(eq(taskTable.id, TASK_ROW_ID))
-    .run();
-
-  await db
-    .insert(taskSandboxes)
-    .values({
-      sandboxId: sandbox.sandboxId,
-      providerId,
-      sandboxActorId,
-      switchTarget: sandbox.switchTarget,
-      cwd: activeCwd,
-      statusMessage,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: taskSandboxes.sandboxId,
-      set: {
-        providerId,
-        sandboxActorId,
-        switchTarget: sandbox.switchTarget,
-        cwd: activeCwd,
-        statusMessage,
-        updatedAt: now,
-      },
-    })
-    .run();
-
-  await db
-    .insert(taskRuntime)
-    .values({
-      id: TASK_ROW_ID,
-      activeSandboxId: sandbox.sandboxId,
-      activeSessionId,
-      activeSwitchTarget: sandbox.switchTarget,
-      activeCwd,
-      statusMessage,
-      provisionStage: sessionHealthy ? "ready" : "error",
+      statusMessage: "ready",
+      provisionStage: "ready",
       provisionStageUpdatedAt: now,
       updatedAt: now,
     })
-    .onConflictDoUpdate({
-      target: taskRuntime.id,
-      set: {
-        activeSandboxId: sandbox.sandboxId,
-        activeSessionId,
-        activeSwitchTarget: sandbox.switchTarget,
-        activeCwd,
-        statusMessage,
-        provisionStage: sessionHealthy ? "ready" : "error",
-        provisionStageUpdatedAt: now,
-        updatedAt: now,
-      },
-    })
+    .where(eq(taskRuntime.id, TASK_ROW_ID))
     .run();
-}
 
-export async function initStartStatusSyncActivity(loopCtx: any, body: any, sandbox: any, session: any): Promise<void> {
-  const sessionId = session?.id ?? null;
-  if (!sessionId || session?.status === "error") {
-    return;
-  }
-
-  await setTaskState(loopCtx, "init_start_status_sync", "starting session status sync");
-  const providerId = body?.providerId ?? loopCtx.state.providerId;
-  const sync = await getOrCreateTaskStatusSync(loopCtx, loopCtx.state.workspaceId, loopCtx.state.repoId, loopCtx.state.taskId, sandbox.sandboxId, sessionId, {
-    workspaceId: loopCtx.state.workspaceId,
-    repoId: loopCtx.state.repoId,
+  const history = await getOrCreateHistory(loopCtx, loopCtx.state.workspaceId, loopCtx.state.repoId);
+  await history.append({
+    kind: "task.initialized",
     taskId: loopCtx.state.taskId,
-    providerId,
-    sandboxId: sandbox.sandboxId,
-    sessionId,
-    intervalMs: 2_000,
+    branchName: loopCtx.state.branchName,
+    payload: { providerId },
   });
 
-  await sync.start();
-  await sync.force();
-}
-
-export async function initCompleteActivity(loopCtx: any, body: any, sandbox: any, session: any): Promise<void> {
-  const providerId = body?.providerId ?? loopCtx.state.providerId;
-  const sessionId = session?.id ?? null;
-  const sessionHealthy = Boolean(sessionId) && session?.status !== "error";
-  if (sessionHealthy) {
-    await setTaskState(loopCtx, "init_complete", "task initialized");
-
-    const history = await getOrCreateHistory(loopCtx, loopCtx.state.workspaceId, loopCtx.state.repoId);
-    await history.append({
-      kind: "task.initialized",
-      taskId: loopCtx.state.taskId,
-      branchName: loopCtx.state.branchName,
-      payload: { providerId, sandboxId: sandbox.sandboxId, sessionId },
-    });
-
-    loopCtx.state.initialized = true;
-    await enqueuePendingWorkbenchSessions(loopCtx);
-    const self = selfTask(loopCtx);
-    await self.send(taskWorkflowQueueName("task.command.workbench.refresh_derived"), {}, { wait: false });
-    if (sessionId) {
-      await self.send(taskWorkflowQueueName("task.command.workbench.refresh_session_transcript"), { sessionId }, { wait: false });
-    }
-    return;
-  }
-
-  const detail = session?.status === "error" ? (session.error ?? "session create failed") : "session unavailable";
-  await setTaskState(loopCtx, "error", detail);
-  await appendHistory(loopCtx, "task.error", {
-    detail,
-    messages: [detail],
-  });
-  loopCtx.state.initialized = false;
+  loopCtx.state.initialized = true;
 }
 
 export async function initFailedActivity(loopCtx: any, error: unknown): Promise<void> {
   const now = Date.now();
   const detail = resolveErrorDetail(error);
   const messages = collectErrorMessages(error);
-  const db = loopCtx.db;
-  const { config, providers } = getActorRuntimeContext();
-  const providerId = loopCtx.state.providerId ?? providers.defaultProviderId();
+  const { config } = getActorRuntimeContext();
+  const providerId = loopCtx.state.providerId ?? defaultSandboxProviderId(config);
 
-  await db
+  await loopCtx.db
     .insert(taskTable)
     .values({
       id: TASK_ROW_ID,
@@ -656,7 +269,7 @@ export async function initFailedActivity(loopCtx: any, error: unknown): Promise<
     })
     .run();
 
-  await db
+  await loopCtx.db
     .insert(taskRuntime)
     .values({
       id: TASK_ROW_ID,

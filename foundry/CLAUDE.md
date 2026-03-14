@@ -208,6 +208,8 @@ For all Rivet/RivetKit implementation:
 - Read paths must not force refresh/sync work inline. Serve the latest cached projection, mark staleness explicitly, and trigger background refresh separately when needed.
 - If a workflow needs to resume after some external work completes, model that as workflow state plus follow-up messages/events instead of holding the original request open.
 - No retries: never add retry loops (`withRetries`, `setTimeout` retry, exponential backoff) anywhere in the codebase. If an operation fails, surface the error immediately. If a dependency is not ready yet, model that explicitly with workflow state and resume from a push/event instead of polling or retry loops.
+- Never throw errors that expect the caller to retry (e.g. `throw new Error("... retry shortly")`). If a dependency is not ready, write the current state to the DB with an appropriate pending status, enqueue the async work, and return successfully. Let the client observe the pending → ready transition via push events.
+- Action return contract: every action that creates a resource must write the resource record to the DB before returning, so the client can immediately query/render it. The record may have a pending status, but it must exist. Never return an ID that doesn't yet have a corresponding DB row.
 - Actor handle policy:
 - Prefer explicit `get` or explicit `create` based on workflow intent; do not default to `getOrCreate`.
 - Use `get`/`getForId` when the actor is expected to already exist; if missing, surface an explicit `Actor not found` error with recovery context.

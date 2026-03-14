@@ -1,5 +1,5 @@
 import type { BackendClient } from "../backend-client.js";
-import type { InterestManager, TopicStatus } from "./manager.js";
+import type { DebugInterestTopic, InterestManager, TopicStatus } from "./manager.js";
 import { topicDefinitions, type TopicData, type TopicDefinition, type TopicKey, type TopicParams } from "./topics.js";
 
 const GRACE_PERIOD_MS = 30_000;
@@ -19,7 +19,7 @@ export class RemoteInterestManager implements InterestManager {
     let entry = this.entries.get(cacheKey);
 
     if (!entry) {
-      entry = new TopicEntry(definition, this.backend, params as any);
+      entry = new TopicEntry(topicKey, cacheKey, definition, this.backend, params as any);
       this.entries.set(cacheKey, entry);
     }
 
@@ -53,6 +53,13 @@ export class RemoteInterestManager implements InterestManager {
     return this.entries.get((topicDefinitions[topicKey] as any).key(params))?.error ?? null;
   }
 
+  listDebugTopics(): DebugInterestTopic[] {
+    return [...this.entries.values()]
+      .filter((entry) => entry.listenerCount > 0)
+      .map((entry) => entry.getDebugTopic())
+      .sort((left, right) => left.cacheKey.localeCompare(right.cacheKey));
+  }
+
   dispose(): void {
     for (const entry of this.entries.values()) {
       entry.dispose();
@@ -66,6 +73,7 @@ class TopicEntry<TData, TParams, TEvent> {
   status: TopicStatus = "loading";
   error: Error | null = null;
   listenerCount = 0;
+  lastRefreshAt: number | null = null;
 
   private readonly listeners = new Set<() => void>();
   private conn: Awaited<ReturnType<TopicDefinition<TData, TParams, TEvent>["connect"]>> | null = null;
@@ -76,10 +84,22 @@ class TopicEntry<TData, TParams, TEvent> {
   private started = false;
 
   constructor(
+    private readonly topicKey: TopicKey,
+    private readonly cacheKey: string,
     private readonly definition: TopicDefinition<TData, TParams, TEvent>,
     private readonly backend: BackendClient,
     private readonly params: TParams,
   ) {}
+
+  getDebugTopic(): DebugInterestTopic {
+    return {
+      topicKey: this.topicKey,
+      cacheKey: this.cacheKey,
+      listenerCount: this.listenerCount,
+      status: this.status,
+      lastRefreshAt: this.lastRefreshAt,
+    };
+  }
 
   addListener(listener: () => void): void {
     this.listeners.add(listener);
@@ -125,6 +145,7 @@ class TopicEntry<TData, TParams, TEvent> {
     this.data = undefined;
     this.status = "loading";
     this.error = null;
+    this.lastRefreshAt = null;
     this.started = false;
   }
 
@@ -140,6 +161,7 @@ class TopicEntry<TData, TParams, TEvent> {
           return;
         }
         this.data = this.definition.applyEvent(this.data, event);
+        this.lastRefreshAt = Date.now();
         this.notify();
       });
       this.unsubscribeError = this.conn.onError((error: unknown) => {
@@ -149,6 +171,7 @@ class TopicEntry<TData, TParams, TEvent> {
       });
       this.data = await this.definition.fetchInitial(this.backend, this.params);
       this.status = "connected";
+      this.lastRefreshAt = Date.now();
       this.started = true;
       this.notify();
     } catch (error) {

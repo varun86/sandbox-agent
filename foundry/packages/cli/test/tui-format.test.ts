@@ -11,7 +11,7 @@ const sample: TaskRecord = {
   branchName: "feature/test",
   title: "Test Title",
   task: "Do test",
-  providerId: "daytona",
+  providerId: "local",
   status: "running",
   statusMessage: null,
   activeSandboxId: "sandbox-1",
@@ -19,8 +19,8 @@ const sample: TaskRecord = {
   sandboxes: [
     {
       sandboxId: "sandbox-1",
-      providerId: "daytona",
-      switchTarget: "daytona://sandbox-1",
+      providerId: "local",
+      switchTarget: "sandbox://local/sandbox-1",
       cwd: null,
       createdAt: 1,
       updatedAt: 1,

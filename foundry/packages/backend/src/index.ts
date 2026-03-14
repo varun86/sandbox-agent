@@ -7,7 +7,6 @@ import { workspaceKey } from "./actors/keys.js";
 import { loadConfig } from "./config/backend.js";
 import { createBackends, createNotificationService } from "./notifications/index.js";
 import { createDefaultDriver } from "./driver.js";
-import { createProviderRegistry } from "./providers/index.js";
 import { createClient } from "rivetkit/client";
 import { initBetterAuthService } from "./services/better-auth.js";
 import { createDefaultAppShellServices } from "./services/app-shell-runtime.js";
@@ -69,15 +68,14 @@ export async function startBackend(options: BackendStartOptions = {}): Promise<v
     return undefined;
   };
 
-  config.providers.daytona.endpoint = envFirst("HF_DAYTONA_ENDPOINT", "DAYTONA_ENDPOINT") ?? config.providers.daytona.endpoint;
-  config.providers.daytona.apiKey = envFirst("HF_DAYTONA_API_KEY", "DAYTONA_API_KEY") ?? config.providers.daytona.apiKey;
+  config.providers.e2b.apiKey = envFirst("E2B_API_KEY") ?? config.providers.e2b.apiKey;
+  config.providers.e2b.template = envFirst("HF_E2B_TEMPLATE", "E2B_TEMPLATE") ?? config.providers.e2b.template;
 
   const driver = createDefaultDriver();
-  const providers = createProviderRegistry(config, driver);
   const backends = await createBackends(config.notify);
   const notifications = createNotificationService(backends);
   const appShellServices = createDefaultAppShellServices();
-  initActorRuntimeContext(config, providers, notifications, driver, appShellServices);
+  initActorRuntimeContext(config, notifications, driver, appShellServices);
 
   const actorClient = createClient({
     endpoint: `http://127.0.0.1:${config.backend.port}/v1/rivet`,

@@ -8,7 +8,7 @@ function makeTab(transcript: WorkbenchAgentTab["transcript"]): WorkbenchAgentTab
     sessionId: "session-1",
     sessionName: "Session 1",
     agent: "Codex",
-    model: "gpt-4o",
+    model: "gpt-5.3-codex",
     status: "idle",
     thinkingSinceMs: null,
     unread: false,

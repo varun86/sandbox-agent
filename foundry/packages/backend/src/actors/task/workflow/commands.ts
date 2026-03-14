@@ -1,7 +1,6 @@
 // @ts-nocheck
 import { eq } from "drizzle-orm";
-import { getActorRuntimeContext } from "../../context.js";
-import { getOrCreateTaskStatusSync } from "../../handles.js";
+import { getTaskSandbox } from "../../handles.js";
 import { logActorWarning, resolveErrorMessage } from "../../logging.js";
 import { task as taskTable, taskRuntime } from "../db/schema.js";
 import { TASK_ROW_ID, appendHistory, getCurrentRecord, setTaskState } from "./common.js";
@@ -25,21 +24,27 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
 
 export async function handleAttachActivity(loopCtx: any, msg: any): Promise<void> {
   const record = await getCurrentRecord(loopCtx);
-  const { providers } = getActorRuntimeContext();
-  const activeSandbox = record.activeSandboxId ? (record.sandboxes.find((sb: any) => sb.sandboxId === record.activeSandboxId) ?? null) : null;
-  const provider = providers.get(activeSandbox?.providerId ?? record.providerId);
-  const target = await provider.attachTarget({
-    workspaceId: loopCtx.state.workspaceId,
-    sandboxId: record.activeSandboxId ?? "",
-  });
+  let target = record.sandboxes.find((sandbox: any) => sandbox.sandboxId === record.activeSandboxId)?.switchTarget ?? "";
+
+  if (record.activeSandboxId) {
+    try {
+      const sandbox = getTaskSandbox(loopCtx, loopCtx.state.workspaceId, record.activeSandboxId);
+      const connection = await sandbox.sandboxAgentConnection();
+      if (typeof connection?.endpoint === "string" && connection.endpoint.length > 0) {
+        target = connection.endpoint;
+      }
+    } catch {
+      // Best effort; keep the last known switch target if the sandbox actor is unavailable.
+    }
+  }
 
   await appendHistory(loopCtx, "task.attach", {
-    target: target.target,
+    target,
     sessionId: record.activeSessionId,
   });
 
   await msg.complete({
-    target: target.target,
+    target,
     sessionId: record.activeSessionId,
   });
 }
@@ -71,63 +76,14 @@ export async function handleArchiveActivity(loopCtx: any, msg: any): Promise<voi
   await setTaskState(loopCtx, "archive_stop_status_sync", "stopping status sync");
   const record = await getCurrentRecord(loopCtx);
 
-  if (record.activeSandboxId && record.activeSessionId) {
-    try {
-      const sync = await getOrCreateTaskStatusSync(
-        loopCtx,
-        loopCtx.state.workspaceId,
-        loopCtx.state.repoId,
-        loopCtx.state.taskId,
-        record.activeSandboxId,
-        record.activeSessionId,
-        {
-          workspaceId: loopCtx.state.workspaceId,
-          repoId: loopCtx.state.repoId,
-          taskId: loopCtx.state.taskId,
-          providerId: record.providerId,
-          sandboxId: record.activeSandboxId,
-          sessionId: record.activeSessionId,
-          intervalMs: 2_000,
-        },
-      );
-      await withTimeout(sync.stop(), 15_000, "task status sync stop");
-    } catch (error) {
-      logActorWarning("task.commands", "failed to stop status sync during archive", {
+  if (record.activeSandboxId) {
+    await setTaskState(loopCtx, "archive_release_sandbox", "releasing sandbox");
+    void withTimeout(getTaskSandbox(loopCtx, loopCtx.state.workspaceId, record.activeSandboxId).destroy(), 45_000, "sandbox destroy").catch((error) => {
+      logActorWarning("task.commands", "failed to release sandbox during archive", {
         workspaceId: loopCtx.state.workspaceId,
         repoId: loopCtx.state.repoId,
         taskId: loopCtx.state.taskId,
         sandboxId: record.activeSandboxId,
-        sessionId: record.activeSessionId,
-        error: resolveErrorMessage(error),
-      });
-    }
-  }
-
-  if (record.activeSandboxId) {
-    await setTaskState(loopCtx, "archive_release_sandbox", "releasing sandbox");
-    const { providers } = getActorRuntimeContext();
-    const activeSandbox = record.sandboxes.find((sb: any) => sb.sandboxId === record.activeSandboxId) ?? null;
-    const provider = providers.get(activeSandbox?.providerId ?? record.providerId);
-    const workspaceId = loopCtx.state.workspaceId;
-    const repoId = loopCtx.state.repoId;
-    const taskId = loopCtx.state.taskId;
-    const sandboxId = record.activeSandboxId;
-
-    // Do not block archive finalization on provider stop. Some provider stop calls can
-    // run longer than the synchronous archive UX budget.
-    void withTimeout(
-      provider.releaseSandbox({
-        workspaceId,
-        sandboxId,
-      }),
-      45_000,
-      "provider releaseSandbox",
-    ).catch((error) => {
-      logActorWarning("task.commands", "failed to release sandbox during archive", {
-        workspaceId,
-        repoId,
-        taskId,
-        sandboxId,
         error: resolveErrorMessage(error),
       });
     });
@@ -150,13 +106,7 @@ export async function killDestroySandboxActivity(loopCtx: any): Promise<void> {
     return;
   }
 
-  const { providers } = getActorRuntimeContext();
-  const activeSandbox = record.sandboxes.find((sb: any) => sb.sandboxId === record.activeSandboxId) ?? null;
-  const provider = providers.get(activeSandbox?.providerId ?? record.providerId);
-  await provider.destroySandbox({
-    workspaceId: loopCtx.state.workspaceId,
-    sandboxId: record.activeSandboxId,
-  });
+  await getTaskSandbox(loopCtx, loopCtx.state.workspaceId, record.activeSandboxId).destroy();
 }
 
 export async function killWriteDbActivity(loopCtx: any, msg: any): Promise<void> {

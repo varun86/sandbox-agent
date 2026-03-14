@@ -18,7 +18,8 @@ describe("cli workspace resolution", () => {
         backup_retention_days: 7,
       },
       providers: {
-        daytona: { image: "ubuntu:24.04" },
+        local: {},
+        e2b: {},
       },
     });
 

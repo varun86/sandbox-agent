@@ -1,15 +1,4 @@
-import {
-  authUserKey,
-  taskKey,
-  taskStatusSyncKey,
-  historyKey,
-  projectBranchSyncKey,
-  projectKey,
-  projectPrSyncKey,
-  sandboxInstanceKey,
-  workspaceKey,
-} from "./keys.js";
-import type { ProviderId } from "@sandbox-agent/foundry-shared";
+import { authUserKey, taskKey, historyKey, projectBranchSyncKey, projectKey, projectPrSyncKey, taskSandboxKey, workspaceKey } from "./keys.js";
 
 export function actorClient(c: any) {
   return c.client();
@@ -86,30 +75,12 @@ export async function getOrCreateProjectBranchSync(c: any, workspaceId: string, 
   });
 }
 
-export function getSandboxInstance(c: any, workspaceId: string, providerId: ProviderId, sandboxId: string) {
-  return actorClient(c).sandboxInstance.get(sandboxInstanceKey(workspaceId, providerId, sandboxId));
+export function getTaskSandbox(c: any, workspaceId: string, sandboxId: string) {
+  return actorClient(c).taskSandbox.get(taskSandboxKey(workspaceId, sandboxId));
 }
 
-export async function getOrCreateSandboxInstance(
-  c: any,
-  workspaceId: string,
-  providerId: ProviderId,
-  sandboxId: string,
-  createWithInput: Record<string, unknown>,
-) {
-  return await actorClient(c).sandboxInstance.getOrCreate(sandboxInstanceKey(workspaceId, providerId, sandboxId), { createWithInput });
-}
-
-export async function getOrCreateTaskStatusSync(
-  c: any,
-  workspaceId: string,
-  repoId: string,
-  taskId: string,
-  sandboxId: string,
-  sessionId: string,
-  createWithInput: Record<string, unknown>,
-) {
-  return await actorClient(c).taskStatusSync.getOrCreate(taskStatusSyncKey(workspaceId, repoId, taskId, sandboxId, sessionId), {
+export async function getOrCreateTaskSandbox(c: any, workspaceId: string, sandboxId: string, createWithInput?: Record<string, unknown>) {
+  return await actorClient(c).taskSandbox.getOrCreate(taskSandboxKey(workspaceId, sandboxId), {
     createWithInput,
   });
 }
@@ -120,10 +91,6 @@ export function selfProjectPrSync(c: any) {
 
 export function selfProjectBranchSync(c: any) {
   return actorClient(c).projectBranchSync.getForId(c.actorId);
-}
-
-export function selfTaskStatusSync(c: any) {
-  return actorClient(c).taskStatusSync.getForId(c.actorId);
 }
 
 export function selfHistory(c: any) {
@@ -140,10 +107,6 @@ export function selfWorkspace(c: any) {
 
 export function selfProject(c: any) {
   return actorClient(c).project.getForId(c.actorId);
-}
-
-export function selfSandboxInstance(c: any) {
-  return actorClient(c).sandboxInstance.getForId(c.actorId);
 }
 
 export function selfAuthUser(c: any) {

@@ -126,12 +126,24 @@ async function ensureProjectSyncActors(c: any, localPath: string): Promise<void>
   }
 
   const prSync = await getOrCreateProjectPrSync(c, c.state.workspaceId, c.state.repoId, localPath, 30_000);
-  await prSync.start();
-
   const branchSync = await getOrCreateProjectBranchSync(c, c.state.workspaceId, c.state.repoId, localPath, 5_000);
-  await branchSync.start();
-
   c.state.syncActorsStarted = true;
+
+  void prSync.start().catch((error: unknown) => {
+    logActorWarning("project.sync", "starting pr sync actor failed", {
+      workspaceId: c.state.workspaceId,
+      repoId: c.state.repoId,
+      error: resolveErrorMessage(error),
+    });
+  });
+
+  void branchSync.start().catch((error: unknown) => {
+    logActorWarning("project.sync", "starting branch sync actor failed", {
+      workspaceId: c.state.workspaceId,
+      repoId: c.state.repoId,
+      error: resolveErrorMessage(error),
+    });
+  });
 }
 
 async function ensureRepoActionJobsTable(c: any): Promise<void> {
@@ -316,13 +328,17 @@ async function ensureProjectReadyForRead(c: any): Promise<string> {
     throw new Error("project remoteUrl is not initialized");
   }
 
-  if (!c.state.localPath || !c.state.syncActorsStarted) {
+  if (!c.state.localPath) {
     const result = await projectActions.ensure(c, { remoteUrl: c.state.remoteUrl });
-    const localPath = result?.localPath ?? c.state.localPath;
-    if (!localPath) {
-      throw new Error("project local repo is not initialized");
-    }
-    return localPath;
+    c.state.localPath = result?.localPath ?? c.state.localPath;
+  }
+
+  if (!c.state.localPath) {
+    throw new Error("project local repo is not initialized");
+  }
+
+  if (!c.state.syncActorsStarted) {
+    await ensureProjectSyncActors(c, c.state.localPath);
   }
 
   return c.state.localPath;
@@ -428,7 +444,6 @@ async function ensureProjectMutation(c: any, cmd: EnsureProjectCommand): Promise
     })
     .run();
 
-  await ensureProjectSyncActors(c, localPath);
   return { localPath };
 }
 
@@ -437,7 +452,6 @@ async function hydrateTaskIndexMutation(c: any, _cmd?: HydrateTaskIndexCommand):
 }
 
 async function createTaskMutation(c: any, cmd: CreateTaskCommand): Promise<TaskRecord> {
-  const localPath = await ensureProjectReady(c);
   const onBranch = cmd.onBranch?.trim() || null;
   const initialBranchName = onBranch;
   const initialTitle = onBranch ? deriveFallbackTitle(cmd.task, cmd.explicitTitle ?? undefined) : null;
@@ -463,7 +477,6 @@ async function createTaskMutation(c: any, cmd: CreateTaskCommand): Promise<TaskR
       repoId: c.state.repoId,
       taskId,
       repoRemote: c.state.remoteUrl,
-      repoLocalPath: localPath,
       branchName: initialBranchName,
       title: initialTitle,
       task: cmd.task,
@@ -565,24 +578,25 @@ async function registerTaskBranchMutation(c: any, cmd: RegisterTaskBranchCommand
     await driver.git.fetch(localPath, { githubToken: auth?.githubToken ?? null });
     const baseRef = await driver.git.remoteDefaultBaseRef(localPath);
     const normalizedBase = normalizeBaseBranchName(baseRef);
+    let branchAvailableInRepo = false;
 
     if (requireExistingRemote) {
       try {
         headSha = await driver.git.revParse(localPath, `origin/${branchName}`);
+        branchAvailableInRepo = true;
       } catch {
         throw new Error(`Remote branch not found: ${branchName}`);
       }
     } else {
-      await driver.git.ensureRemoteBranch(localPath, branchName, { githubToken: auth?.githubToken ?? null });
-      await driver.git.fetch(localPath, { githubToken: auth?.githubToken ?? null });
       try {
         headSha = await driver.git.revParse(localPath, `origin/${branchName}`);
+        branchAvailableInRepo = true;
       } catch {
         headSha = await driver.git.revParse(localPath, baseRef);
       }
     }
 
-    if (await driver.stack.available(localPath).catch(() => false)) {
+    if (branchAvailableInRepo && (await driver.stack.available(localPath).catch(() => false))) {
       let stackRows = await driver.stack.listStack(localPath).catch(() => []);
       let stackRow = stackRows.find((entry) => entry.branchName === branchName);
 
@@ -874,6 +888,10 @@ async function applyPrSyncResultMutation(c: any, body: PrSyncResult): Promise<vo
 
 async function applyBranchSyncResultMutation(c: any, body: BranchSyncResult): Promise<void> {
   const incoming = new Set(body.items.map((item) => item.branchName));
+  const reservedRows = await c.db.select({ branchName: taskIndex.branchName }).from(taskIndex).where(isNotNull(taskIndex.branchName)).all();
+  const reservedBranches = new Set(
+    reservedRows.map((row) => row.branchName).filter((branchName): branchName is string => typeof branchName === "string" && branchName.length > 0),
+  );
 
   for (const item of body.items) {
     const existing = await c.db
@@ -918,7 +936,7 @@ async function applyBranchSyncResultMutation(c: any, body: BranchSyncResult): Pr
   const existingRows = await c.db.select({ branchName: branches.branchName }).from(branches).all();
 
   for (const row of existingRows) {
-    if (incoming.has(row.branchName)) {
+    if (incoming.has(row.branchName) || reservedBranches.has(row.branchName)) {
       continue;
     }
     await c.db.delete(branches).where(eq(branches.branchName, row.branchName)).run();
@@ -954,7 +972,7 @@ export async function runProjectWorkflow(ctx: any): Promise<void> {
     if (msg.name === "project.command.createTask") {
       const result = await loopCtx.step({
         name: "project-create-task",
-        timeout: 12 * 60_000,
+        timeout: 5 * 60_000,
         run: async () => createTaskMutation(loopCtx, msg.body as CreateTaskCommand),
       });
       await msg.complete(result);
@@ -1020,7 +1038,7 @@ export const projectActions = {
     return expectQueueResponse<TaskRecord>(
       await self.send(projectWorkflowQueueName("project.command.createTask"), cmd, {
         wait: true,
-        timeout: 12 * 60_000,
+        timeout: 5 * 60_000,
       }),
     );
   },

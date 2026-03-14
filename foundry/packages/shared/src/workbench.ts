@@ -1,8 +1,17 @@
 import type { AgentType, ProviderId, TaskStatus } from "./contracts.js";
 
-export type WorkbenchTaskStatus = "running" | "idle" | "new" | "archived";
+export type WorkbenchTaskStatus = TaskStatus | "new";
 export type WorkbenchAgentKind = "Claude" | "Codex" | "Cursor";
-export type WorkbenchModelId = "claude-sonnet-4" | "claude-opus-4" | "gpt-4o" | "o3";
+export type WorkbenchModelId =
+  | "claude-sonnet-4"
+  | "claude-opus-4"
+  | "gpt-5.3-codex"
+  | "gpt-5.4"
+  | "gpt-5.2-codex"
+  | "gpt-5.1-codex-max"
+  | "gpt-5.2"
+  | "gpt-5.1-codex-mini";
+export type WorkbenchSessionStatus = "pending_provision" | "pending_session_create" | "ready" | "running" | "idle" | "error";
 
 export interface WorkbenchTranscriptEvent {
   id: string;
@@ -27,10 +36,11 @@ export interface WorkbenchSessionSummary {
   sessionName: string;
   agent: WorkbenchAgentKind;
   model: WorkbenchModelId;
-  status: "running" | "idle" | "error";
+  status: WorkbenchSessionStatus;
   thinkingSinceMs: number | null;
   unread: boolean;
   created: boolean;
+  errorMessage?: string | null;
 }
 
 /** Full session content — only fetched when viewing a specific session tab. */
@@ -42,10 +52,11 @@ export interface WorkbenchSessionDetail {
   sessionName: string;
   agent: WorkbenchAgentKind;
   model: WorkbenchModelId;
-  status: "running" | "idle" | "error";
+  status: WorkbenchSessionStatus;
   thinkingSinceMs: number | null;
   unread: boolean;
   created: boolean;
+  errorMessage?: string | null;
   draft: WorkbenchComposerDraft;
   transcript: WorkbenchTranscriptEvent[];
 }
@@ -166,6 +177,8 @@ export interface WorkbenchTask {
   repoId: string;
   title: string;
   status: WorkbenchTaskStatus;
+  runtimeStatus?: TaskStatus;
+  statusMessage?: string | null;
   repoName: string;
   updatedAtMs: number;
   branch: string | null;
@@ -175,6 +188,7 @@ export interface WorkbenchTask {
   diffs: Record<string, string>;
   fileTree: WorkbenchFileTreeNode[];
   minutesUsed: number;
+  activeSandboxId?: string | null;
 }
 
 export interface WorkbenchRepo {

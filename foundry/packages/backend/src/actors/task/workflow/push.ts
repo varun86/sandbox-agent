@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { eq } from "drizzle-orm";
-import { getActorRuntimeContext } from "../../context.js";
+import { getTaskSandbox } from "../../handles.js";
+import { resolveWorkspaceGithubAuth } from "../../../services/github-auth.js";
 import { taskRuntime, taskSandboxes } from "../db/schema.js";
 import { TASK_ROW_ID, appendHistory, getCurrentRecord } from "./common.js";
 
@@ -22,14 +23,10 @@ export async function pushActiveBranchActivity(loopCtx: any, options: PushActive
   }
 
   const activeSandbox = record.sandboxes.find((sandbox: any) => sandbox.sandboxId === activeSandboxId) ?? null;
-  const providerId = activeSandbox?.providerId ?? record.providerId;
   const cwd = activeSandbox?.cwd ?? null;
   if (!cwd) {
     throw new Error("cannot push: active sandbox cwd is not set");
   }
-
-  const { providers } = getActorRuntimeContext();
-  const provider = providers.get(providerId);
 
   const now = Date.now();
   await loopCtx.db
@@ -52,15 +49,23 @@ export async function pushActiveBranchActivity(loopCtx: any, options: PushActive
     `git push -u origin ${JSON.stringify(branchName)}`,
   ].join("; ");
 
-  const result = await provider.executeCommand({
-    workspaceId: loopCtx.state.workspaceId,
-    sandboxId: activeSandboxId,
-    command: ["bash", "-lc", JSON.stringify(script)].join(" "),
-    label: `git push ${branchName}`,
+  const sandbox = getTaskSandbox(loopCtx, loopCtx.state.workspaceId, activeSandboxId);
+  const auth = await resolveWorkspaceGithubAuth(loopCtx, loopCtx.state.workspaceId);
+  const result = await sandbox.runProcess({
+    command: "bash",
+    args: ["-lc", script],
+    cwd: "/",
+    env: auth?.githubToken
+      ? {
+          GH_TOKEN: auth.githubToken,
+          GITHUB_TOKEN: auth.githubToken,
+        }
+      : undefined,
+    timeoutMs: 5 * 60_000,
   });
 
-  if (result.exitCode !== 0) {
-    throw new Error(`git push failed (${result.exitCode}): ${result.result}`);
+  if ((result.exitCode ?? 0) !== 0) {
+    throw new Error(`git push failed (${result.exitCode ?? 1}): ${[result.stdout, result.stderr].filter(Boolean).join("")}`);
   }
 
   const updatedAt = Date.now();

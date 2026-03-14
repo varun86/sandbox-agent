@@ -521,6 +521,10 @@ export const Sidebar = memo(function Sidebar({
                     const isActive = task.id === activeId;
                     const isDim = task.status === "archived";
                     const isRunning = task.tabs.some((tab) => tab.status === "running");
+                    const isProvisioning =
+                      String(task.status).startsWith("init_") ||
+                      task.status === "new" ||
+                      task.tabs.some((tab) => tab.status === "pending_provision" || tab.status === "pending_session_create");
                     const hasUnread = task.tabs.some((tab) => tab.unread);
                     const isDraft = task.pullRequest == null || task.pullRequest.status === "draft";
                     const totalAdded = task.fileChanges.reduce((sum, file) => sum + file.added, 0);
@@ -592,7 +596,7 @@ export const Sidebar = memo(function Sidebar({
                               flexShrink: 0,
                             })}
                           >
-                            <TaskIndicator isRunning={isRunning} hasUnread={hasUnread} isDraft={isDraft} />
+                            <TaskIndicator isRunning={isRunning} isProvisioning={isProvisioning} hasUnread={hasUnread} isDraft={isDraft} />
                           </div>
                           <LabelSmall
                             $style={{

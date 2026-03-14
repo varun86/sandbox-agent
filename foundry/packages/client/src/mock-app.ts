@@ -1,3 +1,4 @@
+import type { WorkbenchModelId } from "@sandbox-agent/foundry-shared";
 import { injectMockLatency } from "./mock/latency.js";
 import rivetDevFixture from "../../../scripts/data/rivet-dev.json" with { type: "json" };
 
@@ -58,7 +59,7 @@ export interface MockFoundryOrganizationSettings {
   slug: string;
   primaryDomain: string;
   seatAccrualMode: "first_prompt";
-  defaultModel: "claude-sonnet-4" | "claude-opus-4" | "gpt-4o" | "o3";
+  defaultModel: WorkbenchModelId;
   autoImportRepos: boolean;
 }
 
@@ -177,7 +178,7 @@ function buildRivetOrganization(): MockFoundryOrganization {
       slug: "rivet",
       primaryDomain: "rivet.dev",
       seatAccrualMode: "first_prompt",
-      defaultModel: "o3",
+      defaultModel: "gpt-5.3-codex",
       autoImportRepos: true,
     },
     github: {

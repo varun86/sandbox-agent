@@ -43,7 +43,7 @@ import type {
 } from "@sandbox-agent/foundry-shared";
 import type { ProcessCreateRequest, ProcessInfo, ProcessLogFollowQuery, ProcessLogsResponse, ProcessSignalQuery } from "sandbox-agent";
 import { createMockBackendClient } from "./mock/backend-client.js";
-import { sandboxInstanceKey, taskKey, workspaceKey } from "./keys.js";
+import { taskKey, taskSandboxKey, workspaceKey } from "./keys.js";
 
 export type TaskAction = "push" | "sync" | "merge" | "archive" | "kill";
 
@@ -54,7 +54,7 @@ export interface SandboxSessionRecord {
   lastConnectionId: string;
   createdAt: number;
   destroyedAt?: number;
-  status?: "running" | "idle" | "error";
+  status?: "pending_provision" | "pending_session_create" | "ready" | "running" | "idle" | "error";
 }
 
 export interface SandboxSessionEventRecord {
@@ -137,23 +137,26 @@ interface TaskHandle {
   connect(): ActorConn;
 }
 
-interface SandboxInstanceHandle {
+interface TaskSandboxHandle {
   connect(): ActorConn;
   createSession(input: {
-    prompt: string;
-    cwd?: string;
-    agent?: AgentType | "opencode";
-  }): Promise<{ id: string | null; status: "running" | "idle" | "error"; error?: string }>;
+    id?: string;
+    agent: string;
+    model?: string;
+    sessionInit?: {
+      cwd?: string;
+    };
+  }): Promise<{ id: string }>;
   listSessions(input?: { cursor?: string; limit?: number }): Promise<{ items: SandboxSessionRecord[]; nextCursor?: string }>;
-  listSessionEvents(input: { sessionId: string; cursor?: string; limit?: number }): Promise<{ items: SandboxSessionEventRecord[]; nextCursor?: string }>;
+  getEvents(input: { sessionId: string; cursor?: string; limit?: number }): Promise<{ items: SandboxSessionEventRecord[]; nextCursor?: string }>;
   createProcess(input: ProcessCreateRequest): Promise<SandboxProcessRecord>;
   listProcesses(): Promise<{ processes: SandboxProcessRecord[] }>;
-  getProcessLogs(input: { processId: string; query?: ProcessLogFollowQuery }): Promise<ProcessLogsResponse>;
-  stopProcess(input: { processId: string; query?: ProcessSignalQuery }): Promise<SandboxProcessRecord>;
-  killProcess(input: { processId: string; query?: ProcessSignalQuery }): Promise<SandboxProcessRecord>;
-  deleteProcess(input: { processId: string }): Promise<void>;
-  sendPrompt(input: { sessionId: string; prompt: string; notification?: boolean }): Promise<void>;
-  sessionStatus(input: { sessionId: string }): Promise<{ id: string; status: "running" | "idle" | "error" }>;
+  getProcessLogs(processId: string, query?: ProcessLogFollowQuery): Promise<ProcessLogsResponse>;
+  stopProcess(processId: string, query?: ProcessSignalQuery): Promise<SandboxProcessRecord>;
+  killProcess(processId: string, query?: ProcessSignalQuery): Promise<SandboxProcessRecord>;
+  deleteProcess(processId: string): Promise<void>;
+  rawSendSessionMethod(sessionId: string, method: string, params: Record<string, unknown>): Promise<unknown>;
+  destroySession(sessionId: string): Promise<void>;
   sandboxAgentConnection(): Promise<{ endpoint: string; token?: string }>;
   providerState(): Promise<{ providerId: ProviderId; sandboxId: string; state: string; at: number }>;
 }
@@ -166,8 +169,10 @@ interface RivetClient {
     get(key?: string | string[]): TaskHandle;
     getOrCreate(key?: string | string[], opts?: { createWithInput?: unknown }): TaskHandle;
   };
-  sandboxInstance: {
-    getOrCreate(key?: string | string[], opts?: { createWithInput?: unknown }): SandboxInstanceHandle;
+  taskSandbox: {
+    get(key?: string | string[]): TaskSandboxHandle;
+    getOrCreate(key?: string | string[], opts?: { createWithInput?: unknown }): TaskSandboxHandle;
+    getForId(actorId: string): TaskSandboxHandle;
   };
 }
 
@@ -423,8 +428,8 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
 
   const task = async (workspaceId: string, repoId: string, taskId: string): Promise<TaskHandle> => client.task.get(taskKey(workspaceId, repoId, taskId));
 
-  const sandboxByKey = async (workspaceId: string, providerId: ProviderId, sandboxId: string): Promise<SandboxInstanceHandle> => {
-    return (client as any).sandboxInstance.get(sandboxInstanceKey(workspaceId, providerId, sandboxId));
+  const sandboxByKey = async (workspaceId: string, _providerId: ProviderId, sandboxId: string): Promise<TaskSandboxHandle> => {
+    return (client as any).taskSandbox.get(taskSandboxKey(workspaceId, sandboxId));
   };
 
   function isActorNotFoundError(error: unknown): boolean {
@@ -432,7 +437,7 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
     return message.includes("Actor not found");
   }
 
-  const sandboxByActorIdFromTask = async (workspaceId: string, providerId: ProviderId, sandboxId: string): Promise<SandboxInstanceHandle | null> => {
+  const sandboxByActorIdFromTask = async (workspaceId: string, providerId: ProviderId, sandboxId: string): Promise<TaskSandboxHandle | null> => {
     const ws = await workspace(workspaceId);
     const rows = await ws.listTasks({ workspaceId });
     const candidates = [...rows].sort((a, b) => b.updatedAt - a.updatedAt);
@@ -451,7 +456,7 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
             (sb as any).sandboxActorId.length > 0,
         ) as { sandboxActorId?: string } | undefined;
         if (sandbox?.sandboxActorId) {
-          return (client as any).sandboxInstance.getForId(sandbox.sandboxActorId);
+          return (client as any).taskSandbox.getForId(sandbox.sandboxActorId);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -469,7 +474,7 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
     workspaceId: string,
     providerId: ProviderId,
     sandboxId: string,
-    run: (handle: SandboxInstanceHandle) => Promise<T>,
+    run: (handle: TaskSandboxHandle) => Promise<T>,
   ): Promise<T> => {
     const handle = await sandboxByKey(workspaceId, providerId, sandboxId);
     try {
@@ -511,48 +516,65 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
 
   const getWorkbenchCompat = async (workspaceId: string): Promise<TaskWorkbenchSnapshot> => {
     const summary = await (await workspace(workspaceId)).getWorkspaceSummary({ workspaceId });
-    const tasks = await Promise.all(
-      summary.taskSummaries.map(async (taskSummary) => {
-        const detail = await (await task(workspaceId, taskSummary.repoId, taskSummary.id)).getTaskDetail();
-        const sessionDetails = await Promise.all(
-          detail.sessionsSummary.map(async (session) => {
-            const full = await (await task(workspaceId, detail.repoId, detail.id)).getSessionDetail({ sessionId: session.id });
-            return [session.id, full] as const;
-          }),
-        );
-        const sessionDetailsById = new Map(sessionDetails);
-        return {
-          id: detail.id,
-          repoId: detail.repoId,
-          title: detail.title,
-          status: detail.status,
-          repoName: detail.repoName,
-          updatedAtMs: detail.updatedAtMs,
-          branch: detail.branch,
-          pullRequest: detail.pullRequest,
-          tabs: detail.sessionsSummary.map((session) => {
-            const full = sessionDetailsById.get(session.id);
-            return {
-              id: session.id,
-              sessionId: session.sessionId,
-              sessionName: session.sessionName,
-              agent: session.agent,
-              model: session.model,
-              status: session.status,
-              thinkingSinceMs: session.thinkingSinceMs,
-              unread: session.unread,
-              created: session.created,
-              draft: full?.draft ?? { text: "", attachments: [], updatedAtMs: null },
-              transcript: full?.transcript ?? [],
-            };
-          }),
-          fileChanges: detail.fileChanges,
-          diffs: detail.diffs,
-          fileTree: detail.fileTree,
-          minutesUsed: detail.minutesUsed,
-        };
-      }),
-    );
+    const tasks = (
+      await Promise.all(
+        summary.taskSummaries.map(async (taskSummary) => {
+          let detail;
+          try {
+            detail = await (await task(workspaceId, taskSummary.repoId, taskSummary.id)).getTaskDetail();
+          } catch (error) {
+            if (isActorNotFoundError(error)) {
+              return null;
+            }
+            throw error;
+          }
+          const sessionDetails = await Promise.all(
+            detail.sessionsSummary.map(async (session) => {
+              try {
+                const full = await (await task(workspaceId, detail.repoId, detail.id)).getSessionDetail({ sessionId: session.id });
+                return [session.id, full] as const;
+              } catch (error) {
+                if (isActorNotFoundError(error)) {
+                  return null;
+                }
+                throw error;
+              }
+            }),
+          );
+          const sessionDetailsById = new Map(sessionDetails.filter((entry): entry is readonly [string, WorkbenchSessionDetail] => entry !== null));
+          return {
+            id: detail.id,
+            repoId: detail.repoId,
+            title: detail.title,
+            status: detail.status,
+            repoName: detail.repoName,
+            updatedAtMs: detail.updatedAtMs,
+            branch: detail.branch,
+            pullRequest: detail.pullRequest,
+            tabs: detail.sessionsSummary.map((session) => {
+              const full = sessionDetailsById.get(session.id);
+              return {
+                id: session.id,
+                sessionId: session.sessionId,
+                sessionName: session.sessionName,
+                agent: session.agent,
+                model: session.model,
+                status: session.status,
+                thinkingSinceMs: session.thinkingSinceMs,
+                unread: session.unread,
+                created: session.created,
+                draft: full?.draft ?? { text: "", attachments: [], updatedAtMs: null },
+                transcript: full?.transcript ?? [],
+              };
+            }),
+            fileChanges: detail.fileChanges,
+            diffs: detail.diffs,
+            fileTree: detail.fileTree,
+            minutesUsed: detail.minutesUsed,
+          };
+        }),
+      )
+    ).filter((task): task is TaskWorkbenchSnapshot["tasks"][number] => task !== null);
 
     const projects = summary.repos
       .map((repo) => ({
@@ -639,8 +661,7 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
 
     if (!entry.disposeConnPromise) {
       entry.disposeConnPromise = (async () => {
-        const handle = await sandboxByKey(workspaceId, providerId, sandboxId);
-        const conn = (handle as any).connect();
+        const conn = await connectSandbox(workspaceId, providerId, sandboxId);
         const unsubscribeEvent = conn.on("processesUpdated", () => {
           const current = sandboxProcessSubscriptions.get(key);
           if (!current) {
@@ -958,17 +979,22 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
     }): Promise<{ id: string; status: "running" | "idle" | "error" }> {
       const created = await withSandboxHandle(input.workspaceId, input.providerId, input.sandboxId, async (handle) =>
         handle.createSession({
-          prompt: input.prompt,
-          cwd: input.cwd,
-          agent: input.agent,
+          agent: input.agent ?? "claude",
+          sessionInit: {
+            cwd: input.cwd,
+          },
         }),
       );
-      if (!created.id) {
-        throw new Error(created.error ?? "sandbox session creation failed");
+      if (input.prompt.trim().length > 0) {
+        await withSandboxHandle(input.workspaceId, input.providerId, input.sandboxId, async (handle) =>
+          handle.rawSendSessionMethod(created.id, "session/prompt", {
+            prompt: [{ type: "text", text: input.prompt }],
+          }),
+        );
       }
       return {
         id: created.id,
-        status: created.status,
+        status: "idle",
       };
     },
 
@@ -987,7 +1013,7 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
       sandboxId: string,
       input: { sessionId: string; cursor?: string; limit?: number },
     ): Promise<{ items: SandboxSessionEventRecord[]; nextCursor?: string }> {
-      return await withSandboxHandle(workspaceId, providerId, sandboxId, async (handle) => handle.listSessionEvents(input));
+      return await withSandboxHandle(workspaceId, providerId, sandboxId, async (handle) => handle.getEvents(input));
     },
 
     async createSandboxProcess(input: {
@@ -1010,7 +1036,7 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
       processId: string,
       query?: ProcessLogFollowQuery,
     ): Promise<ProcessLogsResponse> {
-      return await withSandboxHandle(workspaceId, providerId, sandboxId, async (handle) => handle.getProcessLogs({ processId, query }));
+      return await withSandboxHandle(workspaceId, providerId, sandboxId, async (handle) => handle.getProcessLogs(processId, query));
     },
 
     async stopSandboxProcess(
@@ -1020,7 +1046,7 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
       processId: string,
       query?: ProcessSignalQuery,
     ): Promise<SandboxProcessRecord> {
-      return await withSandboxHandle(workspaceId, providerId, sandboxId, async (handle) => handle.stopProcess({ processId, query }));
+      return await withSandboxHandle(workspaceId, providerId, sandboxId, async (handle) => handle.stopProcess(processId, query));
     },
 
     async killSandboxProcess(
@@ -1030,11 +1056,11 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
       processId: string,
       query?: ProcessSignalQuery,
     ): Promise<SandboxProcessRecord> {
-      return await withSandboxHandle(workspaceId, providerId, sandboxId, async (handle) => handle.killProcess({ processId, query }));
+      return await withSandboxHandle(workspaceId, providerId, sandboxId, async (handle) => handle.killProcess(processId, query));
     },
 
     async deleteSandboxProcess(workspaceId: string, providerId: ProviderId, sandboxId: string, processId: string): Promise<void> {
-      await withSandboxHandle(workspaceId, providerId, sandboxId, async (handle) => handle.deleteProcess({ processId }));
+      await withSandboxHandle(workspaceId, providerId, sandboxId, async (handle) => handle.deleteProcess(processId));
     },
 
     subscribeSandboxProcesses(workspaceId: string, providerId: ProviderId, sandboxId: string, listener: () => void): () => void {
@@ -1050,10 +1076,8 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
       notification?: boolean;
     }): Promise<void> {
       await withSandboxHandle(input.workspaceId, input.providerId, input.sandboxId, async (handle) =>
-        handle.sendPrompt({
-          sessionId: input.sessionId,
-          prompt: input.prompt,
-          notification: input.notification,
+        handle.rawSendSessionMethod(input.sessionId, "session/prompt", {
+          prompt: [{ type: "text", text: input.prompt }],
         }),
       );
     },
@@ -1064,7 +1088,10 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
       sandboxId: string,
       sessionId: string,
     ): Promise<{ id: string; status: "running" | "idle" | "error" }> {
-      return await withSandboxHandle(workspaceId, providerId, sandboxId, async (handle) => handle.sessionStatus({ sessionId }));
+      return {
+        id: sessionId,
+        status: "idle",
+      };
     },
 
     async sandboxProviderState(

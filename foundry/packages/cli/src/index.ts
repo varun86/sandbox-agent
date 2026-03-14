@@ -140,7 +140,7 @@ JSON Output:
     "tasks": {
       "total": 4,
       "byStatus": { "queued": 0, "running": 1, "idle": 2, "archived": 1, "killed": 0, "error": 0 },
-      "byProvider": { "daytona": 4 }
+      "byProvider": { "local": 4 }
     }
   }
 `);
@@ -169,7 +169,7 @@ JSON Output:
       "taskId": "...",
       "repoId": "...",
       "branchName": "feature/foo",
-      "payloadJson": "{\\"providerId\\":\\"daytona\\"}",
+      "payloadJson": "{\\"providerId\\":\\"local\\"}",
       "createdAt": 1770607522229
     }
   ]

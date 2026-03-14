@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import type { AgentType, RepoBranchRecord, RepoOverview, RepoStackAction, WorkbenchTaskStatus } from "@sandbox-agent/foundry-shared";
+import type { AgentType, RepoBranchRecord, RepoOverview, RepoStackAction, TaskWorkbenchSnapshot, WorkbenchTaskStatus } from "@sandbox-agent/foundry-shared";
 import { useInterest } from "@sandbox-agent/foundry-client";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -15,9 +15,12 @@ import { styled, useStyletron } from "baseui";
 import { HeadingSmall, HeadingXSmall, LabelSmall, LabelXSmall, MonoLabelSmall, ParagraphSmall } from "baseui/typography";
 import { Bot, CircleAlert, FolderGit2, GitBranch, MessageSquareText, SendHorizontal, Shuffle } from "lucide-react";
 import { formatDiffStat } from "../features/tasks/model";
+import { deriveHeaderStatus, describeTaskState } from "../features/tasks/status";
+import { HeaderStatusPill } from "./mock-layout/ui";
 import { buildTranscript, resolveSessionSelection } from "../features/sessions/model";
 import { backendClient } from "../lib/backend";
 import { interestManager } from "../lib/interest";
+import { DevPanel, useDevPanel } from "./dev-panel";
 
 interface WorkspaceDashboardProps {
   workspaceId: string;
@@ -99,7 +102,8 @@ const AGENT_OPTIONS: SelectItem[] = [
 
 function statusKind(status: WorkbenchTaskStatus): StatusTagKind {
   if (status === "running") return "positive";
-  if (status === "new") return "warning";
+  if (status === "error") return "negative";
+  if (status === "new" || String(status).startsWith("init_")) return "warning";
   return "neutral";
 }
 
@@ -332,6 +336,7 @@ function MetaRow({ label, value, mono = false }: { label: string; value: string;
 export function WorkspaceDashboard({ workspaceId, selectedTaskId, selectedRepoId }: WorkspaceDashboardProps) {
   const [css, theme] = useStyletron();
   const navigate = useNavigate();
+  const showDevPanel = useDevPanel();
   const repoOverviewMode = typeof selectedRepoId === "string" && selectedRepoId.length > 0;
 
   const [draft, setDraft] = useState("");
@@ -467,6 +472,10 @@ export function WorkspaceDashboard({ workspaceId, selectedTaskId, selectedRepoId
   }, [selectedForSession?.id]);
 
   const sessionRows = selectedForSession?.sessionsSummary ?? [];
+  const taskRuntimeStatus = selectedForSession?.runtimeStatus ?? selectedForSession?.status ?? null;
+  const taskStatusState = describeTaskState(taskRuntimeStatus, selectedForSession?.statusMessage ?? null);
+  const taskStateSummary = `${taskStatusState.title}. ${taskStatusState.detail}`;
+  const shouldUseTaskStateEmptyState = Boolean(selectedForSession && taskRuntimeStatus && taskRuntimeStatus !== "running" && taskRuntimeStatus !== "idle");
   const sessionSelection = useMemo(
     () =>
       resolveSessionSelection({
@@ -497,7 +506,69 @@ export function WorkspaceDashboard({ workspaceId, selectedTaskId, selectedRepoId
         }
       : null,
   );
+  const selectedSessionSummary = useMemo(() => sessionRows.find((session) => session.id === resolvedSessionId) ?? null, [resolvedSessionId, sessionRows]);
+  const isPendingProvision = selectedSessionSummary?.status === "pending_provision";
+  const isPendingSessionCreate = selectedSessionSummary?.status === "pending_session_create";
+  const isSessionError = selectedSessionSummary?.status === "error";
   const canStartSession = Boolean(selectedForSession && activeSandbox?.sandboxId);
+  const devPanelFocusedTask = useMemo(() => {
+    if (repoOverviewMode) {
+      return null;
+    }
+
+    const task = selectedForSession ?? selectedSummary;
+    if (!task) {
+      return null;
+    }
+
+    return {
+      id: task.id,
+      repoId: task.repoId,
+      title: task.title,
+      status: task.status,
+      runtimeStatus: selectedForSession?.runtimeStatus ?? null,
+      statusMessage: selectedForSession?.statusMessage ?? null,
+      branch: task.branch ?? null,
+      activeSandboxId: selectedForSession?.activeSandboxId ?? null,
+      activeSessionId: selectedForSession?.activeSessionId ?? null,
+      sandboxes: selectedForSession?.sandboxes ?? [],
+      sessions: selectedForSession?.sessionsSummary ?? [],
+    };
+  }, [repoOverviewMode, selectedForSession, selectedSummary]);
+  const devPanelSnapshot = useMemo(
+    (): TaskWorkbenchSnapshot => ({
+      workspaceId,
+      repos: repos.map((repo) => ({ id: repo.id, label: repo.label })),
+      projects: [],
+      tasks: rows.map((task) => ({
+        id: task.id,
+        repoId: task.repoId,
+        title: task.title,
+        status: task.status,
+        runtimeStatus: selectedForSession?.id === task.id ? selectedForSession.runtimeStatus : undefined,
+        statusMessage: selectedForSession?.id === task.id ? selectedForSession.statusMessage : null,
+        repoName: task.repoName,
+        updatedAtMs: task.updatedAtMs,
+        branch: task.branch ?? null,
+        pullRequest: task.pullRequest,
+        tabs: task.sessionsSummary.map((session) => ({
+          ...session,
+          draft: {
+            text: "",
+            attachments: [],
+            updatedAtMs: null,
+          },
+          transcript: [],
+        })),
+        fileChanges: [],
+        diffs: {},
+        fileTree: [],
+        minutesUsed: 0,
+        activeSandboxId: selectedForSession?.id === task.id ? selectedForSession.activeSandboxId : null,
+      })),
+    }),
+    [repos, rows, selectedForSession, workspaceId],
+  );
 
   const startSessionFromTask = async (): Promise<{ id: string; status: "running" | "idle" | "error" }> => {
     if (!selectedForSession || !activeSandbox?.sandboxId) {
@@ -1265,7 +1336,17 @@ export function WorkspaceDashboard({ workspaceId, selectedTaskId, selectedRepoId
                     <HeadingXSmall marginTop="0" marginBottom="0">
                       {selectedForSession ? (selectedForSession.title ?? "Determining title...") : "No task selected"}
                     </HeadingXSmall>
-                    {selectedForSession ? <StatusPill kind={statusKind(selectedForSession.status)}>{selectedForSession.status}</StatusPill> : null}
+                    {selectedForSession ? (
+                      <HeaderStatusPill
+                        status={deriveHeaderStatus(
+                          taskRuntimeStatus ?? selectedForSession.status,
+                          selectedForSession.statusMessage ?? null,
+                          selectedSessionSummary?.status ?? null,
+                          selectedSessionSummary?.errorMessage ?? null,
+                          Boolean(activeSandbox?.sandboxId),
+                        )}
+                      />
+                    ) : null}
                   </div>
 
                   {selectedForSession && !resolvedSessionId ? (
@@ -1280,6 +1361,11 @@ export function WorkspaceDashboard({ workspaceId, selectedTaskId, selectedRepoId
                     </Button>
                   ) : null}
                 </div>
+                {selectedForSession ? (
+                  <ParagraphSmall marginTop="0" marginBottom="0" color="contentSecondary" data-testid="task-runtime-state">
+                    {taskStateSummary}
+                  </ParagraphSmall>
+                ) : null}
               </PanelHeader>
 
               <div
@@ -1363,19 +1449,50 @@ export function WorkspaceDashboard({ workspaceId, selectedTaskId, selectedRepoId
                       >
                         {resolvedSessionId && sessionState.status === "loading" ? <Skeleton rows={2} height="90px" /> : null}
 
+                        {selectedSessionSummary && (isPendingProvision || isPendingSessionCreate) ? (
+                          <div
+                            className={css({
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: theme.sizing.scale300,
+                              padding: theme.sizing.scale500,
+                              border: `1px solid ${theme.colors.borderOpaque}`,
+                              backgroundColor: theme.colors.backgroundSecondary,
+                              marginBottom: theme.sizing.scale400,
+                            })}
+                          >
+                            <LabelSmall marginTop="0" marginBottom="0">
+                              {shouldUseTaskStateEmptyState ? taskStatusState.title : isPendingProvision ? "Provisioning sandbox..." : "Creating session..."}
+                            </LabelSmall>
+                            <Skeleton rows={1} height="32px" />
+                            <ParagraphSmall marginTop="0" marginBottom="0" color="contentSecondary">
+                              {shouldUseTaskStateEmptyState
+                                ? taskStateSummary
+                                : (selectedForSession?.statusMessage ??
+                                  (isPendingProvision ? "The task is still provisioning." : "The session is being created."))}
+                            </ParagraphSmall>
+                          </div>
+                        ) : null}
+
                         {transcript.length === 0 && !(resolvedSessionId && sessionState.status === "loading") ? (
                           <EmptyState testId="session-transcript-empty">
-                            {selectedForSession.runtimeStatus === "error" && selectedForSession.statusMessage
-                              ? `Session failed: ${selectedForSession.statusMessage}`
-                              : !activeSandbox?.sandboxId
-                                ? selectedForSession.statusMessage
-                                  ? `Sandbox unavailable: ${selectedForSession.statusMessage}`
-                                  : "This task is still provisioning its sandbox."
-                                : staleSessionId
-                                  ? `Session ${staleSessionId} is unavailable. Start a new session to continue.`
-                                  : resolvedSessionId
-                                    ? "No transcript events yet. Send a prompt to start this session."
-                                    : "No active session for this task."}
+                            {shouldUseTaskStateEmptyState
+                              ? taskStateSummary
+                              : isPendingProvision
+                                ? (selectedForSession.statusMessage ?? "Provisioning sandbox...")
+                                : isPendingSessionCreate
+                                  ? "Creating session..."
+                                  : isSessionError
+                                    ? (selectedSessionSummary?.errorMessage ?? "Session failed to start.")
+                                    : !activeSandbox?.sandboxId
+                                      ? selectedForSession.statusMessage
+                                        ? `Sandbox unavailable: ${selectedForSession.statusMessage}`
+                                        : "This task is still provisioning its sandbox."
+                                      : staleSessionId
+                                        ? `Session ${staleSessionId} is unavailable. Start a new session to continue.`
+                                        : resolvedSessionId
+                                          ? "No transcript events yet. Send a prompt to start this session."
+                                          : "No active session for this task."}
                           </EmptyState>
                         ) : null}
 
@@ -1442,7 +1559,7 @@ export function WorkspaceDashboard({ workspaceId, selectedTaskId, selectedRepoId
                         onChange={(event) => setDraft(event.target.value)}
                         placeholder="Send a follow-up prompt to this session"
                         rows={5}
-                        disabled={!activeSandbox?.sandboxId}
+                        disabled={!activeSandbox?.sandboxId || isPendingProvision || isPendingSessionCreate || isSessionError}
                         overrides={textareaTestIdOverrides("task-session-prompt")}
                       />
                       <div
@@ -1460,7 +1577,14 @@ export function WorkspaceDashboard({ workspaceId, selectedTaskId, selectedRepoId
                             void sendPrompt.mutateAsync(prompt);
                           }}
                           disabled={
-                            sendPrompt.isPending || createSession.isPending || !selectedForSession || !activeSandbox?.sandboxId || draft.trim().length === 0
+                            sendPrompt.isPending ||
+                            createSession.isPending ||
+                            !selectedForSession ||
+                            !activeSandbox?.sandboxId ||
+                            isPendingProvision ||
+                            isPendingSessionCreate ||
+                            isSessionError ||
+                            draft.trim().length === 0
                           }
                         >
                           <span
@@ -1562,6 +1686,8 @@ export function WorkspaceDashboard({ workspaceId, selectedTaskId, selectedRepoId
                       gap: theme.sizing.scale300,
                     })}
                   >
+                    <MetaRow label="State" value={taskRuntimeStatus ?? "-"} mono />
+                    <MetaRow label="State detail" value={taskStatusState.detail} />
                     <MetaRow label="Task" value={selectedForSession.id} mono />
                     <MetaRow label="Sandbox" value={selectedForSession.activeSandboxId ?? "-"} mono />
                     <MetaRow label="Session" value={resolvedSessionId ?? "-"} mono />
@@ -1606,7 +1732,7 @@ export function WorkspaceDashboard({ workspaceId, selectedTaskId, selectedRepoId
                   </div>
                 </section>
 
-                {selectedForSession.runtimeStatus === "error" ? (
+                {taskRuntimeStatus === "error" ? (
                   <div
                     className={css({
                       padding: "12px",
@@ -1625,11 +1751,11 @@ export function WorkspaceDashboard({ workspaceId, selectedTaskId, selectedRepoId
                     >
                       <CircleAlert size={14} />
                       <LabelSmall marginTop="0" marginBottom="0">
-                        Session reported an error state
+                        Task reported an error state
                       </LabelSmall>
                     </div>
                     <ParagraphSmall marginTop="0" marginBottom="0" color="contentSecondary">
-                      {selectedForSession.statusMessage ? selectedForSession.statusMessage : "Open transcript in the center panel for details."}
+                      {taskStatusState.detail}
                     </ParagraphSmall>
                   </div>
                 ) : null}
@@ -1837,7 +1963,7 @@ export function WorkspaceDashboard({ workspaceId, selectedTaskId, selectedRepoId
               }}
               data-testid="task-create-submit"
             >
-              Create Task
+              {createTask.isPending ? "Creating..." : "Create Task"}
             </Button>
           </ModalFooter>
         </Modal>
@@ -1886,6 +2012,7 @@ export function WorkspaceDashboard({ workspaceId, selectedTaskId, selectedRepoId
           </ModalFooter>
         </Modal>
       </DashboardGrid>
+      {showDevPanel ? <DevPanel workspaceId={workspaceId} snapshot={devPanelSnapshot} focusedTask={devPanelFocusedTask} /> : null}
     </AppShell>
   );
 }

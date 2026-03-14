@@ -10,7 +10,7 @@ const sample: TaskRecord = {
   branchName: "feature/test",
   title: "Test Title",
   task: "Do test",
-  providerId: "daytona",
+  providerId: "local",
   status: "running",
   statusMessage: null,
   activeSandboxId: "sandbox-1",
@@ -18,9 +18,9 @@ const sample: TaskRecord = {
   sandboxes: [
     {
       sandboxId: "sandbox-1",
-      providerId: "daytona",
+      providerId: "local",
       sandboxActorId: null,
-      switchTarget: "daytona://sandbox-1",
+      switchTarget: "sandbox://local/sandbox-1",
       cwd: null,
       createdAt: 1,
       updatedAt: 1,
@@ -73,8 +73,8 @@ describe("summary helpers", () => {
   it("summarizes by status and provider", () => {
     const rows: TaskRecord[] = [
       sample,
-      { ...sample, taskId: "task-2", status: "idle", providerId: "daytona" },
-      { ...sample, taskId: "task-3", status: "error", providerId: "daytona" },
+      { ...sample, taskId: "task-2", status: "idle", providerId: "local" },
+      { ...sample, taskId: "task-3", status: "error", providerId: "local" },
     ];
 
     const summary = summarizeTasks(rows);
@@ -82,6 +82,6 @@ describe("summary helpers", () => {
     expect(summary.byStatus.running).toBe(1);
     expect(summary.byStatus.idle).toBe(1);
     expect(summary.byStatus.error).toBe(1);
-    expect(summary.byProvider.daytona).toBe(3);
+    expect(summary.byProvider.local).toBe(3);
   });
 });

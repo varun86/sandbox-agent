@@ -43,19 +43,17 @@ export const ConfigSchema = z.object({
     .object({
       local: z
         .object({
-          rootDir: z.string().optional(),
-          sandboxAgentPort: z.number().int().min(1).max(65535).optional(),
+          image: z.string().optional(),
         })
         .default({}),
-      daytona: z
+      e2b: z
         .object({
-          endpoint: z.string().optional(),
           apiKey: z.string().optional(),
-          image: z.string().default("ubuntu:24.04"),
+          template: z.string().optional(),
         })
-        .default({ image: "ubuntu:24.04" }),
+        .default({}),
     })
-    .default({ local: {}, daytona: { image: "ubuntu:24.04" } }),
+    .default({ local: {}, e2b: {} }),
 });
 
 export type AppConfig = z.infer<typeof ConfigSchema>;

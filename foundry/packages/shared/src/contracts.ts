@@ -7,7 +7,7 @@ export const WorkspaceIdSchema = z
   .regex(/^[a-zA-Z0-9._-]+$/);
 export type WorkspaceId = z.infer<typeof WorkspaceIdSchema>;
 
-export const ProviderIdSchema = z.enum(["daytona", "local"]);
+export const ProviderIdSchema = z.enum(["e2b", "local"]);
 export type ProviderId = z.infer<typeof ProviderIdSchema>;
 
 export const AgentTypeSchema = z.enum(["claude", "codex"]);
@@ -24,12 +24,6 @@ export const TaskStatusSchema = z.enum([
   "init_enqueue_provision",
   "init_ensure_name",
   "init_assert_name",
-  "init_create_sandbox",
-  "init_ensure_agent",
-  "init_start_sandbox_instance",
-  "init_create_session",
-  "init_write_db",
-  "init_start_status_sync",
   "init_complete",
   "running",
   "idle",

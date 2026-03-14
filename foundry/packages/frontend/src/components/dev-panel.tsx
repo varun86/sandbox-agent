@@ -1,21 +1,70 @@
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { useStyletron } from "baseui";
 import { useFoundryTokens } from "../app/theme";
 import { isMockFrontendClient } from "../lib/env";
-import type { FoundryOrganization, TaskWorkbenchSnapshot, WorkbenchTask } from "@sandbox-agent/foundry-shared";
+import { interestManager } from "../lib/interest";
+import type {
+  FoundryOrganization,
+  TaskStatus,
+  TaskWorkbenchSnapshot,
+  WorkbenchSandboxSummary,
+  WorkbenchSessionSummary,
+  WorkbenchTaskStatus,
+} from "@sandbox-agent/foundry-shared";
+import type { DebugInterestTopic } from "@sandbox-agent/foundry-client";
+import { describeTaskState } from "../features/tasks/status";
 
 interface DevPanelProps {
   workspaceId: string;
   snapshot: TaskWorkbenchSnapshot;
   organization?: FoundryOrganization | null;
+  focusedTask?: DevPanelFocusedTask | null;
+}
+
+export interface DevPanelFocusedTask {
+  id: string;
+  repoId: string;
+  title: string | null;
+  status: WorkbenchTaskStatus;
+  runtimeStatus?: TaskStatus | null;
+  statusMessage?: string | null;
+  branch?: string | null;
+  activeSandboxId?: string | null;
+  activeSessionId?: string | null;
+  sandboxes?: WorkbenchSandboxSummary[];
+  sessions?: WorkbenchSessionSummary[];
 }
 
 interface TopicInfo {
   label: string;
   key: string;
+  /** Parsed params portion of the cache key, or empty if none. */
+  params: string;
   listenerCount: number;
   hasConnection: boolean;
+  status: "loading" | "connected" | "error";
   lastRefresh: number | null;
+}
+
+function topicLabel(topic: DebugInterestTopic): string {
+  switch (topic.topicKey) {
+    case "app":
+      return "App";
+    case "workspace":
+      return "Workspace";
+    case "task":
+      return "Task";
+    case "session":
+      return "Session";
+    case "sandboxProcesses":
+      return "Sandbox";
+  }
+}
+
+/** Extract the params portion of a cache key (everything after the first `:`) */
+function topicParams(topic: DebugInterestTopic): string {
+  const idx = topic.cacheKey.indexOf(":");
+  return idx >= 0 ? topic.cacheKey.slice(idx + 1) : "";
 }
 
 function timeAgo(ts: number | null): string {
@@ -28,17 +77,17 @@ function timeAgo(ts: number | null): string {
   return `${Math.floor(minutes / 60)}h`;
 }
 
-function taskStatusLabel(task: WorkbenchTask): string {
-  if (task.status === "archived") return "archived";
-  const hasRunning = task.tabs?.some((tab) => tab.status === "running");
-  if (hasRunning) return "running";
-  return task.status ?? "idle";
-}
-
 function statusColor(status: string, t: ReturnType<typeof useFoundryTokens>): string {
+  if (status === "new" || status.startsWith("init_") || status.startsWith("archive_") || status.startsWith("kill_") || status.startsWith("pending_")) {
+    return t.statusWarning;
+  }
   switch (status) {
+    case "connected":
     case "running":
+    case "ready":
       return t.statusSuccess;
+    case "loading":
+      return t.statusWarning;
     case "archived":
       return t.textMuted;
     case "error":
@@ -76,7 +125,15 @@ function installStatusColor(status: string, t: ReturnType<typeof useFoundryToken
   }
 }
 
-export const DevPanel = memo(function DevPanel({ workspaceId, snapshot, organization }: DevPanelProps) {
+/** Format elapsed thinking time as a compact string. */
+function thinkingLabel(sinceMs: number | null, now: number): string | null {
+  if (!sinceMs) return null;
+  const elapsed = Math.floor((now - sinceMs) / 1000);
+  if (elapsed < 1) return "thinking";
+  return `thinking ${elapsed}s`;
+}
+
+export const DevPanel = memo(function DevPanel({ workspaceId, snapshot, organization, focusedTask }: DevPanelProps) {
   const [css] = useStyletron();
   const t = useFoundryTokens();
   const [now, setNow] = useState(Date.now());
@@ -88,37 +145,20 @@ export const DevPanel = memo(function DevPanel({ workspaceId, snapshot, organiza
   }, []);
 
   const topics = useMemo((): TopicInfo[] => {
-    const items: TopicInfo[] = [];
+    return interestManager.listDebugTopics().map((topic) => ({
+      label: topicLabel(topic),
+      key: topic.cacheKey,
+      params: topicParams(topic),
+      listenerCount: topic.listenerCount,
+      hasConnection: topic.status === "connected",
+      status: topic.status,
+      lastRefresh: topic.lastRefreshAt,
+    }));
+  }, [now]);
 
-    // Workbench subscription topic
-    items.push({
-      label: "Workbench",
-      key: `ws:${workspaceId}`,
-      listenerCount: 1,
-      hasConnection: true,
-      lastRefresh: now,
-    });
-
-    // Per-task tab subscriptions
-    for (const task of snapshot.tasks ?? []) {
-      if (task.status === "archived") continue;
-      for (const tab of task.tabs ?? []) {
-        items.push({
-          label: `Tab/${task.title?.slice(0, 16) || task.id.slice(0, 8)}/${tab.sessionName.slice(0, 10)}`,
-          key: `${workspaceId}:${task.id}:${tab.id}`,
-          listenerCount: 1,
-          hasConnection: tab.status === "running",
-          lastRefresh: tab.status === "running" ? now : null,
-        });
-      }
-    }
-
-    return items;
-  }, [workspaceId, snapshot, now]);
-
-  const tasks = snapshot.tasks ?? [];
   const repos = snapshot.repos ?? [];
-  const projects = snapshot.projects ?? [];
+  const focusedTaskStatus = focusedTask?.runtimeStatus ?? focusedTask?.status ?? null;
+  const focusedTaskState = describeTaskState(focusedTaskStatus, focusedTask?.statusMessage ?? null);
 
   const mono = css({
     fontFamily: "ui-monospace, SFMono-Regular, 'SF Mono', Consolas, monospace",
@@ -199,7 +239,14 @@ export const DevPanel = memo(function DevPanel({ workspaceId, snapshot, organiza
               <span className={css({ fontSize: "10px", color: t.textPrimary, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" })}>
                 {topic.label}
               </span>
-              <span className={`${mono} ${css({ color: t.textMuted })}`}>{topic.key.length > 24 ? `...${topic.key.slice(-20)}` : topic.key}</span>
+              <span className={`${mono} ${css({ color: statusColor(topic.status, t) })}`}>{topic.status}</span>
+              {topic.params && (
+                <span
+                  className={`${mono} ${css({ color: t.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100px" })}`}
+                >
+                  {topic.params}
+                </span>
+              )}
               <span className={`${mono} ${css({ color: t.textTertiary })}`}>{timeAgo(topic.lastRefresh)}</span>
             </div>
           ))}
@@ -210,44 +257,150 @@ export const DevPanel = memo(function DevPanel({ workspaceId, snapshot, organiza
         <Section label="Snapshot" t={t} css={css}>
           <div className={css({ display: "flex", gap: "10px", fontSize: "10px" })}>
             <Stat label="repos" value={repos.length} t={t} css={css} />
-            <Stat label="projects" value={projects.length} t={t} css={css} />
-            <Stat label="tasks" value={tasks.length} t={t} css={css} />
+            <Stat label="tasks" value={(snapshot.tasks ?? []).length} t={t} css={css} />
           </div>
         </Section>
 
-        {/* Tasks */}
-        {tasks.length > 0 && (
-          <Section label="Tasks" t={t} css={css}>
-            {tasks.slice(0, 10).map((task) => {
-              const status = taskStatusLabel(task);
-              return (
-                <div
-                  key={task.id}
+        <Section label="Focused Task" t={t} css={css}>
+          {focusedTask ? (
+            <div className={css({ display: "flex", flexDirection: "column", gap: "3px", fontSize: "10px" })}>
+              <div className={css({ display: "flex", alignItems: "center", gap: "6px" })}>
+                <span
                   className={css({
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    padding: "1px 0",
-                    fontSize: "10px",
+                    width: "5px",
+                    height: "5px",
+                    borderRadius: "50%",
+                    backgroundColor: statusColor(focusedTaskStatus ?? focusedTask.status, t),
+                    flexShrink: 0,
                   })}
-                >
-                  <span
+                />
+                <span className={css({ color: t.textPrimary, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" })}>
+                  {focusedTask.title || focusedTask.id.slice(0, 12)}
+                </span>
+                <span className={`${mono} ${css({ color: statusColor(focusedTaskStatus ?? focusedTask.status, t) })}`}>
+                  {focusedTaskStatus ?? focusedTask.status}
+                </span>
+              </div>
+              <div className={`${mono} ${css({ color: t.textMuted })}`}>{focusedTaskState.detail}</div>
+              <div className={`${mono} ${css({ color: t.textTertiary })}`}>task: {focusedTask.id}</div>
+              <div className={`${mono} ${css({ color: t.textTertiary })}`}>repo: {focusedTask.repoId}</div>
+              <div className={`${mono} ${css({ color: t.textTertiary })}`}>branch: {focusedTask.branch ?? "-"}</div>
+            </div>
+          ) : (
+            <span className={css({ fontSize: "10px", color: t.textMuted })}>No task focused</span>
+          )}
+        </Section>
+
+        {/* Session — only when a task is focused */}
+        {focusedTask && (
+          <Section label="Session" t={t} css={css}>
+            {(focusedTask.sessions?.length ?? 0) > 0 ? (
+              focusedTask.sessions!.map((session) => {
+                const isActive = session.id === focusedTask.activeSessionId;
+                const thinking = thinkingLabel(session.thinkingSinceMs, now);
+                return (
+                  <div
+                    key={session.id}
                     className={css({
-                      width: "5px",
-                      height: "5px",
-                      borderRadius: "50%",
-                      backgroundColor: statusColor(status, t),
-                      flexShrink: 0,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "1px",
+                      padding: "2px 0",
+                      fontSize: "10px",
                     })}
-                  />
-                  <span className={css({ color: t.textPrimary, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" })}>
-                    {task.title || task.id.slice(0, 12)}
-                  </span>
-                  <span className={`${mono} ${css({ color: statusColor(status, t) })}`}>{status}</span>
-                  <span className={`${mono} ${css({ color: t.textMuted })}`}>{task.tabs?.length ?? 0} tabs</span>
-                </div>
-              );
-            })}
+                  >
+                    <div className={css({ display: "flex", alignItems: "center", gap: "6px" })}>
+                      <span
+                        className={css({
+                          width: "5px",
+                          height: "5px",
+                          borderRadius: "50%",
+                          backgroundColor: statusColor(session.status, t),
+                          flexShrink: 0,
+                        })}
+                      />
+                      <span
+                        className={css({
+                          color: isActive ? t.textPrimary : t.textTertiary,
+                          flex: 1,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        })}
+                      >
+                        {session.sessionName || session.id.slice(0, 12)}
+                        {isActive ? " *" : ""}
+                      </span>
+                      <span className={`${mono} ${css({ color: statusColor(session.status, t) })}`}>{session.status}</span>
+                    </div>
+                    <div className={css({ display: "flex", gap: "6px", paddingLeft: "11px" })}>
+                      <span className={`${mono} ${css({ color: t.textMuted })}`}>{session.agent}</span>
+                      <span className={`${mono} ${css({ color: t.textMuted })}`}>{session.model}</span>
+                      {!session.created && <span className={`${mono} ${css({ color: t.statusWarning })}`}>not created</span>}
+                      {session.unread && <span className={`${mono} ${css({ color: t.statusWarning })}`}>unread</span>}
+                      {thinking && <span className={`${mono} ${css({ color: t.statusWarning })}`}>{thinking}</span>}
+                    </div>
+                    {session.errorMessage && (
+                      <div className={`${mono} ${css({ color: t.statusError, paddingLeft: "11px", wordBreak: "break-word" })}`}>{session.errorMessage}</div>
+                    )}
+                    {session.sessionId && <div className={`${mono} ${css({ color: t.textTertiary, paddingLeft: "11px" })}`}>sid: {session.sessionId}</div>}
+                  </div>
+                );
+              })
+            ) : (
+              <span className={css({ fontSize: "10px", color: t.textMuted })}>No sessions</span>
+            )}
+          </Section>
+        )}
+
+        {/* Sandbox — only when a task is focused */}
+        {focusedTask && (
+          <Section label="Sandbox" t={t} css={css}>
+            {(focusedTask.sandboxes?.length ?? 0) > 0 ? (
+              focusedTask.sandboxes!.map((sandbox) => {
+                const isActive = sandbox.sandboxId === focusedTask.activeSandboxId;
+                return (
+                  <div
+                    key={sandbox.sandboxId}
+                    className={css({
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "1px",
+                      padding: "2px 0",
+                      fontSize: "10px",
+                    })}
+                  >
+                    <div className={css({ display: "flex", alignItems: "center", gap: "6px" })}>
+                      <span
+                        className={css({
+                          width: "5px",
+                          height: "5px",
+                          borderRadius: "50%",
+                          backgroundColor: isActive ? t.statusSuccess : t.textMuted,
+                          flexShrink: 0,
+                        })}
+                      />
+                      <span
+                        className={css({
+                          color: isActive ? t.textPrimary : t.textTertiary,
+                          flex: 1,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        })}
+                      >
+                        {sandbox.sandboxId.slice(0, 16)}
+                        {isActive ? " *" : ""}
+                      </span>
+                      <span className={`${mono} ${css({ color: t.textMuted })}`}>{sandbox.providerId}</span>
+                    </div>
+                    {sandbox.cwd && <div className={`${mono} ${css({ color: t.textTertiary, paddingLeft: "11px" })}`}>cwd: {sandbox.cwd}</div>}
+                  </div>
+                );
+              })
+            ) : (
+              <span className={css({ fontSize: "10px", color: t.textMuted })}>No sandboxes</span>
+            )}
           </Section>
         )}
 

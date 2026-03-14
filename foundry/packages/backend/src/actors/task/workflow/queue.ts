@@ -26,7 +26,6 @@ export const TASK_QUEUE_NAMES = [
   "task.command.workbench.close_session",
   "task.command.workbench.publish_pr",
   "task.command.workbench.revert_file",
-  "task.status_sync.result",
 ] as const;
 
 export function taskWorkflowQueueName(name: string): string {

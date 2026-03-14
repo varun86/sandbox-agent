@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { setTimeout as delay } from "node:timers/promises";
 import { desc, eq } from "drizzle-orm";
 import { Loop } from "rivetkit/workflow";
 import type {
@@ -37,6 +38,7 @@ import type {
 import { getActorRuntimeContext } from "../context.js";
 import { getTask, getOrCreateHistory, getOrCreateProject, selfWorkspace } from "../handles.js";
 import { logActorWarning, resolveErrorMessage } from "../logging.js";
+import { availableSandboxProviderIds, defaultSandboxProviderId } from "../../sandbox-config.js";
 import { normalizeRemoteUrl, repoIdFromRemote } from "../../services/repo.js";
 import { resolveWorkspaceGithubAuth } from "../../services/github-auth.js";
 import { taskLookup, repos, providerProfiles, taskSummaries } from "./db/schema.js";
@@ -258,6 +260,24 @@ async function requireWorkbenchTask(c: any, taskId: string) {
   return getTask(c, c.state.workspaceId, repoId, taskId);
 }
 
+async function waitForWorkbenchTaskReady(task: any, timeoutMs = 5 * 60_000): Promise<any> {
+  const startedAt = Date.now();
+
+  for (;;) {
+    const record = await task.get();
+    if (record?.branchName && record?.title) {
+      return record;
+    }
+    if (record?.status === "error") {
+      throw new Error("task initialization failed before the workbench session was ready");
+    }
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error("timed out waiting for task initialization");
+    }
+    await delay(1_000);
+  }
+}
+
 /**
  * Reads the workspace sidebar snapshot from the workspace actor's local SQLite
  * only. Task actors push summary updates into `task_summaries`, so clients do
@@ -343,8 +363,8 @@ async function addRepoMutation(c: any, input: AddRepoInput): Promise<RepoRecord>
 async function createTaskMutation(c: any, input: CreateTaskInput): Promise<TaskRecord> {
   assertWorkspace(c, input.workspaceId);
 
-  const { providers } = getActorRuntimeContext();
-  const providerId = input.providerId ?? providers.defaultProviderId();
+  const { config } = getActorRuntimeContext();
+  const providerId = input.providerId ?? defaultSandboxProviderId(config);
 
   const repoId = input.repoId;
   const repoRow = await c.db.select({ remoteUrl: repos.remoteUrl }).from(repos).where(eq(repos.repoId, repoId)).get();
@@ -370,7 +390,6 @@ async function createTaskMutation(c: any, input: CreateTaskInput): Promise<TaskR
     .run();
 
   const project = await getOrCreateProject(c, c.state.workspaceId, repoId, remoteUrl);
-  await project.ensure({ remoteUrl });
 
   const created = await project.createTask({
     task: input.task,
@@ -412,8 +431,8 @@ async function createTaskMutation(c: any, input: CreateTaskInput): Promise<TaskR
 
 async function refreshProviderProfilesMutation(c: any, command?: RefreshProviderProfilesCommand): Promise<void> {
   const body = command ?? {};
-  const { providers } = getActorRuntimeContext();
-  const providerIds: ProviderId[] = body.providerId ? [body.providerId] : providers.availableProviderIds();
+  const { config } = getActorRuntimeContext();
+  const providerIds: ProviderId[] = body.providerId ? [body.providerId] : availableSandboxProviderIds(config);
 
   for (const providerId of providerIds) {
     await c.db
@@ -457,7 +476,7 @@ export async function runWorkspaceWorkflow(ctx: any): Promise<void> {
     if (msg.name === "workspace.command.createTask") {
       const result = await loopCtx.step({
         name: "workspace-create-task",
-        timeout: 12 * 60_000,
+        timeout: 5 * 60_000,
         run: async () => createTaskMutation(loopCtx, msg.body as CreateTaskInput),
       });
       await msg.complete(result);
@@ -547,7 +566,7 @@ export const workspaceActions = {
     return expectQueueResponse<TaskRecord>(
       await self.send(workspaceWorkflowQueueName("workspace.command.createTask"), input, {
         wait: true,
-        timeout: 12 * 60_000,
+        timeout: 5 * 60_000,
       }),
     );
   },
@@ -604,8 +623,21 @@ export const workspaceActions = {
       ...(input.branch ? { explicitBranchName: input.branch } : {}),
       ...(input.model ? { agentType: agentTypeForModel(input.model) } : {}),
     });
+    const task = await requireWorkbenchTask(c, created.taskId);
+    await waitForWorkbenchTaskReady(task);
+    const session = await task.createWorkbenchSession({
+      taskId: created.taskId,
+      ...(input.model ? { model: input.model } : {}),
+    });
+    await task.sendWorkbenchMessage({
+      taskId: created.taskId,
+      tabId: session.tabId,
+      text: input.task,
+      attachments: [],
+    });
     return {
       taskId: created.taskId,
+      tabId: session.tabId,
     };
   },
 

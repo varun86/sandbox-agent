@@ -1,3 +1,5 @@
+import type { WorkbenchModelId } from "./workbench.js";
+
 export type FoundryBillingPlanId = "free" | "team";
 export type FoundryBillingStatus = "active" | "trialing" | "past_due" | "scheduled_cancel";
 export type FoundryGithubInstallationStatus = "connected" | "install_required" | "reconnect_required";
@@ -55,7 +57,7 @@ export interface FoundryOrganizationSettings {
   slug: string;
   primaryDomain: string;
   seatAccrualMode: "first_prompt";
-  defaultModel: "claude-sonnet-4" | "claude-opus-4" | "gpt-4o" | "o3";
+  defaultModel: WorkbenchModelId;
   autoImportRepos: boolean;
 }
 

@@ -1,15 +1,14 @@
 // @ts-nocheck
 import { randomUUID } from "node:crypto";
-import { basename } from "node:path";
+import { basename, dirname } from "node:path";
 import { asc, eq } from "drizzle-orm";
 import { getActorRuntimeContext } from "../context.js";
-import { getOrCreateTaskStatusSync, getOrCreateProject, getOrCreateWorkspace, getSandboxInstance, selfTask } from "../handles.js";
+import { getOrCreateProject, getOrCreateTaskSandbox, getOrCreateWorkspace, getTaskSandbox, selfTask } from "../handles.js";
+import { SANDBOX_REPO_CWD } from "../sandbox/index.js";
+import { resolveSandboxProviderId } from "../../sandbox-config.js";
 import { resolveWorkspaceGithubAuth } from "../../services/github-auth.js";
-import { task as taskTable, taskRuntime, taskWorkbenchSessions } from "./db/schema.js";
+import { task as taskTable, taskRuntime, taskSandboxes, taskWorkbenchSessions } from "./db/schema.js";
 import { getCurrentRecord } from "./workflow/common.js";
-import { taskWorkflowQueueName } from "./workflow/queue.js";
-
-const STATUS_SYNC_INTERVAL_MS = 1_000;
 
 function emptyGitState() {
   return {
@@ -57,18 +56,22 @@ async function ensureTaskRuntimeCacheColumns(c: any): Promise<void> {
 }
 
 function defaultModelForAgent(agentType: string | null | undefined) {
-  return agentType === "codex" ? "gpt-4o" : "claude-sonnet-4";
+  return agentType === "codex" ? "gpt-5.3-codex" : "claude-sonnet-4";
+}
+
+function isCodexModel(model: string) {
+  return model.startsWith("gpt-") || model.startsWith("o");
 }
 
 function agentKindForModel(model: string) {
-  if (model === "gpt-4o" || model === "o3") {
+  if (isCodexModel(model)) {
     return "Codex";
   }
   return "Claude";
 }
 
 export function agentTypeForModel(model: string) {
-  if (model === "gpt-4o" || model === "o3") {
+  if (isCodexModel(model)) {
     return "codex";
   }
   return "claude";
@@ -291,6 +294,121 @@ function shellFragment(parts: string[]): string {
   return parts.join(" && ");
 }
 
+function stableSandboxId(c: any): string {
+  return c.state.taskId;
+}
+
+async function getTaskSandboxRuntime(
+  c: any,
+  record: any,
+): Promise<{
+  sandbox: any;
+  sandboxId: string;
+  providerId: string;
+  switchTarget: string;
+  cwd: string;
+}> {
+  const { config } = getActorRuntimeContext();
+  const sandboxId = stableSandboxId(c);
+  const providerId = resolveSandboxProviderId(config, record.providerId ?? c.state.providerId ?? null);
+  const sandbox = await getOrCreateTaskSandbox(c, c.state.workspaceId, sandboxId, {});
+  const actorId = typeof sandbox.resolve === "function" ? await sandbox.resolve().catch(() => null) : null;
+  const switchTarget = providerId === "local" ? `sandbox://local/${sandboxId}` : `sandbox://e2b/${sandboxId}`;
+  const now = Date.now();
+
+  await c.db
+    .insert(taskSandboxes)
+    .values({
+      sandboxId,
+      providerId,
+      sandboxActorId: typeof actorId === "string" ? actorId : null,
+      switchTarget,
+      cwd: SANDBOX_REPO_CWD,
+      statusMessage: "sandbox ready",
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: taskSandboxes.sandboxId,
+      set: {
+        providerId,
+        sandboxActorId: typeof actorId === "string" ? actorId : null,
+        switchTarget,
+        cwd: SANDBOX_REPO_CWD,
+        updatedAt: now,
+      },
+    })
+    .run();
+
+  await c.db
+    .update(taskRuntime)
+    .set({
+      activeSandboxId: sandboxId,
+      activeSwitchTarget: switchTarget,
+      activeCwd: SANDBOX_REPO_CWD,
+      updatedAt: now,
+    })
+    .where(eq(taskRuntime.id, 1))
+    .run();
+
+  return {
+    sandbox,
+    sandboxId,
+    providerId,
+    switchTarget,
+    cwd: SANDBOX_REPO_CWD,
+  };
+}
+
+async function ensureSandboxRepo(c: any, sandbox: any, record: any): Promise<void> {
+  if (!record.branchName) {
+    throw new Error("cannot prepare a sandbox repo before the task branch exists");
+  }
+
+  const { driver } = getActorRuntimeContext();
+  const auth = await resolveWorkspaceGithubAuth(c, c.state.workspaceId);
+  let repoLocalPath = c.state.repoLocalPath;
+  if (!repoLocalPath) {
+    const project = await getOrCreateProject(c, c.state.workspaceId, c.state.repoId, c.state.repoRemote);
+    const ensured = await project.ensure({ remoteUrl: c.state.repoRemote });
+    repoLocalPath = ensured.localPath;
+    c.state.repoLocalPath = repoLocalPath;
+  }
+
+  const baseRef = await driver.git.remoteDefaultBaseRef(repoLocalPath);
+  const sandboxRepoRoot = dirname(SANDBOX_REPO_CWD);
+  const script = [
+    "set -euo pipefail",
+    `mkdir -p ${JSON.stringify(sandboxRepoRoot)}`,
+    "git config --global credential.helper '!f() { echo username=x-access-token; echo password=${GH_TOKEN:-$GITHUB_TOKEN}; }; f'",
+    `if [ ! -d ${JSON.stringify(`${SANDBOX_REPO_CWD}/.git`)} ]; then rm -rf ${JSON.stringify(SANDBOX_REPO_CWD)} && git clone ${JSON.stringify(
+      c.state.repoRemote,
+    )} ${JSON.stringify(SANDBOX_REPO_CWD)}; fi`,
+    `cd ${JSON.stringify(SANDBOX_REPO_CWD)}`,
+    "git fetch origin --prune",
+    `if git show-ref --verify --quiet refs/remotes/origin/${JSON.stringify(record.branchName).slice(1, -1)}; then target_ref=${JSON.stringify(
+      `origin/${record.branchName}`,
+    )}; else target_ref=${JSON.stringify(baseRef)}; fi`,
+    `git checkout -B ${JSON.stringify(record.branchName)} \"$target_ref\"`,
+  ];
+  const result = await sandbox.runProcess({
+    command: "bash",
+    args: ["-lc", script.join("; ")],
+    cwd: "/",
+    env: auth?.githubToken
+      ? {
+          GH_TOKEN: auth.githubToken,
+          GITHUB_TOKEN: auth.githubToken,
+        }
+      : undefined,
+    timeoutMs: 5 * 60_000,
+  });
+
+  if ((result.exitCode ?? 0) !== 0) {
+    throw new Error(`sandbox repo preparation failed (${result.exitCode ?? 1}): ${[result.stdout, result.stderr].filter(Boolean).join("")}`);
+  }
+}
+
 async function executeInSandbox(
   c: any,
   params: {
@@ -300,14 +418,20 @@ async function executeInSandbox(
     label: string;
   },
 ): Promise<{ exitCode: number; result: string }> {
-  const { providers } = getActorRuntimeContext();
-  const provider = providers.get(c.state.providerId);
-  return await provider.executeCommand({
-    workspaceId: c.state.workspaceId,
-    sandboxId: params.sandboxId,
-    command: `bash -lc ${JSON.stringify(shellFragment([`cd ${JSON.stringify(params.cwd)}`, params.command]))}`,
-    label: params.label,
+  const record = await ensureWorkbenchSeeded(c);
+  const runtime = await getTaskSandboxRuntime(c, record);
+  await ensureSandboxRepo(c, runtime.sandbox, record);
+  const response = await runtime.sandbox.runProcess({
+    command: "bash",
+    args: ["-lc", shellFragment([`cd ${JSON.stringify(params.cwd)}`, params.command])],
+    cwd: "/",
+    timeoutMs: 5 * 60_000,
   });
+
+  return {
+    exitCode: response.exitCode ?? 0,
+    result: [response.stdout, response.stderr].filter(Boolean).join(""),
+  };
 }
 
 function parseGitStatus(output: string): Array<{ path: string; type: "M" | "A" | "D" }> {
@@ -501,13 +625,13 @@ async function writeCachedGitState(c: any, gitState: { fileChanges: Array<any>; 
 }
 
 async function readSessionTranscript(c: any, record: any, sessionId: string) {
-  const sandboxId = record.activeSandboxId ?? record.sandboxes?.[0]?.sandboxId ?? null;
+  const sandboxId = record.activeSandboxId ?? stableSandboxId(c);
   if (!sandboxId) {
     return [];
   }
 
-  const sandbox = getSandboxInstance(c, c.state.workspaceId, c.state.providerId, sandboxId);
-  const page = await sandbox.listSessionEvents({
+  const sandbox = getTaskSandbox(c, c.state.workspaceId, sandboxId);
+  const page = await sandbox.getEvents({
     sessionId,
     limit: 100,
   });
@@ -599,7 +723,13 @@ export async function ensureWorkbenchSeeded(c: any): Promise<any> {
 function buildSessionSummary(record: any, meta: any): any {
   const derivedSandboxSessionId = meta.sandboxSessionId ?? (meta.status === "pending_provision" && record.activeSessionId ? record.activeSessionId : null);
   const sessionStatus =
-    meta.status === "ready" && derivedSandboxSessionId ? activeSessionStatus(record, derivedSandboxSessionId) : meta.status === "error" ? "error" : "idle";
+    meta.status === "pending_provision" || meta.status === "pending_session_create"
+      ? meta.status
+      : meta.status === "ready" && derivedSandboxSessionId
+        ? activeSessionStatus(record, derivedSandboxSessionId)
+        : meta.status === "error"
+          ? "error"
+          : "ready";
   let thinkingSinceMs = meta.thinkingSinceMs ?? null;
   let unread = Boolean(meta.unread);
   if (thinkingSinceMs && sessionStatus !== "running") {
@@ -617,6 +747,7 @@ function buildSessionSummary(record: any, meta: any): any {
     thinkingSinceMs: sessionStatus === "running" ? thinkingSinceMs : null,
     unread,
     created: Boolean(meta.created || derivedSandboxSessionId),
+    errorMessage: meta.errorMessage ?? null,
   };
 }
 
@@ -633,6 +764,7 @@ function buildSessionDetailFromMeta(record: any, meta: any): any {
     thinkingSinceMs: summary.thinkingSinceMs,
     unread: summary.unread,
     created: summary.created,
+    errorMessage: summary.errorMessage,
     draft: {
       text: meta.draftText ?? "",
       attachments: Array.isArray(meta.draftAttachments) ? meta.draftAttachments : [],
@@ -655,7 +787,7 @@ export async function buildTaskSummary(c: any): Promise<any> {
     id: c.state.taskId,
     repoId: c.state.repoId,
     title: record.title ?? "New Task",
-    status: record.status === "archived" ? "archived" : record.status === "running" ? "running" : record.status === "idle" ? "idle" : "new",
+    status: record.status ?? "new",
     repoName: repoLabelFromRemote(c.state.repoRemote),
     updatedAtMs: record.updatedAt,
     branch: record.branchName,
@@ -706,6 +838,24 @@ export async function buildSessionDetail(c: any, tabId: string): Promise<any> {
   const meta = await readSessionMeta(c, tabId);
   if (!meta || meta.closed) {
     throw new Error(`Unknown workbench session tab: ${tabId}`);
+  }
+
+  if (!meta.sandboxSessionId) {
+    return buildSessionDetailFromMeta(record, meta);
+  }
+
+  try {
+    const transcript = await readSessionTranscript(c, record, meta.sandboxSessionId);
+    if (JSON.stringify(meta.transcript ?? []) !== JSON.stringify(transcript)) {
+      await writeSessionTranscript(c, meta.tabId, transcript);
+      return buildSessionDetailFromMeta(record, {
+        ...meta,
+        transcript,
+        transcriptUpdatedAt: Date.now(),
+      });
+    }
+  } catch {
+    // Session detail reads should degrade to cached transcript data if the live sandbox is unavailable.
   }
 
   return buildSessionDetailFromMeta(record, meta);
@@ -836,50 +986,16 @@ export async function renameWorkbenchBranch(c: any, value: string): Promise<void
 }
 
 export async function createWorkbenchSession(c: any, model?: string): Promise<{ tabId: string }> {
-  let record = await ensureWorkbenchSeeded(c);
-  if (!record.activeSandboxId) {
-    // Fire-and-forget: enqueue provisioning without waiting to avoid self-deadlock
-    // (this handler already runs inside the task workflow loop, so wait:true would deadlock).
-    const providerId = record.providerId ?? c.state.providerId ?? getActorRuntimeContext().providers.defaultProviderId();
-    await selfTask(c).send(taskWorkflowQueueName("task.command.provision"), { providerId }, { wait: false });
-    throw new Error("sandbox is provisioning — retry shortly");
-  }
-
-  if (record.activeSessionId) {
-    const existingSessions = await listSessionMetaRows(c);
-    if (existingSessions.length === 0) {
-      await ensureSessionMeta(c, {
-        tabId: record.activeSessionId,
-        sandboxSessionId: record.activeSessionId,
-        model: model ?? defaultModelForAgent(record.agentType),
-        sessionName: "Session 1",
-        status: "ready",
-      });
-      await broadcastTaskUpdate(c, { sessionId: record.activeSessionId });
-      return { tabId: record.activeSessionId };
-    }
-  }
-
   const tabId = `tab-${randomUUID()}`;
+  const record = await ensureWorkbenchSeeded(c);
   await ensureSessionMeta(c, {
     tabId,
     model: model ?? defaultModelForAgent(record.agentType),
+    sandboxSessionId: tabId,
     status: record.activeSandboxId ? "pending_session_create" : "pending_provision",
     created: false,
   });
-
-  const providerId = record.providerId ?? c.state.providerId ?? getActorRuntimeContext().providers.defaultProviderId();
-  const self = selfTask(c);
-  if (!record.activeSandboxId && !String(record.status ?? "").startsWith("init_")) {
-    await self.send("task.command.provision", { providerId }, { wait: false });
-  }
-  await self.send(
-    "task.command.workbench.ensure_session",
-    { tabId, ...(model ? { model } : {}) },
-    {
-      wait: false,
-    },
-  );
+  await ensureWorkbenchSession(c, tabId, model);
   await broadcastTaskUpdate(c, { sessionId: tabId });
   return { tabId };
 }
@@ -891,39 +1007,7 @@ export async function ensureWorkbenchSession(c: any, tabId: string, model?: stri
   }
 
   const record = await ensureWorkbenchSeeded(c);
-  if (!record.activeSandboxId) {
-    await updateSessionMeta(c, tabId, {
-      status: "pending_provision",
-      errorMessage: null,
-    });
-    return;
-  }
-
-  if (!meta.sandboxSessionId && record.activeSessionId && meta.status === "pending_provision") {
-    const existingTabForActiveSession = await readSessionMetaBySandboxSessionId(c, record.activeSessionId);
-    if (existingTabForActiveSession && existingTabForActiveSession.tabId !== tabId) {
-      await updateSessionMeta(c, existingTabForActiveSession.tabId, {
-        closed: 1,
-      });
-    }
-    await updateSessionMeta(c, tabId, {
-      sandboxSessionId: record.activeSessionId,
-      status: "ready",
-      errorMessage: null,
-      created: 1,
-    });
-    await enqueueWorkbenchRefresh(c, "task.command.workbench.refresh_session_transcript", {
-      sessionId: record.activeSessionId,
-    });
-    await broadcastTaskUpdate(c, { sessionId: tabId });
-    return;
-  }
-
-  if (meta.sandboxSessionId) {
-    await updateSessionMeta(c, tabId, {
-      status: "ready",
-      errorMessage: null,
-    });
+  if (meta.sandboxSessionId && meta.status === "ready") {
     await enqueueWorkbenchRefresh(c, "task.command.workbench.refresh_session_transcript", {
       sessionId: meta.sandboxSessionId,
     });
@@ -931,40 +1015,31 @@ export async function ensureWorkbenchSession(c: any, tabId: string, model?: stri
     return;
   }
 
-  const activeSandbox = (record.sandboxes ?? []).find((candidate: any) => candidate.sandboxId === record.activeSandboxId) ?? null;
-  const cwd = activeSandbox?.cwd ?? record.sandboxes?.[0]?.cwd ?? null;
-  if (!cwd) {
-    await updateSessionMeta(c, tabId, {
-      status: "error",
-      errorMessage: "cannot create session without a sandbox cwd",
-    });
-    await broadcastTaskUpdate(c, { sessionId: tabId });
-    return;
-  }
-
   await updateSessionMeta(c, tabId, {
+    sandboxSessionId: meta.sandboxSessionId ?? tabId,
     status: "pending_session_create",
     errorMessage: null,
   });
 
   try {
-    const sandbox = getSandboxInstance(c, c.state.workspaceId, c.state.providerId, record.activeSandboxId);
-    const created = await sandbox.createSession({
-      prompt: "",
-      cwd,
+    const runtime = await getTaskSandboxRuntime(c, record);
+    await ensureSandboxRepo(c, runtime.sandbox, record);
+    await runtime.sandbox.createSession({
+      id: meta.sandboxSessionId ?? tabId,
       agent: agentTypeForModel(model ?? meta.model ?? defaultModelForAgent(record.agentType)),
+      model: model ?? meta.model ?? defaultModelForAgent(record.agentType),
+      sessionInit: {
+        cwd: runtime.cwd,
+      },
     });
-    if (!created.id) {
-      throw new Error(created.error ?? "sandbox-agent session creation failed");
-    }
 
     await updateSessionMeta(c, tabId, {
-      sandboxSessionId: created.id,
+      sandboxSessionId: meta.sandboxSessionId ?? tabId,
       status: "ready",
       errorMessage: null,
     });
     await enqueueWorkbenchRefresh(c, "task.command.workbench.refresh_session_transcript", {
-      sessionId: created.id,
+      sessionId: meta.sandboxSessionId ?? tabId,
     });
   } catch (error) {
     await updateSessionMeta(c, tabId, {
@@ -1031,25 +1106,16 @@ export async function changeWorkbenchModel(c: any, sessionId: string, model: str
 }
 
 export async function sendWorkbenchMessage(c: any, sessionId: string, text: string, attachments: Array<any>): Promise<void> {
-  const record = await ensureWorkbenchSeeded(c);
-  if (!record.activeSandboxId) {
-    throw new Error("cannot send message without an active sandbox");
-  }
-
   const meta = await requireReadySessionMeta(c, sessionId);
-  const sandbox = getSandboxInstance(c, c.state.workspaceId, c.state.providerId, record.activeSandboxId);
-  const prompt = [text.trim(), ...attachments.map((attachment: any) => `@ ${attachment.filePath}:${attachment.lineNumber}\n${attachment.lineContent}`)]
-    .filter(Boolean)
-    .join("\n\n");
-  if (!prompt) {
+  const record = await ensureWorkbenchSeeded(c);
+  const runtime = await getTaskSandboxRuntime(c, record);
+  await ensureSandboxRepo(c, runtime.sandbox, record);
+  const prompt = [text.trim(), ...attachments.map((attachment: any) => `@ ${attachment.filePath}:${attachment.lineNumber}\n${attachment.lineContent}`)].filter(
+    Boolean,
+  );
+  if (prompt.length === 0) {
     throw new Error("message text is required");
   }
-
-  await sandbox.sendPrompt({
-    sessionId: meta.sandboxSessionId,
-    prompt,
-    notification: true,
-  });
 
   await updateSessionMeta(c, sessionId, {
     unread: 0,
@@ -1069,32 +1135,28 @@ export async function sendWorkbenchMessage(c: any, sessionId: string, text: stri
     .where(eq(taskRuntime.id, 1))
     .run();
 
-  const sync = await getOrCreateTaskStatusSync(c, c.state.workspaceId, c.state.repoId, c.state.taskId, record.activeSandboxId, meta.sandboxSessionId, {
-    workspaceId: c.state.workspaceId,
-    repoId: c.state.repoId,
-    taskId: c.state.taskId,
-    providerId: c.state.providerId,
-    sandboxId: record.activeSandboxId,
-    sessionId: meta.sandboxSessionId,
-    intervalMs: STATUS_SYNC_INTERVAL_MS,
-  });
-  await sync.setIntervalMs({ intervalMs: STATUS_SYNC_INTERVAL_MS });
-  await sync.start();
-  await sync.force();
-  await enqueueWorkbenchRefresh(c, "task.command.workbench.refresh_session_transcript", {
-    sessionId: meta.sandboxSessionId,
-  });
-  await broadcastTaskUpdate(c, { sessionId });
+  await syncWorkbenchSessionStatus(c, meta.sandboxSessionId, "running", Date.now());
+
+  try {
+    await runtime.sandbox.sendPrompt({
+      sessionId: meta.sandboxSessionId,
+      prompt: prompt.join("\n\n"),
+    });
+    await syncWorkbenchSessionStatus(c, meta.sandboxSessionId, "idle", Date.now());
+  } catch (error) {
+    await updateSessionMeta(c, sessionId, {
+      status: "error",
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
+    await syncWorkbenchSessionStatus(c, meta.sandboxSessionId, "error", Date.now());
+    throw error;
+  }
 }
 
 export async function stopWorkbenchSession(c: any, sessionId: string): Promise<void> {
-  const record = await ensureWorkbenchSeeded(c);
-  if (!record.activeSandboxId) {
-    return;
-  }
   const meta = await requireReadySessionMeta(c, sessionId);
-  const sandbox = getSandboxInstance(c, c.state.workspaceId, c.state.providerId, record.activeSandboxId);
-  await sandbox.cancelSession({ sessionId: meta.sandboxSessionId });
+  const sandbox = getTaskSandbox(c, c.state.workspaceId, stableSandboxId(c));
+  await sandbox.destroySession(meta.sandboxSessionId);
   await updateSessionMeta(c, sessionId, {
     thinkingSinceMs: null,
   });
@@ -1178,9 +1240,9 @@ export async function closeWorkbenchSession(c: any, sessionId: string): Promise<
   if (!meta) {
     return;
   }
-  if (record.activeSandboxId && meta.sandboxSessionId) {
-    const sandbox = getSandboxInstance(c, c.state.workspaceId, c.state.providerId, record.activeSandboxId);
-    await sandbox.destroySession({ sessionId: meta.sandboxSessionId });
+  if (meta.sandboxSessionId) {
+    const sandbox = getTaskSandbox(c, c.state.workspaceId, stableSandboxId(c));
+    await sandbox.destroySession(meta.sandboxSessionId);
   }
   await updateSessionMeta(c, sessionId, {
     closed: 1,
@@ -1216,9 +1278,16 @@ export async function publishWorkbenchPr(c: any): Promise<void> {
   if (!record.branchName) {
     throw new Error("cannot publish PR without a branch");
   }
+  let repoLocalPath = c.state.repoLocalPath;
+  if (!repoLocalPath) {
+    const project = await getOrCreateProject(c, c.state.workspaceId, c.state.repoId, c.state.repoRemote);
+    const result = await project.ensure({ remoteUrl: c.state.repoRemote });
+    repoLocalPath = result.localPath;
+    c.state.repoLocalPath = repoLocalPath;
+  }
   const { driver } = getActorRuntimeContext();
   const auth = await resolveWorkspaceGithubAuth(c, c.state.workspaceId);
-  const created = await driver.github.createPr(c.state.repoLocalPath, record.branchName, record.title ?? c.state.task, undefined, {
+  const created = await driver.github.createPr(repoLocalPath, record.branchName, record.title ?? c.state.task, undefined, {
     githubToken: auth?.githubToken ?? null,
   });
   await c.db

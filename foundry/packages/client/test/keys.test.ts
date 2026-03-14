@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { taskKey, taskStatusSyncKey, historyKey, projectBranchSyncKey, projectKey, projectPrSyncKey, sandboxInstanceKey, workspaceKey } from "../src/keys.js";
+import { taskKey, historyKey, projectBranchSyncKey, projectKey, projectPrSyncKey, taskSandboxKey, workspaceKey } from "../src/keys.js";
 
 describe("actor keys", () => {
   it("prefixes every key with workspace namespace", () => {
@@ -7,11 +7,10 @@ describe("actor keys", () => {
       workspaceKey("default"),
       projectKey("default", "repo"),
       taskKey("default", "repo", "task"),
-      sandboxInstanceKey("default", "daytona", "sbx"),
+      taskSandboxKey("default", "sbx"),
       historyKey("default", "repo"),
       projectPrSyncKey("default", "repo"),
       projectBranchSyncKey("default", "repo"),
-      taskStatusSyncKey("default", "repo", "task", "sandbox-1", "session-1"),
     ];
 
     for (const key of keys) {

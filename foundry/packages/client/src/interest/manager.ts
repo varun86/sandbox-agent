@@ -2,6 +2,14 @@ import type { TopicData, TopicKey, TopicParams } from "./topics.js";
 
 export type TopicStatus = "loading" | "connected" | "error";
 
+export interface DebugInterestTopic {
+  topicKey: TopicKey;
+  cacheKey: string;
+  listenerCount: number;
+  status: TopicStatus;
+  lastRefreshAt: number | null;
+}
+
 export interface TopicState<K extends TopicKey> {
   data: TopicData<K> | undefined;
   status: TopicStatus;
@@ -20,5 +28,6 @@ export interface InterestManager {
   getSnapshot<K extends TopicKey>(topicKey: K, params: TopicParams<K>): TopicData<K> | undefined;
   getStatus<K extends TopicKey>(topicKey: K, params: TopicParams<K>): TopicStatus;
   getError<K extends TopicKey>(topicKey: K, params: TopicParams<K>): Error | null;
+  listDebugTopics(): DebugInterestTopic[];
   dispose(): void;
 }

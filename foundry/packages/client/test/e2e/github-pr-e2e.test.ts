@@ -171,7 +171,7 @@ describe("e2e: backend -> sandbox-agent -> git -> PR", () => {
         "4. git push the branch to origin",
         "5. Stop when done (agent should go idle).",
       ].join("\n"),
-      providerId: "daytona",
+      providerId: "local",
       explicitTitle: `test(e2e): ${runId}`,
       explicitBranchName: `e2e/${runId}`,
     });
@@ -185,7 +185,7 @@ describe("e2e: backend -> sandbox-agent -> git -> PR", () => {
     try {
       const namedAndProvisioned = await poll<TaskRecord>(
         "task naming + sandbox provisioning",
-        // Cold Daytona snapshot/image preparation can exceed 5 minutes on first run.
+        // Cold local sandbox startup can exceed a few minutes on first run.
         8 * 60_000,
         1_000,
         async () => client.getTask(workspaceId, created.taskId),
@@ -301,17 +301,17 @@ describe("e2e: backend -> sandbox-agent -> git -> PR", () => {
 
       if (sandboxId) {
         await poll<{ providerId: string; sandboxId: string; state: string; at: number }>(
-          "daytona sandbox to stop",
+          "sandbox to stop",
           2 * 60_000,
           2_000,
-          async () => client.sandboxProviderState(workspaceId, "daytona", sandboxId!),
+          async () => client.sandboxProviderState(workspaceId, "local", sandboxId!),
           (s) => {
             const st = String(s.state).toLowerCase();
-            return st.includes("stopped") || st.includes("suspended") || st.includes("paused");
+            return st.includes("destroyed") || st.includes("stopped") || st.includes("suspended") || st.includes("paused");
           },
         ).catch(async (err) => {
           const dump = await debugDump(client, workspaceId, created.taskId);
-          const state = await client.sandboxProviderState(workspaceId, "daytona", sandboxId!).catch(() => null);
+          const state = await client.sandboxProviderState(workspaceId, "local", sandboxId!).catch(() => null);
           throw new Error(`${err instanceof Error ? err.message : String(err)}\n` + `sandbox state: ${state ? state.state : "unknown"}\n` + `${dump}`);
         });
       }
