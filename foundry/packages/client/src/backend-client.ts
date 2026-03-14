@@ -112,6 +112,10 @@ interface WorkspaceHandle {
   closeWorkbenchSession(input: TaskWorkbenchTabInput): Promise<void>;
   publishWorkbenchPr(input: TaskWorkbenchSelectInput): Promise<void>;
   revertWorkbenchFile(input: TaskWorkbenchDiffInput): Promise<void>;
+  reloadGithubOrganization(): Promise<void>;
+  reloadGithubPullRequests(): Promise<void>;
+  reloadGithubRepository(input: { repoId: string }): Promise<void>;
+  reloadGithubPullRequest(input: { repoId: string; prNumber: number }): Promise<void>;
 }
 
 interface AppWorkspaceHandle {
@@ -296,6 +300,10 @@ export interface BackendClient {
   closeWorkbenchSession(workspaceId: string, input: TaskWorkbenchTabInput): Promise<void>;
   publishWorkbenchPr(workspaceId: string, input: TaskWorkbenchSelectInput): Promise<void>;
   revertWorkbenchFile(workspaceId: string, input: TaskWorkbenchDiffInput): Promise<void>;
+  reloadGithubOrganization(workspaceId: string): Promise<void>;
+  reloadGithubPullRequests(workspaceId: string): Promise<void>;
+  reloadGithubRepository(workspaceId: string, repoId: string): Promise<void>;
+  reloadGithubPullRequest(workspaceId: string, repoId: string, prNumber: number): Promise<void>;
   health(): Promise<{ ok: true }>;
   useWorkspace(workspaceId: string): Promise<{ workspaceId: string }>;
   starSandboxAgentRepo(workspaceId: string): Promise<StarSandboxAgentRepoResult>;
@@ -1180,6 +1188,22 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
 
     async revertWorkbenchFile(workspaceId: string, input: TaskWorkbenchDiffInput): Promise<void> {
       await (await workspace(workspaceId)).revertWorkbenchFile(input);
+    },
+
+    async reloadGithubOrganization(workspaceId: string): Promise<void> {
+      await (await workspace(workspaceId)).reloadGithubOrganization();
+    },
+
+    async reloadGithubPullRequests(workspaceId: string): Promise<void> {
+      await (await workspace(workspaceId)).reloadGithubPullRequests();
+    },
+
+    async reloadGithubRepository(workspaceId: string, repoId: string): Promise<void> {
+      await (await workspace(workspaceId)).reloadGithubRepository({ repoId });
+    },
+
+    async reloadGithubPullRequest(workspaceId: string, repoId: string, prNumber: number): Promise<void> {
+      await (await workspace(workspaceId)).reloadGithubPullRequest({ repoId, prNumber });
     },
 
     async health(): Promise<{ ok: true }> {

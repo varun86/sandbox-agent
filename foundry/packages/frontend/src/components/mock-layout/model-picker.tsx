@@ -146,7 +146,6 @@ export const ModelPicker = memo(function ModelPicker({
           className={css({
             appearance: "none",
             WebkitAppearance: "none",
-            background: "none",
             border: "none",
             margin: "0",
             display: "flex",

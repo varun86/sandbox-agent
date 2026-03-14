@@ -40,6 +40,30 @@ export interface GitHubRepositoryRecord {
   private: boolean;
 }
 
+export interface GitHubMemberRecord {
+  id: string;
+  login: string;
+  name: string;
+  email: string | null;
+  role: string | null;
+  state: string;
+}
+
+export interface GitHubPullRequestRecord {
+  repoFullName: string;
+  cloneUrl: string;
+  number: number;
+  title: string;
+  body: string | null;
+  state: string;
+  url: string;
+  headRefName: string;
+  baseRefName: string;
+  authorLogin: string | null;
+  isDraft: boolean;
+  merged: boolean;
+}
+
 interface GitHubTokenResponse {
   access_token?: string;
   scope?: string;
@@ -58,11 +82,23 @@ const githubOAuthLogger = logger.child({
 
 export interface GitHubWebhookEvent {
   action?: string;
+  organization?: { login?: string; id?: number };
   installation?: { id: number; account?: { login?: string; type?: string; id?: number } | null };
   repositories_added?: Array<{ id: number; full_name: string; private: boolean }>;
   repositories_removed?: Array<{ id: number; full_name: string }>;
   repository?: { id: number; full_name: string; clone_url?: string; private?: boolean; owner?: { login?: string } };
-  pull_request?: { number: number; title?: string; state?: string; head?: { ref?: string }; base?: { ref?: string } };
+  pull_request?: {
+    number: number;
+    title?: string;
+    body?: string | null;
+    state?: string;
+    html_url?: string;
+    draft?: boolean;
+    merged?: boolean;
+    user?: { login?: string } | null;
+    head?: { ref?: string };
+    base?: { ref?: string };
+  };
   sender?: { login?: string; id?: number };
   [key: string]: unknown;
 }
@@ -329,6 +365,130 @@ export class GitHubAppClient {
     }));
   }
 
+  async getUserRepository(accessToken: string, fullName: string): Promise<GitHubRepositoryRecord | null> {
+    try {
+      const repository = await this.requestJson<{
+        full_name: string;
+        clone_url: string;
+        private: boolean;
+      }>(`/repos/${fullName}`, accessToken);
+      return {
+        fullName: repository.full_name,
+        cloneUrl: repository.clone_url,
+        private: repository.private,
+      };
+    } catch (error) {
+      if (error instanceof GitHubAppError && error.status === 404) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  async getInstallationRepository(installationId: number, fullName: string): Promise<GitHubRepositoryRecord | null> {
+    const accessToken = await this.createInstallationAccessToken(installationId);
+    return await this.getUserRepository(accessToken, fullName);
+  }
+
+  async listOrganizationMembers(accessToken: string, organizationLogin: string): Promise<GitHubMemberRecord[]> {
+    const members = await this.paginate<{
+      id: number;
+      login: string;
+      role?: string | null;
+    }>(`/orgs/${organizationLogin}/members?per_page=100&role=all`, accessToken);
+
+    const detailedMembers = await Promise.all(
+      members.map(async (member) => {
+        try {
+          const detail = await this.requestJson<{
+            id: number;
+            login: string;
+            name?: string | null;
+            email?: string | null;
+          }>(`/users/${member.login}`, accessToken);
+          return {
+            id: String(detail.id),
+            login: detail.login,
+            name: detail.name?.trim() || detail.login,
+            email: detail.email ?? null,
+            role: member.role ?? null,
+            state: "active",
+          };
+        } catch {
+          return {
+            id: String(member.id),
+            login: member.login,
+            name: member.login,
+            email: null,
+            role: member.role ?? null,
+            state: "active",
+          };
+        }
+      }),
+    );
+
+    return detailedMembers;
+  }
+
+  async listInstallationMembers(installationId: number, organizationLogin: string): Promise<GitHubMemberRecord[]> {
+    const accessToken = await this.createInstallationAccessToken(installationId);
+    return await this.listOrganizationMembers(accessToken, organizationLogin);
+  }
+
+  async listPullRequestsForUserRepositories(accessToken: string, repositories: GitHubRepositoryRecord[]): Promise<GitHubPullRequestRecord[]> {
+    return (await Promise.all(repositories.map((repository) => this.listRepositoryPullRequests(accessToken, repository.fullName, repository.cloneUrl)))).flat();
+  }
+
+  async listInstallationPullRequestsForRepositories(installationId: number, repositories: GitHubRepositoryRecord[]): Promise<GitHubPullRequestRecord[]> {
+    const accessToken = await this.createInstallationAccessToken(installationId);
+    return await this.listPullRequestsForUserRepositories(accessToken, repositories);
+  }
+
+  async getUserPullRequest(accessToken: string, fullName: string, prNumber: number): Promise<GitHubPullRequestRecord | null> {
+    try {
+      const pullRequest = await this.requestJson<{
+        number: number;
+        title: string;
+        body?: string | null;
+        state: string;
+        html_url: string;
+        draft?: boolean;
+        merged?: boolean;
+        user?: { login?: string } | null;
+        head?: { ref?: string } | null;
+        base?: { ref?: string } | null;
+      }>(`/repos/${fullName}/pulls/${prNumber}`, accessToken);
+      const repository = await this.getUserRepository(accessToken, fullName);
+      if (!repository) {
+        return null;
+      }
+      return {
+        repoFullName: fullName,
+        cloneUrl: repository.cloneUrl,
+        number: pullRequest.number,
+        title: pullRequest.title,
+        body: pullRequest.body ?? null,
+        state: pullRequest.state,
+        url: pullRequest.html_url,
+        headRefName: pullRequest.head?.ref?.trim() ?? "",
+        baseRefName: pullRequest.base?.ref?.trim() ?? "",
+        authorLogin: pullRequest.user?.login?.trim() ?? null,
+        isDraft: Boolean(pullRequest.draft),
+        merged: Boolean(pullRequest.merged),
+      };
+    } catch (error) {
+      if (error instanceof GitHubAppError && error.status === 404) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  async getInstallationPullRequest(installationId: number, fullName: string, prNumber: number): Promise<GitHubPullRequestRecord | null> {
+    const accessToken = await this.createInstallationAccessToken(installationId);
+    return await this.getUserPullRequest(accessToken, fullName, prNumber);
+  }
+
   async buildInstallationUrl(organizationLogin: string, state: string): Promise<string> {
     if (!this.isAppConfigured()) {
       throw new GitHubAppError("GitHub App is not configured", 500);
@@ -435,6 +595,36 @@ export class GitHubAppClient {
       );
     }
     return payload as T;
+  }
+
+  private async listRepositoryPullRequests(accessToken: string, fullName: string, cloneUrl: string): Promise<GitHubPullRequestRecord[]> {
+    const pullRequests = await this.paginate<{
+      number: number;
+      title: string;
+      body?: string | null;
+      state: string;
+      html_url: string;
+      draft?: boolean;
+      merged?: boolean;
+      user?: { login?: string } | null;
+      head?: { ref?: string } | null;
+      base?: { ref?: string } | null;
+    }>(`/repos/${fullName}/pulls?state=open&per_page=100&sort=updated&direction=desc`, accessToken);
+
+    return pullRequests.map((pullRequest) => ({
+      repoFullName: fullName,
+      cloneUrl,
+      number: pullRequest.number,
+      title: pullRequest.title,
+      body: pullRequest.body ?? null,
+      state: pullRequest.state,
+      url: pullRequest.html_url,
+      headRefName: pullRequest.head?.ref?.trim() ?? "",
+      baseRefName: pullRequest.base?.ref?.trim() ?? "",
+      authorLogin: pullRequest.user?.login?.trim() ?? null,
+      isDraft: Boolean(pullRequest.draft),
+      merged: Boolean(pullRequest.merged),
+    }));
   }
 
   private async paginate<T>(path: string, accessToken: string): Promise<T[]> {

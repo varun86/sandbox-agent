@@ -186,12 +186,16 @@ const commandHandlers: Record<TaskQueueName, WorkflowHandler> = {
   },
 
   "task.command.workbench.send_message": async (loopCtx, msg) => {
-    await loopCtx.step({
-      name: "workbench-send-message",
-      timeout: 10 * 60_000,
-      run: async () => sendWorkbenchMessage(loopCtx, msg.body.sessionId, msg.body.text, msg.body.attachments),
-    });
-    await msg.complete({ ok: true });
+    try {
+      await loopCtx.step({
+        name: "workbench-send-message",
+        timeout: 10 * 60_000,
+        run: async () => sendWorkbenchMessage(loopCtx, msg.body.sessionId, msg.body.text, msg.body.attachments),
+      });
+      await msg.complete({ ok: true });
+    } catch (error) {
+      await msg.complete({ error: resolveErrorMessage(error) });
+    }
   },
 
   "task.command.workbench.stop_session": async (loopCtx, msg) => {

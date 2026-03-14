@@ -13,6 +13,7 @@ import {
   GitPullRequestDraft,
   ListChecks,
   LogOut,
+  MoreHorizontal,
   PanelLeft,
   Plus,
   Settings,
@@ -52,6 +53,10 @@ function projectIconColor(label: string): string {
   return PROJECT_COLORS[Math.abs(hash) % PROJECT_COLORS.length]!;
 }
 
+function isPullRequestSidebarItem(task: Task): boolean {
+  return task.id.startsWith("pr:");
+}
+
 export const Sidebar = memo(function Sidebar({
   projects,
   newTaskRepos,
@@ -66,6 +71,10 @@ export const Sidebar = memo(function Sidebar({
   onReorderProjects,
   taskOrderByProject,
   onReorderTasks,
+  onReloadOrganization,
+  onReloadPullRequests,
+  onReloadRepository,
+  onReloadPullRequest,
   onToggleSidebar,
 }: {
   projects: ProjectSection[];
@@ -81,6 +90,10 @@ export const Sidebar = memo(function Sidebar({
   onReorderProjects: (fromIndex: number, toIndex: number) => void;
   taskOrderByProject: Record<string, string[]>;
   onReorderTasks: (projectId: string, fromIndex: number, toIndex: number) => void;
+  onReloadOrganization: () => void;
+  onReloadPullRequests: () => void;
+  onReloadRepository: (repoId: string) => void;
+  onReloadPullRequest: (repoId: string, prNumber: number) => void;
   onToggleSidebar?: () => void;
 }) {
   const [css] = useStyletron();
@@ -88,6 +101,8 @@ export const Sidebar = memo(function Sidebar({
   const contextMenu = useContextMenu();
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
   const [hoveredProjectId, setHoveredProjectId] = useState<string | null>(null);
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
+  const headerMenuRef = useRef<HTMLDivElement>(null);
 
   // Mouse-based drag and drop state
   type DragState =
@@ -148,6 +163,20 @@ export const Sidebar = memo(function Sidebar({
       document.removeEventListener("mouseup", onUp);
     };
   }, [drag, onReorderProjects, onReorderTasks]);
+
+  useEffect(() => {
+    if (!headerMenuOpen) {
+      return;
+    }
+    const onMouseDown = (event: MouseEvent) => {
+      if (headerMenuRef.current?.contains(event.target as Node)) {
+        return;
+      }
+      setHeaderMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [headerMenuOpen]);
 
   const [createSelectOpen, setCreateSelectOpen] = useState(false);
   const selectOptions = useMemo(() => newTaskRepos.map((repo) => ({ id: repo.id, label: stripCommonOrgPrefix(repo.label, newTaskRepos) })), [newTaskRepos]);
@@ -326,47 +355,111 @@ export const Sidebar = memo(function Sidebar({
             />
           </div>
         ) : (
-          <div
-            role="button"
-            tabIndex={0}
-            aria-disabled={newTaskRepos.length === 0}
-            onClick={() => {
-              if (newTaskRepos.length === 0) return;
-              if (newTaskRepos.length === 1) {
-                onSelectNewTaskRepo(newTaskRepos[0]!.id);
-                onCreate(newTaskRepos[0]!.id);
-              } else {
-                setCreateSelectOpen(true);
-              }
-            }}
-            onKeyDown={(event) => {
-              if (newTaskRepos.length === 0) return;
-              if (event.key === "Enter" || event.key === " ") {
+          <div className={css({ display: "flex", alignItems: "center", gap: "6px", position: "relative" })} ref={headerMenuRef}>
+            <button
+              type="button"
+              onClick={() => setHeaderMenuOpen((value) => !value)}
+              className={css({
+                width: "26px",
+                height: "26px",
+                borderRadius: "8px",
+                border: "none",
+                backgroundColor: t.interactiveHover,
+                color: t.textPrimary,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                transition: "background 200ms ease",
+                flexShrink: 0,
+                ":hover": { backgroundColor: t.borderMedium },
+              })}
+              title="GitHub actions"
+            >
+              <MoreHorizontal size={14} />
+            </button>
+            {headerMenuOpen ? (
+              <div
+                className={css({
+                  position: "absolute",
+                  top: "32px",
+                  right: 0,
+                  minWidth: "180px",
+                  padding: "6px",
+                  borderRadius: "10px",
+                  backgroundColor: t.surfaceElevated,
+                  border: `1px solid ${t.borderDefault}`,
+                  boxShadow: `${t.shadow}, 0 0 0 1px ${t.interactiveSubtle}`,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "4px",
+                  zIndex: 20,
+                })}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHeaderMenuOpen(false);
+                    onReloadOrganization();
+                  }}
+                  className={css(menuButtonStyle(false, t))}
+                >
+                  Reload organization
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHeaderMenuOpen(false);
+                    onReloadPullRequests();
+                  }}
+                  className={css(menuButtonStyle(false, t))}
+                >
+                  Reload all PRs
+                </button>
+              </div>
+            ) : null}
+            <div
+              role="button"
+              tabIndex={0}
+              aria-disabled={newTaskRepos.length === 0}
+              onClick={() => {
+                if (newTaskRepos.length === 0) return;
                 if (newTaskRepos.length === 1) {
                   onSelectNewTaskRepo(newTaskRepos[0]!.id);
                   onCreate(newTaskRepos[0]!.id);
                 } else {
                   setCreateSelectOpen(true);
                 }
-              }
-            }}
-            className={css({
-              width: "26px",
-              height: "26px",
-              borderRadius: "8px",
-              backgroundColor: newTaskRepos.length > 0 ? t.borderMedium : t.interactiveHover,
-              color: t.textPrimary,
-              cursor: newTaskRepos.length > 0 ? "pointer" : "not-allowed",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              transition: "background 200ms ease",
-              flexShrink: 0,
-              opacity: newTaskRepos.length > 0 ? 1 : 0.6,
-              ":hover": newTaskRepos.length > 0 ? { backgroundColor: "rgba(255, 255, 255, 0.20)" } : undefined,
-            })}
-          >
-            <Plus size={14} style={{ display: "block" }} />
+              }}
+              onKeyDown={(event) => {
+                if (newTaskRepos.length === 0) return;
+                if (event.key === "Enter" || event.key === " ") {
+                  if (newTaskRepos.length === 1) {
+                    onSelectNewTaskRepo(newTaskRepos[0]!.id);
+                    onCreate(newTaskRepos[0]!.id);
+                  } else {
+                    setCreateSelectOpen(true);
+                  }
+                }
+              }}
+              className={css({
+                width: "26px",
+                height: "26px",
+                borderRadius: "8px",
+                backgroundColor: newTaskRepos.length > 0 ? t.borderMedium : t.interactiveHover,
+                color: t.textPrimary,
+                cursor: newTaskRepos.length > 0 ? "pointer" : "not-allowed",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                transition: "background 200ms ease",
+                flexShrink: 0,
+                opacity: newTaskRepos.length > 0 ? 1 : 0.6,
+                ":hover": newTaskRepos.length > 0 ? { backgroundColor: "rgba(255, 255, 255, 0.20)" } : undefined,
+              })}
+            >
+              <Plus size={14} style={{ display: "block" }} />
+            </div>
           </div>
         )}
       </PanelHeaderBar>
@@ -431,6 +524,12 @@ export const Sidebar = memo(function Sidebar({
                       }));
                     }
                   }}
+                  onContextMenu={(event) =>
+                    contextMenu.open(event, [
+                      { label: "Reload repository", onClick: () => onReloadRepository(project.id) },
+                      { label: "New task", onClick: () => onCreate(project.id) },
+                    ])
+                  }
                   data-project-header
                   className={css({
                     display: "flex",
@@ -499,13 +598,13 @@ export const Sidebar = memo(function Sidebar({
                         height: "26px",
                         borderRadius: "6px",
                         border: "none",
-                        background: "none",
+                        backgroundColor: "transparent",
                         padding: 0,
                         margin: 0,
                         cursor: "pointer",
                         color: t.textTertiary,
                         opacity: hoveredProjectId === project.id ? 1 : 0,
-                        transition: "opacity 150ms ease, background 200ms ease, color 200ms ease",
+                        transition: "opacity 150ms ease, background-color 200ms ease, color 200ms ease",
                         pointerEvents: hoveredProjectId === project.id ? "auto" : "none",
                         ":hover": { backgroundColor: t.interactiveHover, color: t.textSecondary },
                       })}
@@ -519,12 +618,14 @@ export const Sidebar = memo(function Sidebar({
                 {!isCollapsed &&
                   orderedTasks.map((task, taskIndex) => {
                     const isActive = task.id === activeId;
+                    const isPullRequestItem = isPullRequestSidebarItem(task);
                     const isDim = task.status === "archived";
                     const isRunning = task.tabs.some((tab) => tab.status === "running");
                     const isProvisioning =
-                      String(task.status).startsWith("init_") ||
-                      task.status === "new" ||
-                      task.tabs.some((tab) => tab.status === "pending_provision" || tab.status === "pending_session_create");
+                      !isPullRequestItem &&
+                      (String(task.status).startsWith("init_") ||
+                        task.status === "new" ||
+                        task.tabs.some((tab) => tab.status === "pending_provision" || tab.status === "pending_session_create"));
                     const hasUnread = task.tabs.some((tab) => tab.unread);
                     const isDraft = task.pullRequest == null || task.pullRequest.status === "draft";
                     const totalAdded = task.fileChanges.reduce((sum, file) => sum + file.added, 0);
@@ -554,13 +655,20 @@ export const Sidebar = memo(function Sidebar({
                             onSelect(task.id);
                           }
                         }}
-                        onContextMenu={(event) =>
+                        onContextMenu={(event) => {
+                          if (isPullRequestItem && task.pullRequest) {
+                            contextMenu.open(event, [
+                              { label: "Reload pull request", onClick: () => onReloadPullRequest(task.repoId, task.pullRequest!.number) },
+                              { label: "Create task", onClick: () => onSelect(task.id) },
+                            ]);
+                            return;
+                          }
                           contextMenu.open(event, [
                             { label: "Rename task", onClick: () => onRenameTask(task.id) },
                             { label: "Rename branch", onClick: () => onRenameBranch(task.id) },
                             { label: "Mark as unread", onClick: () => onMarkUnread(task.id) },
-                          ])
-                        }
+                          ]);
+                        }}
                         className={css({
                           padding: "8px 12px",
                           borderRadius: "8px",
@@ -596,21 +704,32 @@ export const Sidebar = memo(function Sidebar({
                               flexShrink: 0,
                             })}
                           >
-                            <TaskIndicator isRunning={isRunning} isProvisioning={isProvisioning} hasUnread={hasUnread} isDraft={isDraft} />
+                            {isPullRequestItem ? (
+                              <GitPullRequestDraft size={13} color={isDraft ? t.accent : t.textSecondary} />
+                            ) : (
+                              <TaskIndicator isRunning={isRunning} isProvisioning={isProvisioning} hasUnread={hasUnread} isDraft={isDraft} />
+                            )}
                           </div>
-                          <LabelSmall
-                            $style={{
-                              fontWeight: hasUnread ? 600 : 400,
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                              minWidth: 0,
-                              flexShrink: 1,
-                            }}
-                            color={hasUnread ? t.textPrimary : t.textSecondary}
-                          >
-                            {task.title}
-                          </LabelSmall>
+                          <div className={css({ minWidth: 0, flex: 1, display: "flex", flexDirection: "column", gap: "1px" })}>
+                            <LabelSmall
+                              $style={{
+                                fontWeight: hasUnread ? 600 : 400,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                                minWidth: 0,
+                                flexShrink: 1,
+                              }}
+                              color={hasUnread ? t.textPrimary : t.textSecondary}
+                            >
+                              {task.title}
+                            </LabelSmall>
+                            {isPullRequestItem && task.statusMessage ? (
+                              <LabelXSmall color={t.textTertiary} $style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {task.statusMessage}
+                              </LabelXSmall>
+                            ) : null}
+                          </div>
                           {task.pullRequest != null ? (
                             <span className={css({ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 })}>
                               <LabelXSmall color={t.textSecondary} $style={{ fontWeight: 600 }}>

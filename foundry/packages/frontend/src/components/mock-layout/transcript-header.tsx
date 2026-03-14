@@ -134,7 +134,6 @@ export const TranscriptHeader = memo(function TranscriptHeader({
             className={css({
               appearance: "none",
               WebkitAppearance: "none",
-              background: "none",
               margin: "0",
               outline: "none",
               padding: "2px 8px",

@@ -55,6 +55,8 @@ export const organizationProfile = sqliteTable("organization_profile", {
   githubInstallationId: integer("github_installation_id"),
   githubLastSyncLabel: text("github_last_sync_label").notNull(),
   githubLastSyncAt: integer("github_last_sync_at"),
+  githubLastWebhookAt: integer("github_last_webhook_at"),
+  githubLastWebhookEvent: text("github_last_webhook_event"),
   stripeCustomerId: text("stripe_customer_id"),
   stripeSubscriptionId: text("stripe_subscription_id"),
   stripePriceId: text("stripe_price_id"),

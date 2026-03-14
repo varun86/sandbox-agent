@@ -10,7 +10,7 @@ import type {
   UpdateFoundryOrganizationProfileInput,
 } from "@sandbox-agent/foundry-shared";
 import { getActorRuntimeContext } from "../context.js";
-import { getOrCreateWorkspace, selfWorkspace } from "../handles.js";
+import { getOrCreateGithubData, getOrCreateWorkspace, selfWorkspace } from "../handles.js";
 import { GitHubAppError } from "../../services/app-github.js";
 import { getBetterAuthService } from "../../services/better-auth.js";
 import { repoIdFromRemote, repoLabelFromRemote } from "../../services/repo.js";
@@ -601,40 +601,19 @@ export async function syncGithubOrganizationRepos(c: any, input: { sessionId: st
   const session = await requireSignedInSession(c, input.sessionId);
   requireEligibleOrganization(session, input.organizationId);
 
-  const { appShell } = getActorRuntimeContext();
   const workspace = await getOrCreateWorkspace(c, input.organizationId);
   const organization = await getOrganizationState(workspace);
+  const githubData = await getOrCreateGithubData(c, input.organizationId);
 
   try {
-    let repositories;
-    let installationStatus = organization.snapshot.github.installationStatus;
-
-    if (organization.snapshot.kind === "personal") {
-      repositories = await appShell.github.listUserRepositories(session.githubAccessToken);
-      installationStatus = "connected";
-    } else if (organization.githubInstallationId) {
-      try {
-        repositories = await appShell.github.listInstallationRepositories(organization.githubInstallationId);
-      } catch (error) {
-        if (!(error instanceof GitHubAppError) || (error.status !== 403 && error.status !== 404)) {
-          throw error;
-        }
-        repositories = (await appShell.github.listUserRepositories(session.githubAccessToken)).filter((repository) =>
-          repository.fullName.startsWith(`${organization.githubLogin}/`),
-        );
-        installationStatus = "reconnect_required";
-      }
-    } else {
-      repositories = (await appShell.github.listUserRepositories(session.githubAccessToken)).filter((repository) =>
-        repository.fullName.startsWith(`${organization.githubLogin}/`),
-      );
-      installationStatus = "reconnect_required";
-    }
-
-    await workspace.applyOrganizationSyncCompleted({
-      repositories,
-      installationStatus,
-      lastSyncLabel: repositories.length > 0 ? "Synced just now" : "No repositories available",
+    await githubData.fullSync({
+      accessToken: session.githubAccessToken,
+      connectedAccount: organization.snapshot.github.connectedAccount,
+      installationId: organization.githubInstallationId,
+      installationStatus: organization.snapshot.github.installationStatus,
+      githubLogin: organization.githubLogin,
+      kind: organization.snapshot.kind,
+      label: "Importing repository catalog...",
     });
 
     // Broadcast updated app snapshot so connected clients see the new repos
@@ -759,6 +738,8 @@ async function buildOrganizationStateFromRow(c: any, row: any, startedAt: number
         importedRepoCount: repoCatalog.length,
         lastSyncLabel: row.githubLastSyncLabel,
         lastSyncAt: row.githubLastSyncAt ?? null,
+        lastWebhookAt: row.githubLastWebhookAt ?? null,
+        lastWebhookEvent: row.githubLastWebhookEvent ?? "",
       },
       billing: {
         planId: row.billingPlanId,
@@ -1433,8 +1414,8 @@ export const workspaceAppActions = {
     const { appShell } = getActorRuntimeContext();
     const { event, body } = appShell.github.verifyWebhookEvent(input.payload, input.signatureHeader, input.eventHeader);
 
-    const accountLogin = body.installation?.account?.login;
-    const accountType = body.installation?.account?.type;
+    const accountLogin = body.installation?.account?.login ?? body.repository?.owner?.login ?? body.organization?.login ?? null;
+    const accountType = body.installation?.account?.type ?? (body.organization?.login ? "Organization" : null);
     if (!accountLogin) {
       githubWebhookLogger.info(
         {
@@ -1449,6 +1430,15 @@ export const workspaceAppActions = {
 
     const kind: FoundryOrganization["kind"] = accountType === "User" ? "personal" : "organization";
     const organizationId = organizationWorkspaceId(kind, accountLogin);
+    const receivedAt = Date.now();
+    const workspace = await getOrCreateWorkspace(c, organizationId);
+    await workspace.recordGithubWebhookReceipt({
+      workspaceId: organizationId,
+      event,
+      action: body.action ?? null,
+      receivedAt,
+    });
+    const githubData = await getOrCreateGithubData(c, organizationId);
 
     if (event === "installation" && (body.action === "created" || body.action === "deleted" || body.action === "suspend" || body.action === "unsuspend")) {
       githubWebhookLogger.info(
@@ -1461,12 +1451,36 @@ export const workspaceAppActions = {
         "installation_event",
       );
       if (body.action === "deleted") {
-        const workspace = await getOrCreateWorkspace(c, organizationId);
-        await workspace.applyGithubInstallationRemoved({});
+        await githubData.clearState({
+          connectedAccount: accountLogin,
+          installationStatus: "install_required",
+          installationId: null,
+          label: "GitHub App installation removed",
+        });
       } else if (body.action === "created") {
-        const workspace = await getOrCreateWorkspace(c, organizationId);
-        await workspace.applyGithubInstallationCreated({
-          installationId: body.installation?.id ?? 0,
+        await githubData.fullSync({
+          connectedAccount: accountLogin,
+          installationStatus: "connected",
+          installationId: body.installation?.id ?? null,
+          githubLogin: accountLogin,
+          kind,
+          label: "Syncing GitHub data from installation webhook...",
+        });
+      } else if (body.action === "suspend") {
+        await githubData.clearState({
+          connectedAccount: accountLogin,
+          installationStatus: "reconnect_required",
+          installationId: body.installation?.id ?? null,
+          label: "GitHub App installation suspended",
+        });
+      } else if (body.action === "unsuspend") {
+        await githubData.fullSync({
+          connectedAccount: accountLogin,
+          installationStatus: "connected",
+          installationId: body.installation?.id ?? null,
+          githubLogin: accountLogin,
+          kind,
+          label: "Resyncing GitHub data after unsuspend...",
         });
       }
       return { ok: true };
@@ -1484,13 +1498,13 @@ export const workspaceAppActions = {
         },
         "repository_membership_changed",
       );
-      const workspace = await getOrCreateWorkspace(c, organizationId);
-      await workspace.applyGithubRepositoryChanges({
-        added: (body.repositories_added ?? []).map((r) => ({
-          fullName: r.full_name,
-          private: r.private,
-        })),
-        removed: (body.repositories_removed ?? []).map((r) => r.full_name),
+      await githubData.fullSync({
+        connectedAccount: accountLogin,
+        installationStatus: "connected",
+        installationId: body.installation?.id ?? null,
+        githubLogin: accountLogin,
+        kind,
+        label: "Resyncing GitHub data after repository access change...",
       });
       return { ok: true };
     }
@@ -1518,7 +1532,30 @@ export const workspaceAppActions = {
           },
           "repository_event",
         );
-        // TODO: Dispatch to GitHubStateActor / downstream actors
+        if (event === "pull_request" && body.repository?.clone_url && body.pull_request) {
+          await githubData.handlePullRequestWebhook({
+            connectedAccount: accountLogin,
+            installationStatus: "connected",
+            installationId: body.installation?.id ?? null,
+            repository: {
+              fullName: body.repository.full_name,
+              cloneUrl: body.repository.clone_url,
+              private: Boolean(body.repository.private),
+            },
+            pullRequest: {
+              number: body.pull_request.number,
+              title: body.pull_request.title ?? "",
+              body: body.pull_request.body ?? null,
+              state: body.pull_request.state ?? "open",
+              url: body.pull_request.html_url ?? `https://github.com/${body.repository.full_name}/pull/${body.pull_request.number}`,
+              headRefName: body.pull_request.head?.ref ?? "",
+              baseRefName: body.pull_request.base?.ref ?? "",
+              authorLogin: body.pull_request.user?.login ?? null,
+              isDraft: Boolean(body.pull_request.draft),
+              merged: Boolean(body.pull_request.merged),
+            },
+          });
+        }
       }
       return { ok: true };
     }

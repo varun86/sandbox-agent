@@ -1,4 +1,4 @@
-import { authUserKey, taskKey, historyKey, projectBranchSyncKey, projectKey, projectPrSyncKey, taskSandboxKey, workspaceKey } from "./keys.js";
+import { authUserKey, githubDataKey, taskKey, historyKey, projectBranchSyncKey, projectKey, taskSandboxKey, workspaceKey } from "./keys.js";
 
 export function actorClient(c: any) {
   return c.client();
@@ -53,15 +53,16 @@ export async function getOrCreateHistory(c: any, workspaceId: string, repoId: st
   });
 }
 
-export async function getOrCreateProjectPrSync(c: any, workspaceId: string, repoId: string, repoPath: string, intervalMs: number) {
-  return await actorClient(c).projectPrSync.getOrCreate(projectPrSyncKey(workspaceId, repoId), {
+export async function getOrCreateGithubData(c: any, workspaceId: string) {
+  return await actorClient(c).githubData.getOrCreate(githubDataKey(workspaceId), {
     createWithInput: {
       workspaceId,
-      repoId,
-      repoPath,
-      intervalMs,
     },
   });
+}
+
+export function getGithubData(c: any, workspaceId: string) {
+  return actorClient(c).githubData.get(githubDataKey(workspaceId));
 }
 
 export async function getOrCreateProjectBranchSync(c: any, workspaceId: string, repoId: string, repoPath: string, intervalMs: number) {
@@ -83,10 +84,6 @@ export async function getOrCreateTaskSandbox(c: any, workspaceId: string, sandbo
   return await actorClient(c).taskSandbox.getOrCreate(taskSandboxKey(workspaceId, sandboxId), {
     createWithInput,
   });
-}
-
-export function selfProjectPrSync(c: any) {
-  return actorClient(c).projectPrSync.getForId(c.actorId);
 }
 
 export function selfProjectBranchSync(c: any) {
@@ -111,4 +108,8 @@ export function selfProject(c: any) {
 
 export function selfAuthUser(c: any) {
   return actorClient(c).authUser.getForId(c.actorId);
+}
+
+export function selfGithubData(c: any) {
+  return actorClient(c).githubData.getForId(c.actorId);
 }

@@ -50,6 +50,8 @@ export interface FoundryGithubState {
   importedRepoCount: number;
   lastSyncLabel: string;
   lastSyncAt: number | null;
+  lastWebhookAt: number | null;
+  lastWebhookEvent: string;
 }
 
 export interface FoundryOrganizationSettings {

@@ -53,6 +53,11 @@ function upsertById<T extends { id: string }>(items: T[], nextItem: T, sort: (le
   return [...filtered, nextItem].sort(sort);
 }
 
+function upsertByPrId<T extends { prId: string }>(items: T[], nextItem: T, sort: (left: T, right: T) => number): T[] {
+  const filtered = items.filter((item) => item.prId !== nextItem.prId);
+  return [...filtered, nextItem].sort(sort);
+}
+
 export const topicDefinitions = {
   app: {
     key: () => "app",
@@ -89,6 +94,16 @@ export const topicDefinitions = {
           return {
             ...current,
             repos: current.repos.filter((repo) => repo.id !== event.repoId),
+          };
+        case "pullRequestUpdated":
+          return {
+            ...current,
+            openPullRequests: upsertByPrId(current.openPullRequests, event.pullRequest, (left, right) => right.updatedAtMs - left.updatedAtMs),
+          };
+        case "pullRequestRemoved":
+          return {
+            ...current,
+            openPullRequests: current.openPullRequests.filter((pullRequest) => pullRequest.prId !== event.prId),
           };
       }
     },

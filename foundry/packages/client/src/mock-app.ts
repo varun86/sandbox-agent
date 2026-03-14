@@ -52,6 +52,8 @@ export interface MockFoundryGithubState {
   importedRepoCount: number;
   lastSyncLabel: string;
   lastSyncAt: number | null;
+  lastWebhookAt: number | null;
+  lastWebhookEvent: string;
 }
 
 export interface MockFoundryOrganizationSettings {
@@ -188,6 +190,8 @@ function buildRivetOrganization(): MockFoundryOrganization {
       importedRepoCount: repos.length,
       lastSyncLabel: "Synced just now",
       lastSyncAt: Date.now() - 60_000,
+      lastWebhookAt: Date.now() - 30_000,
+      lastWebhookEvent: "push",
     },
     billing: {
       planId: "team",
@@ -267,6 +271,8 @@ function buildDefaultSnapshot(): MockFoundryAppSnapshot {
           importedRepoCount: 1,
           lastSyncLabel: "Synced just now",
           lastSyncAt: Date.now() - 60_000,
+          lastWebhookAt: Date.now() - 120_000,
+          lastWebhookEvent: "pull_request.opened",
         },
         billing: {
           planId: "free",
@@ -301,6 +307,8 @@ function buildDefaultSnapshot(): MockFoundryAppSnapshot {
           importedRepoCount: 3,
           lastSyncLabel: "Waiting for first import",
           lastSyncAt: null,
+          lastWebhookAt: null,
+          lastWebhookEvent: "",
         },
         billing: {
           planId: "team",
@@ -344,6 +352,8 @@ function buildDefaultSnapshot(): MockFoundryAppSnapshot {
           importedRepoCount: 1,
           lastSyncLabel: "Synced yesterday",
           lastSyncAt: Date.now() - 24 * 60 * 60_000,
+          lastWebhookAt: Date.now() - 3_600_000,
+          lastWebhookEvent: "check_run.completed",
         },
         billing: {
           planId: "free",
@@ -397,6 +407,8 @@ function parseStoredSnapshot(): MockFoundryAppSnapshot | null {
           ...organization.github,
           syncStatus: syncStatusFromLegacy(organization.github?.syncStatus ?? organization.repoImportStatus),
           lastSyncAt: organization.github?.lastSyncAt ?? null,
+          lastWebhookAt: organization.github?.lastWebhookAt ?? null,
+          lastWebhookEvent: organization.github?.lastWebhookEvent ?? "",
         },
       })),
     };
@@ -567,6 +579,8 @@ class MockFoundryAppStore implements MockFoundryAppClient {
           syncStatus: "synced",
           lastSyncLabel: "Synced just now",
           lastSyncAt: Date.now(),
+          lastWebhookAt: Date.now(),
+          lastWebhookEvent: "installation_repositories.added",
         },
       }));
       this.importTimers.delete(organizationId);

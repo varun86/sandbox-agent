@@ -21,21 +21,6 @@ export const repoMeta = sqliteTable("repo_meta", {
   updatedAt: integer("updated_at").notNull(),
 });
 
-export const prCache = sqliteTable("pr_cache", {
-  branchName: text("branch_name").notNull().primaryKey(),
-  prNumber: integer("pr_number").notNull(),
-  state: text("state").notNull(),
-  title: text("title").notNull(),
-  prUrl: text("pr_url"),
-  prAuthor: text("pr_author"),
-  isDraft: integer("is_draft").notNull().default(0),
-  ciStatus: text("ci_status"),
-  reviewStatus: text("review_status"),
-  reviewer: text("reviewer"),
-  fetchedAt: integer("fetched_at"),
-  updatedAt: integer("updated_at").notNull(),
-});
-
 export const taskIndex = sqliteTable("task_index", {
   taskId: text("task_id").notNull().primaryKey(),
   branchName: text("branch_name"),

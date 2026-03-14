@@ -359,6 +359,20 @@
           "notNull": false,
           "autoincrement": false
         },
+        "github_last_webhook_at": {
+          "name": "github_last_webhook_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "github_last_webhook_event": {
+          "name": "github_last_webhook_event",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "stripe_customer_id": {
           "name": "stripe_customer_id",
           "type": "text",

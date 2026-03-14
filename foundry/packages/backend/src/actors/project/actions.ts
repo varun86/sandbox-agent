@@ -4,13 +4,13 @@ import { and, desc, eq, isNotNull, ne } from "drizzle-orm";
 import { Loop } from "rivetkit/workflow";
 import type { AgentType, TaskRecord, TaskSummary, ProviderId, RepoOverview, RepoStackAction, RepoStackActionResult } from "@sandbox-agent/foundry-shared";
 import { getActorRuntimeContext } from "../context.js";
-import { getTask, getOrCreateTask, getOrCreateHistory, getOrCreateProjectBranchSync, getOrCreateProjectPrSync, selfProject } from "../handles.js";
+import { getGithubData, getTask, getOrCreateTask, getOrCreateHistory, getOrCreateProjectBranchSync, selfProject } from "../handles.js";
 import { isActorNotFoundError, logActorWarning, resolveErrorMessage } from "../logging.js";
 import { foundryRepoClonePath } from "../../services/foundry-paths.js";
 import { resolveWorkspaceGithubAuth } from "../../services/github-auth.js";
 import { expectQueueResponse } from "../../services/queue.js";
 import { withRepoGitLock } from "../../services/repo-git-lock.js";
-import { branches, taskIndex, prCache, repoActionJobs, repoMeta } from "./db/schema.js";
+import { branches, taskIndex, repoActionJobs, repoMeta } from "./db/schema.js";
 import { deriveFallbackTitle } from "../../services/create-flow.js";
 import { normalizeBaseBranchName } from "../../integrations/git-spice/index.js";
 import { sortBranchesForOverview } from "./stack-model.js";
@@ -55,22 +55,6 @@ interface GetPullRequestForBranchCommand {
   branchName: string;
 }
 
-interface PrSyncResult {
-  items: Array<{
-    number: number;
-    headRefName: string;
-    state: string;
-    title: string;
-    url?: string;
-    author?: string;
-    isDraft?: boolean;
-    ciStatus?: string | null;
-    reviewStatus?: string | null;
-    reviewer?: string | null;
-  }>;
-  at: number;
-}
-
 interface BranchSyncResult {
   items: Array<{
     branchName: string;
@@ -99,7 +83,6 @@ const PROJECT_QUEUE_NAMES = [
   "project.command.createTask",
   "project.command.registerTaskBranch",
   "project.command.runRepoStackAction",
-  "project.command.applyPrSyncResult",
   "project.command.applyBranchSyncResult",
 ] as const;
 
@@ -125,17 +108,8 @@ async function ensureProjectSyncActors(c: any, localPath: string): Promise<void>
     return;
   }
 
-  const prSync = await getOrCreateProjectPrSync(c, c.state.workspaceId, c.state.repoId, localPath, 30_000);
   const branchSync = await getOrCreateProjectBranchSync(c, c.state.workspaceId, c.state.repoId, localPath, 5_000);
   c.state.syncActorsStarted = true;
-
-  void prSync.start().catch((error: unknown) => {
-    logActorWarning("project.sync", "starting pr sync actor failed", {
-      workspaceId: c.state.workspaceId,
-      repoId: c.state.repoId,
-      error: resolveErrorMessage(error),
-    });
-  });
 
   void branchSync.start().catch((error: unknown) => {
     logActorWarning("project.sync", "starting branch sync actor failed", {
@@ -352,9 +326,6 @@ async function ensureTaskIndexHydratedForRead(c: any): Promise<void> {
 }
 
 async function forceProjectSync(c: any, localPath: string): Promise<void> {
-  const prSync = await getOrCreateProjectPrSync(c, c.state.workspaceId, c.state.repoId, localPath, 30_000);
-  await prSync.force();
-
   const branchSync = await getOrCreateProjectBranchSync(c, c.state.workspaceId, c.state.repoId, localPath, 5_000);
   await branchSync.force();
 }
@@ -377,17 +348,10 @@ async function enrichTaskRecord(c: any, record: TaskRecord): Promise<TaskRecord>
 
   const pr =
     branchName != null
-      ? await c.db
-          .select({
-            prUrl: prCache.prUrl,
-            prAuthor: prCache.prAuthor,
-            ciStatus: prCache.ciStatus,
-            reviewStatus: prCache.reviewStatus,
-            reviewer: prCache.reviewer,
-          })
-          .from(prCache)
-          .where(eq(prCache.branchName, branchName))
-          .get()
+      ? await getGithubData(c, c.state.workspaceId)
+          .listPullRequestsForRepository({ repoId: c.state.repoId })
+          .then((rows: any[]) => rows.find((row) => row.headRefName === branchName) ?? null)
+          .catch(() => null)
       : null;
 
   return {
@@ -396,11 +360,11 @@ async function enrichTaskRecord(c: any, record: TaskRecord): Promise<TaskRecord>
     hasUnpushed: br?.hasUnpushed != null ? String(br.hasUnpushed) : null,
     conflictsWithMain: br?.conflictsWithMain != null ? String(br.conflictsWithMain) : null,
     parentBranch: br?.parentBranch ?? null,
-    prUrl: pr?.prUrl ?? null,
-    prAuthor: pr?.prAuthor ?? null,
-    ciStatus: pr?.ciStatus ?? null,
-    reviewStatus: pr?.reviewStatus ?? null,
-    reviewer: pr?.reviewer ?? null,
+    prUrl: pr?.url ?? null,
+    prAuthor: pr?.authorLogin ?? null,
+    ciStatus: null,
+    reviewStatus: null,
+    reviewer: pr?.authorLogin ?? null,
   };
 }
 
@@ -458,11 +422,6 @@ async function createTaskMutation(c: any, cmd: CreateTaskCommand): Promise<TaskR
   const taskId = randomUUID();
 
   if (onBranch) {
-    const branchRow = await c.db.select({ branchName: branches.branchName }).from(branches).where(eq(branches.branchName, onBranch)).get();
-    if (!branchRow) {
-      throw new Error(`Branch not found in repo snapshot: ${onBranch}`);
-    }
-
     await registerTaskBranchMutation(c, {
       taskId,
       branchName: onBranch,
@@ -810,82 +769,6 @@ async function runRepoStackActionMutation(c: any, cmd: RunRepoStackActionCommand
   };
 }
 
-async function applyPrSyncResultMutation(c: any, body: PrSyncResult): Promise<void> {
-  await c.db.delete(prCache).run();
-
-  for (const item of body.items) {
-    await c.db
-      .insert(prCache)
-      .values({
-        branchName: item.headRefName,
-        prNumber: item.number,
-        state: item.state,
-        title: item.title,
-        prUrl: item.url ?? null,
-        prAuthor: item.author ?? null,
-        isDraft: item.isDraft ? 1 : 0,
-        ciStatus: item.ciStatus ?? null,
-        reviewStatus: item.reviewStatus ?? null,
-        reviewer: item.reviewer ?? null,
-        fetchedAt: body.at,
-        updatedAt: body.at,
-      })
-      .onConflictDoUpdate({
-        target: prCache.branchName,
-        set: {
-          prNumber: item.number,
-          state: item.state,
-          title: item.title,
-          prUrl: item.url ?? null,
-          prAuthor: item.author ?? null,
-          isDraft: item.isDraft ? 1 : 0,
-          ciStatus: item.ciStatus ?? null,
-          reviewStatus: item.reviewStatus ?? null,
-          reviewer: item.reviewer ?? null,
-          fetchedAt: body.at,
-          updatedAt: body.at,
-        },
-      })
-      .run();
-  }
-
-  for (const item of body.items) {
-    if (item.state !== "MERGED" && item.state !== "CLOSED") {
-      continue;
-    }
-
-    const row = await c.db.select({ taskId: taskIndex.taskId }).from(taskIndex).where(eq(taskIndex.branchName, item.headRefName)).get();
-    if (!row) {
-      continue;
-    }
-
-    try {
-      const h = getTask(c, c.state.workspaceId, c.state.repoId, row.taskId);
-      await h.archive({ reason: `PR ${item.state.toLowerCase()}` });
-    } catch (error) {
-      if (isStaleTaskReferenceError(error)) {
-        await deleteStaleTaskIndexRow(c, row.taskId);
-        logActorWarning("project", "pruned stale task index row during PR close archive", {
-          workspaceId: c.state.workspaceId,
-          repoId: c.state.repoId,
-          taskId: row.taskId,
-          branchName: item.headRefName,
-          prState: item.state,
-        });
-        continue;
-      }
-      logActorWarning("project", "failed to auto-archive task after PR close", {
-        workspaceId: c.state.workspaceId,
-        repoId: c.state.repoId,
-        taskId: row.taskId,
-        branchName: item.headRefName,
-        prState: item.state,
-        error: resolveErrorMessage(error),
-      });
-    }
-  }
-}
-
 async function applyBranchSyncResultMutation(c: any, body: BranchSyncResult): Promise<void> {
   const incoming = new Set(body.items.map((item) => item.branchName));
   const reservedRows = await c.db.select({ branchName: taskIndex.branchName }).from(taskIndex).where(isNotNull(taskIndex.branchName)).all();
@@ -953,69 +836,77 @@ export async function runProjectWorkflow(ctx: any): Promise<void> {
       return Loop.continue(undefined);
     }
 
-    if (msg.name === "project.command.ensure") {
-      const result = await loopCtx.step({
-        name: "project-ensure",
-        timeout: 5 * 60_000,
-        run: async () => ensureProjectMutation(loopCtx, msg.body as EnsureProjectCommand),
-      });
-      await msg.complete(result);
-      return Loop.continue(undefined);
-    }
+    try {
+      if (msg.name === "project.command.ensure") {
+        const result = await loopCtx.step({
+          name: "project-ensure",
+          timeout: 5 * 60_000,
+          run: async () => ensureProjectMutation(loopCtx, msg.body as EnsureProjectCommand),
+        });
+        await msg.complete(result);
+        return Loop.continue(undefined);
+      }
 
-    if (msg.name === "project.command.hydrateTaskIndex") {
-      await loopCtx.step("project-hydrate-task-index", async () => hydrateTaskIndexMutation(loopCtx, msg.body as HydrateTaskIndexCommand));
-      await msg.complete({ ok: true });
-      return Loop.continue(undefined);
-    }
+      if (msg.name === "project.command.hydrateTaskIndex") {
+        await loopCtx.step("project-hydrate-task-index", async () => hydrateTaskIndexMutation(loopCtx, msg.body as HydrateTaskIndexCommand));
+        await msg.complete({ ok: true });
+        return Loop.continue(undefined);
+      }
 
-    if (msg.name === "project.command.createTask") {
-      const result = await loopCtx.step({
-        name: "project-create-task",
-        timeout: 5 * 60_000,
-        run: async () => createTaskMutation(loopCtx, msg.body as CreateTaskCommand),
-      });
-      await msg.complete(result);
-      return Loop.continue(undefined);
-    }
+      if (msg.name === "project.command.createTask") {
+        const result = await loopCtx.step({
+          name: "project-create-task",
+          timeout: 5 * 60_000,
+          run: async () => createTaskMutation(loopCtx, msg.body as CreateTaskCommand),
+        });
+        await msg.complete(result);
+        return Loop.continue(undefined);
+      }
 
-    if (msg.name === "project.command.registerTaskBranch") {
-      const result = await loopCtx.step({
-        name: "project-register-task-branch",
-        timeout: 5 * 60_000,
-        run: async () => registerTaskBranchMutation(loopCtx, msg.body as RegisterTaskBranchCommand),
-      });
-      await msg.complete(result);
-      return Loop.continue(undefined);
-    }
+      if (msg.name === "project.command.registerTaskBranch") {
+        const result = await loopCtx.step({
+          name: "project-register-task-branch",
+          timeout: 5 * 60_000,
+          run: async () => registerTaskBranchMutation(loopCtx, msg.body as RegisterTaskBranchCommand),
+        });
+        await msg.complete(result);
+        return Loop.continue(undefined);
+      }
 
-    if (msg.name === "project.command.runRepoStackAction") {
-      const result = await loopCtx.step({
-        name: "project-run-repo-stack-action",
-        timeout: 12 * 60_000,
-        run: async () => runRepoStackActionMutation(loopCtx, msg.body as RunRepoStackActionCommand),
-      });
-      await msg.complete(result);
-      return Loop.continue(undefined);
-    }
+      if (msg.name === "project.command.runRepoStackAction") {
+        const result = await loopCtx.step({
+          name: "project-run-repo-stack-action",
+          timeout: 12 * 60_000,
+          run: async () => runRepoStackActionMutation(loopCtx, msg.body as RunRepoStackActionCommand),
+        });
+        await msg.complete(result);
+        return Loop.continue(undefined);
+      }
 
-    if (msg.name === "project.command.applyPrSyncResult") {
-      await loopCtx.step({
-        name: "project-apply-pr-sync-result",
-        timeout: 60_000,
-        run: async () => applyPrSyncResultMutation(loopCtx, msg.body as PrSyncResult),
+      if (msg.name === "project.command.applyBranchSyncResult") {
+        await loopCtx.step({
+          name: "project-apply-branch-sync-result",
+          timeout: 60_000,
+          run: async () => applyBranchSyncResultMutation(loopCtx, msg.body as BranchSyncResult),
+        });
+        await msg.complete({ ok: true });
+      }
+    } catch (error) {
+      const message = resolveErrorMessage(error);
+      logActorWarning("project", "project workflow command failed", {
+        workspaceId: loopCtx.state.workspaceId,
+        repoId: loopCtx.state.repoId,
+        queueName: msg.name,
+        error: message,
       });
-      await msg.complete({ ok: true });
-      return Loop.continue(undefined);
-    }
-
-    if (msg.name === "project.command.applyBranchSyncResult") {
-      await loopCtx.step({
-        name: "project-apply-branch-sync-result",
-        timeout: 60_000,
-        run: async () => applyBranchSyncResultMutation(loopCtx, msg.body as BranchSyncResult),
+      await msg.complete({ error: message }).catch((completeError: unknown) => {
+        logActorWarning("project", "project workflow failed completing error response", {
+          workspaceId: loopCtx.state.workspaceId,
+          repoId: loopCtx.state.repoId,
+          queueName: msg.name,
+          error: resolveErrorMessage(completeError),
+        });
       });
-      await msg.complete({ ok: true });
     }
 
     return Loop.continue(undefined);
@@ -1219,19 +1110,9 @@ export const projectActions = {
       }
     }
 
-    const prRows = await c.db
-      .select({
-        branchName: prCache.branchName,
-        prNumber: prCache.prNumber,
-        prState: prCache.state,
-        prUrl: prCache.prUrl,
-        ciStatus: prCache.ciStatus,
-        reviewStatus: prCache.reviewStatus,
-        reviewer: prCache.reviewer,
-      })
-      .from(prCache)
-      .all();
-    const prByBranch = new Map(prRows.map((row) => [row.branchName, row]));
+    const githubData = getGithubData(c, c.state.workspaceId);
+    const prRows = await githubData.listPullRequestsForRepository({ repoId: c.state.repoId }).catch(() => []);
+    const prByBranch = new Map(prRows.map((row) => [row.headRefName, row]));
 
     const combinedRows = sortBranchesForOverview(
       branchRowsRaw.map((row) => ({
@@ -1258,12 +1139,12 @@ export const projectActions = {
         taskId: taskMeta?.taskId ?? null,
         taskTitle: taskMeta?.title ?? null,
         taskStatus: taskMeta?.status ?? null,
-        prNumber: pr?.prNumber ?? null,
-        prState: pr?.prState ?? null,
-        prUrl: pr?.prUrl ?? null,
-        ciStatus: pr?.ciStatus ?? null,
-        reviewStatus: pr?.reviewStatus ?? null,
-        reviewer: pr?.reviewer ?? null,
+        prNumber: pr?.number ?? null,
+        prState: pr?.state ?? null,
+        prUrl: pr?.url ?? null,
+        ciStatus: null,
+        reviewStatus: null,
+        reviewer: pr?.authorLogin ?? null,
         firstSeenAt: row.firstSeenAt ?? null,
         lastSeenAt: row.lastSeenAt ?? null,
         updatedAt: Math.max(row.updatedAt, taskMeta?.updatedAt ?? 0),
@@ -1271,7 +1152,7 @@ export const projectActions = {
     });
 
     const latestBranchSync = await c.db.select({ updatedAt: branches.updatedAt }).from(branches).orderBy(desc(branches.updatedAt)).limit(1).get();
-    const latestPrSync = await c.db.select({ updatedAt: prCache.updatedAt }).from(prCache).orderBy(desc(prCache.updatedAt)).limit(1).get();
+    const githubSummary = await githubData.getSummary().catch(() => null);
 
     return {
       workspaceId: c.state.workspaceId,
@@ -1281,9 +1162,9 @@ export const projectActions = {
       stackAvailable,
       fetchedAt: now,
       branchSyncAt: latestBranchSync?.updatedAt ?? null,
-      prSyncAt: latestPrSync?.updatedAt ?? null,
+      prSyncAt: githubSummary?.lastSyncAt ?? null,
       branchSyncStatus: latestBranchSync ? "synced" : "pending",
-      prSyncStatus: latestPrSync ? "synced" : "pending",
+      prSyncStatus: githubSummary?.syncStatus ?? "pending",
       repoActionJobs: await listRepoActionJobRows(c),
       branches: branchRows,
     };
@@ -1294,24 +1175,11 @@ export const projectActions = {
     if (!branchName) {
       return null;
     }
-
-    const pr = await c.db
-      .select({
-        prNumber: prCache.prNumber,
-        prState: prCache.state,
-      })
-      .from(prCache)
-      .where(eq(prCache.branchName, branchName))
-      .get();
-
-    if (!pr?.prNumber) {
-      return null;
-    }
-
-    return {
-      number: pr.prNumber,
-      status: pr.prState === "draft" ? "draft" : "ready",
-    };
+    const githubData = getGithubData(c, c.state.workspaceId);
+    return await githubData.getPullRequestForBranch({
+      repoId: c.state.repoId,
+      branchName,
+    });
   },
 
   async runRepoStackAction(c: any, cmd: RunRepoStackActionCommand): Promise<RepoStackActionResult> {
@@ -1351,14 +1219,6 @@ export const projectActions = {
       message: `Queued ${action}`,
       at,
     };
-  },
-
-  async applyPrSyncResult(c: any, body: PrSyncResult): Promise<void> {
-    const self = selfProject(c);
-    await self.send(projectWorkflowQueueName("project.command.applyPrSyncResult"), body, {
-      wait: true,
-      timeout: 5 * 60_000,
-    });
   },
 
   async applyBranchSyncResult(c: any, body: BranchSyncResult): Promise<void> {

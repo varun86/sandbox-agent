@@ -28,6 +28,7 @@ import type {
   TaskWorkbenchSendMessageInput,
   TaskWorkbenchTabInput,
   TaskWorkbenchUpdateDraftInput,
+  WorkbenchOpenPrSummary,
   WorkbenchRepoSummary,
   WorkbenchSessionSummary,
   WorkbenchTaskSummary,
@@ -36,12 +37,12 @@ import type {
   WorkspaceUseInput,
 } from "@sandbox-agent/foundry-shared";
 import { getActorRuntimeContext } from "../context.js";
-import { getTask, getOrCreateHistory, getOrCreateProject, selfWorkspace } from "../handles.js";
+import { getGithubData, getOrCreateGithubData, getTask, getOrCreateHistory, getOrCreateProject, selfWorkspace } from "../handles.js";
 import { logActorWarning, resolveErrorMessage } from "../logging.js";
 import { availableSandboxProviderIds, defaultSandboxProviderId } from "../../sandbox-config.js";
 import { normalizeRemoteUrl, repoIdFromRemote } from "../../services/repo.js";
 import { resolveWorkspaceGithubAuth } from "../../services/github-auth.js";
-import { taskLookup, repos, providerProfiles, taskSummaries } from "./db/schema.js";
+import { organizationProfile, taskLookup, repos, providerProfiles, taskSummaries } from "./db/schema.js";
 import { agentTypeForModel } from "../task/workbench.js";
 import { expectQueueResponse } from "../../services/queue.js";
 import { workspaceAppActions } from "./app-shell.js";
@@ -84,6 +85,8 @@ export { WORKSPACE_QUEUE_NAMES };
 export function workspaceWorkflowQueueName(name: WorkspaceQueueName): WorkspaceQueueName {
   return name;
 }
+
+const ORGANIZATION_PROFILE_ROW_ID = "profile";
 
 function assertWorkspace(c: { state: WorkspaceState }, workspaceId: string): void {
   if (workspaceId !== c.state.workspaceId) {
@@ -203,6 +206,14 @@ function taskSummaryFromRow(row: any): WorkbenchTaskSummary {
   };
 }
 
+async function listOpenPullRequestsSnapshot(c: any, taskRows: WorkbenchTaskSummary[]): Promise<WorkbenchOpenPrSummary[]> {
+  const githubData = getGithubData(c, c.state.workspaceId);
+  const openPullRequests = await githubData.listOpenPullRequests({}).catch(() => []);
+  const claimedBranches = new Set(taskRows.filter((task) => task.branch).map((task) => `${task.repoId}:${task.branch}`));
+
+  return openPullRequests.filter((pullRequest: WorkbenchOpenPrSummary) => !claimedBranches.has(`${pullRequest.repoId}:${pullRequest.headRefName}`));
+}
+
 async function reconcileWorkbenchProjection(c: any): Promise<WorkspaceSummarySnapshot> {
   const repoRows = await c.db
     .select({ repoId: repos.repoId, remoteUrl: repos.remoteUrl, updatedAt: repos.updatedAt })
@@ -252,6 +263,7 @@ async function reconcileWorkbenchProjection(c: any): Promise<WorkspaceSummarySna
     workspaceId: c.state.workspaceId,
     repos: repoRows.map((row) => buildRepoSummary(row, taskRows)).sort((left, right) => right.latestActivityMs - left.latestActivityMs),
     taskSummaries: taskRows,
+    openPullRequests: await listOpenPullRequestsSnapshot(c, taskRows),
   };
 }
 
@@ -280,8 +292,8 @@ async function waitForWorkbenchTaskReady(task: any, timeoutMs = 5 * 60_000): Pro
 
 /**
  * Reads the workspace sidebar snapshot from the workspace actor's local SQLite
- * only. Task actors push summary updates into `task_summaries`, so clients do
- * not need this action to fan out to every child actor on the hot read path.
+ * plus the org-scoped GitHub actor for open PRs. Task actors still push
+ * summary updates into `task_summaries`, so the hot read path stays bounded.
  */
 async function getWorkspaceSummarySnapshot(c: any): Promise<WorkspaceSummarySnapshot> {
   const repoRows = await c.db
@@ -300,6 +312,7 @@ async function getWorkspaceSummarySnapshot(c: any): Promise<WorkspaceSummarySnap
     workspaceId: c.state.workspaceId,
     repos: repoRows.map((row) => buildRepoSummary(row, summaries)).sort((left, right) => right.latestActivityMs - left.latestActivityMs),
     taskSummaries: summaries,
+    openPullRequests: await listOpenPullRequestsSnapshot(c, summaries),
   };
 }
 
@@ -463,58 +476,74 @@ export async function runWorkspaceWorkflow(ctx: any): Promise<void> {
       return Loop.continue(undefined);
     }
 
-    if (msg.name === "workspace.command.addRepo") {
-      const result = await loopCtx.step({
-        name: "workspace-add-repo",
-        timeout: 60_000,
-        run: async () => addRepoMutation(loopCtx, msg.body as AddRepoInput),
-      });
-      await msg.complete(result);
-      return Loop.continue(undefined);
-    }
+    try {
+      if (msg.name === "workspace.command.addRepo") {
+        const result = await loopCtx.step({
+          name: "workspace-add-repo",
+          timeout: 60_000,
+          run: async () => addRepoMutation(loopCtx, msg.body as AddRepoInput),
+        });
+        await msg.complete(result);
+        return Loop.continue(undefined);
+      }
 
-    if (msg.name === "workspace.command.createTask") {
-      const result = await loopCtx.step({
-        name: "workspace-create-task",
-        timeout: 5 * 60_000,
-        run: async () => createTaskMutation(loopCtx, msg.body as CreateTaskInput),
-      });
-      await msg.complete(result);
-      return Loop.continue(undefined);
-    }
+      if (msg.name === "workspace.command.createTask") {
+        const result = await loopCtx.step({
+          name: "workspace-create-task",
+          timeout: 5 * 60_000,
+          run: async () => createTaskMutation(loopCtx, msg.body as CreateTaskInput),
+        });
+        await msg.complete(result);
+        return Loop.continue(undefined);
+      }
 
-    if (msg.name === "workspace.command.refreshProviderProfiles") {
-      await loopCtx.step("workspace-refresh-provider-profiles", async () =>
-        refreshProviderProfilesMutation(loopCtx, msg.body as RefreshProviderProfilesCommand),
-      );
-      await msg.complete({ ok: true });
-      return Loop.continue(undefined);
-    }
+      if (msg.name === "workspace.command.refreshProviderProfiles") {
+        await loopCtx.step("workspace-refresh-provider-profiles", async () =>
+          refreshProviderProfilesMutation(loopCtx, msg.body as RefreshProviderProfilesCommand),
+        );
+        await msg.complete({ ok: true });
+        return Loop.continue(undefined);
+      }
 
-    if (msg.name === "workspace.command.syncGithubSession") {
-      await loopCtx.step({
-        name: "workspace-sync-github-session",
-        timeout: 60_000,
-        run: async () => {
-          const { syncGithubOrganizations } = await import("./app-shell.js");
-          await syncGithubOrganizations(loopCtx, msg.body as { sessionId: string; accessToken: string });
-        },
-      });
-      await msg.complete({ ok: true });
-      return Loop.continue(undefined);
-    }
+      if (msg.name === "workspace.command.syncGithubSession") {
+        await loopCtx.step({
+          name: "workspace-sync-github-session",
+          timeout: 60_000,
+          run: async () => {
+            const { syncGithubOrganizations } = await import("./app-shell.js");
+            await syncGithubOrganizations(loopCtx, msg.body as { sessionId: string; accessToken: string });
+          },
+        });
+        await msg.complete({ ok: true });
+        return Loop.continue(undefined);
+      }
 
-    if (msg.name === "workspace.command.syncGithubOrganizationRepos") {
-      await loopCtx.step({
-        name: "workspace-sync-github-organization-repos",
-        timeout: 60_000,
-        run: async () => {
-          const { syncGithubOrganizationRepos } = await import("./app-shell.js");
-          await syncGithubOrganizationRepos(loopCtx, msg.body as { sessionId: string; organizationId: string });
-        },
+      if (msg.name === "workspace.command.syncGithubOrganizationRepos") {
+        await loopCtx.step({
+          name: "workspace-sync-github-organization-repos",
+          timeout: 60_000,
+          run: async () => {
+            const { syncGithubOrganizationRepos } = await import("./app-shell.js");
+            await syncGithubOrganizationRepos(loopCtx, msg.body as { sessionId: string; organizationId: string });
+          },
+        });
+        await msg.complete({ ok: true });
+        return Loop.continue(undefined);
+      }
+    } catch (error) {
+      const message = resolveErrorMessage(error);
+      logActorWarning("workspace", "workspace workflow command failed", {
+        workspaceId: loopCtx.state.workspaceId,
+        queueName: msg.name,
+        error: message,
       });
-      await msg.complete({ ok: true });
-      return Loop.continue(undefined);
+      await msg.complete({ error: message }).catch((completeError: unknown) => {
+        logActorWarning("workspace", "workspace workflow failed completing error response", {
+          workspaceId: loopCtx.state.workspaceId,
+          queueName: msg.name,
+          error: resolveErrorMessage(completeError),
+        });
+      });
     }
 
     return Loop.continue(undefined);
@@ -604,6 +633,175 @@ export const workspaceActions = {
     c.broadcast("workspaceUpdated", { type: "taskRemoved", taskId: input.taskId } satisfies WorkspaceEvent);
   },
 
+  async findTaskForGithubBranch(c: any, input: { repoId: string; branchName: string }): Promise<{ taskId: string | null }> {
+    const summaries = await c.db.select().from(taskSummaries).where(eq(taskSummaries.repoId, input.repoId)).all();
+    const existing = summaries.find((summary) => summary.branch === input.branchName);
+    return { taskId: existing?.taskId ?? null };
+  },
+
+  async refreshTaskSummaryForGithubBranch(c: any, input: { repoId: string; branchName: string }): Promise<void> {
+    const summaries = await c.db.select().from(taskSummaries).where(eq(taskSummaries.repoId, input.repoId)).all();
+    const matches = summaries.filter((summary) => summary.branch === input.branchName);
+
+    for (const summary of matches) {
+      try {
+        const task = getTask(c, c.state.workspaceId, input.repoId, summary.taskId);
+        await workspaceActions.applyTaskSummaryUpdate(c, {
+          taskSummary: await task.getTaskSummary({}),
+        });
+      } catch (error) {
+        logActorWarning("workspace", "failed refreshing task summary for GitHub branch", {
+          workspaceId: c.state.workspaceId,
+          repoId: input.repoId,
+          branchName: input.branchName,
+          taskId: summary.taskId,
+          error: resolveErrorMessage(error),
+        });
+      }
+    }
+  },
+
+  async applyOpenPullRequestUpdate(c: any, input: { pullRequest: WorkbenchOpenPrSummary }): Promise<void> {
+    const summaries = await c.db.select().from(taskSummaries).where(eq(taskSummaries.repoId, input.pullRequest.repoId)).all();
+    if (summaries.some((summary) => summary.branch === input.pullRequest.headRefName)) {
+      return;
+    }
+    c.broadcast("workspaceUpdated", { type: "pullRequestUpdated", pullRequest: input.pullRequest } satisfies WorkspaceEvent);
+  },
+
+  async removeOpenPullRequest(c: any, input: { prId: string }): Promise<void> {
+    c.broadcast("workspaceUpdated", { type: "pullRequestRemoved", prId: input.prId } satisfies WorkspaceEvent);
+  },
+
+  async applyGithubRepositoryProjection(c: any, input: { repoId: string; remoteUrl: string }): Promise<void> {
+    const now = Date.now();
+    const existing = await c.db.select({ repoId: repos.repoId }).from(repos).where(eq(repos.repoId, input.repoId)).get();
+    await c.db
+      .insert(repos)
+      .values({
+        repoId: input.repoId,
+        remoteUrl: input.remoteUrl,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: repos.repoId,
+        set: {
+          remoteUrl: input.remoteUrl,
+          updatedAt: now,
+        },
+      })
+      .run();
+    await broadcastRepoSummary(c, existing ? "repoUpdated" : "repoAdded", {
+      repoId: input.repoId,
+      remoteUrl: input.remoteUrl,
+      updatedAt: now,
+    });
+  },
+
+  async applyGithubDataProjection(
+    c: any,
+    input: {
+      connectedAccount: string;
+      installationStatus: string;
+      installationId: number | null;
+      syncStatus: string;
+      lastSyncLabel: string;
+      lastSyncAt: number | null;
+      repositories: Array<{ fullName: string; cloneUrl: string; private: boolean }>;
+    },
+  ): Promise<void> {
+    const existingRepos = await c.db.select({ repoId: repos.repoId, remoteUrl: repos.remoteUrl, updatedAt: repos.updatedAt }).from(repos).all();
+    const existingById = new Map(existingRepos.map((repo) => [repo.repoId, repo]));
+    const nextRepoIds = new Set<string>();
+    const now = Date.now();
+
+    for (const repository of input.repositories) {
+      const repoId = repoIdFromRemote(repository.cloneUrl);
+      nextRepoIds.add(repoId);
+      await c.db
+        .insert(repos)
+        .values({
+          repoId,
+          remoteUrl: repository.cloneUrl,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: repos.repoId,
+          set: {
+            remoteUrl: repository.cloneUrl,
+            updatedAt: now,
+          },
+        })
+        .run();
+      await broadcastRepoSummary(c, existingById.has(repoId) ? "repoUpdated" : "repoAdded", {
+        repoId,
+        remoteUrl: repository.cloneUrl,
+        updatedAt: now,
+      });
+    }
+
+    for (const repo of existingRepos) {
+      if (nextRepoIds.has(repo.repoId)) {
+        continue;
+      }
+      await c.db.delete(repos).where(eq(repos.repoId, repo.repoId)).run();
+      c.broadcast("workspaceUpdated", { type: "repoRemoved", repoId: repo.repoId } satisfies WorkspaceEvent);
+    }
+
+    const profile = await c.db
+      .select({ id: organizationProfile.id })
+      .from(organizationProfile)
+      .where(eq(organizationProfile.id, ORGANIZATION_PROFILE_ROW_ID))
+      .get();
+    if (profile) {
+      await c.db
+        .update(organizationProfile)
+        .set({
+          githubConnectedAccount: input.connectedAccount,
+          githubInstallationStatus: input.installationStatus,
+          githubSyncStatus: input.syncStatus,
+          githubInstallationId: input.installationId,
+          githubLastSyncLabel: input.lastSyncLabel,
+          githubLastSyncAt: input.lastSyncAt,
+          updatedAt: now,
+        })
+        .where(eq(organizationProfile.id, ORGANIZATION_PROFILE_ROW_ID))
+        .run();
+    }
+  },
+
+  async recordGithubWebhookReceipt(
+    c: any,
+    input: {
+      workspaceId: string;
+      event: string;
+      action?: string | null;
+      receivedAt?: number;
+    },
+  ): Promise<void> {
+    assertWorkspace(c, input.workspaceId);
+
+    const profile = await c.db
+      .select({ id: organizationProfile.id })
+      .from(organizationProfile)
+      .where(eq(organizationProfile.id, ORGANIZATION_PROFILE_ROW_ID))
+      .get();
+    if (!profile) {
+      return;
+    }
+
+    await c.db
+      .update(organizationProfile)
+      .set({
+        githubLastWebhookAt: input.receivedAt ?? Date.now(),
+        githubLastWebhookEvent: input.action ? `${input.event}.${input.action}` : input.event,
+      })
+      .where(eq(organizationProfile.id, ORGANIZATION_PROFILE_ROW_ID))
+      .run();
+  },
+
   async getWorkspaceSummary(c: any, input: WorkspaceUseInput): Promise<WorkspaceSummarySnapshot> {
     assertWorkspace(c, input.workspaceId);
     return await getWorkspaceSummarySnapshot(c);
@@ -620,7 +818,7 @@ export const workspaceActions = {
       repoId: input.repoId,
       task: input.task,
       ...(input.title ? { explicitTitle: input.title } : {}),
-      ...(input.branch ? { explicitBranchName: input.branch } : {}),
+      ...(input.onBranch ? { onBranch: input.onBranch } : input.branch ? { explicitBranchName: input.branch } : {}),
       ...(input.model ? { agentType: agentTypeForModel(input.model) } : {}),
     });
     const task = await requireWorkbenchTask(c, created.taskId);
@@ -634,6 +832,10 @@ export const workspaceActions = {
       tabId: session.tabId,
       text: input.task,
       attachments: [],
+      waitForCompletion: true,
+    });
+    await task.getSessionDetail({
+      sessionId: session.tabId,
     });
     return {
       taskId: created.taskId,
@@ -704,6 +906,22 @@ export const workspaceActions = {
   async revertWorkbenchFile(c: any, input: TaskWorkbenchDiffInput): Promise<void> {
     const task = await requireWorkbenchTask(c, input.taskId);
     await task.revertWorkbenchFile(input);
+  },
+
+  async reloadGithubOrganization(c: any): Promise<void> {
+    await getOrCreateGithubData(c, c.state.workspaceId).reloadOrganization({});
+  },
+
+  async reloadGithubPullRequests(c: any): Promise<void> {
+    await getOrCreateGithubData(c, c.state.workspaceId).reloadAllPullRequests({});
+  },
+
+  async reloadGithubRepository(c: any, input: { repoId: string }): Promise<void> {
+    await getOrCreateGithubData(c, c.state.workspaceId).reloadRepository(input);
+  },
+
+  async reloadGithubPullRequest(c: any, input: { repoId: string; prNumber: number }): Promise<void> {
+    await getOrCreateGithubData(c, c.state.workspaceId).reloadPullRequest(input);
   },
 
   async listTasks(c: any, input: ListTasksInput): Promise<TaskSummary[]> {

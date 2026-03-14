@@ -64,6 +64,7 @@ function workspaceSnapshot(): WorkspaceSummarySnapshot {
         sessionsSummary: [],
       },
     ],
+    openPullRequests: [],
   };
 }
 

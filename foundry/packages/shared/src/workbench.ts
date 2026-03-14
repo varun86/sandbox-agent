@@ -105,6 +105,21 @@ export interface WorkbenchPullRequestSummary {
   status: "draft" | "ready";
 }
 
+export interface WorkbenchOpenPrSummary {
+  prId: string;
+  repoId: string;
+  repoFullName: string;
+  number: number;
+  title: string;
+  state: string;
+  url: string;
+  headRefName: string;
+  baseRefName: string;
+  authorLogin: string | null;
+  isDraft: boolean;
+  updatedAtMs: number;
+}
+
 export interface WorkbenchSandboxSummary {
   providerId: ProviderId;
   sandboxId: string;
@@ -161,6 +176,7 @@ export interface WorkspaceSummarySnapshot {
   workspaceId: string;
   repos: WorkbenchRepoSummary[];
   taskSummaries: WorkbenchTaskSummary[];
+  openPullRequests: WorkbenchOpenPrSummary[];
 }
 
 /**
@@ -229,6 +245,7 @@ export interface TaskWorkbenchCreateTaskInput {
   task: string;
   title?: string;
   branch?: string;
+  onBranch?: string;
   model?: WorkbenchModelId;
 }
 

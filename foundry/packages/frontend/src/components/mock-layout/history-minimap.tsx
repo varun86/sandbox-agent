@@ -97,7 +97,7 @@ export const HistoryMinimap = memo(function HistoryMinimap({ events, onSelect }:
                 className={css({
                   appearance: "none",
                   WebkitAppearance: "none",
-                  background: "none",
+                  backgroundColor: "transparent",
                   border: "none",
                   margin: "0",
                   padding: "6px 8px",
@@ -110,7 +110,7 @@ export const HistoryMinimap = memo(function HistoryMinimap({ events, onSelect }:
                   overflow: "hidden",
                   textOverflow: "ellipsis",
                   whiteSpace: "nowrap",
-                  transition: "background 160ms ease, color 160ms ease",
+                  transition: "background-color 160ms ease, color 160ms ease",
                   ":hover": {
                     backgroundColor: t.interactiveHover,
                     color: t.textPrimary,

@@ -149,6 +149,23 @@ export function shouldMarkSessionUnreadForStatus(meta: { thinkingSinceMs?: numbe
   return Boolean(meta.thinkingSinceMs);
 }
 
+export function shouldRecreateSessionForModelChange(meta: {
+  status: "pending_provision" | "pending_session_create" | "ready" | "error";
+  sandboxSessionId?: string | null;
+  created?: boolean;
+  transcript?: Array<any>;
+}): boolean {
+  if (meta.status !== "ready" || !meta.sandboxSessionId) {
+    return false;
+  }
+
+  if (meta.created) {
+    return false;
+  }
+
+  return !Array.isArray(meta.transcript) || meta.transcript.length === 0;
+}
+
 async function listSessionMetaRows(c: any, options?: { includeClosed?: boolean }): Promise<Array<any>> {
   await ensureWorkbenchSessionTable(c);
   const rows = await c.db.select().from(taskWorkbenchSessions).orderBy(asc(taskWorkbenchSessions.createdAt)).all();
@@ -288,6 +305,24 @@ async function requireReadySessionMeta(c: any, tabId: string): Promise<any> {
     throw new Error(meta.errorMessage ?? "This workbench tab is still preparing");
   }
   return meta;
+}
+
+async function ensureReadySessionMeta(c: any, tabId: string): Promise<any> {
+  const meta = await readSessionMeta(c, tabId);
+  if (!meta) {
+    throw new Error(`Unknown workbench tab: ${tabId}`);
+  }
+
+  if (meta.status === "ready" && meta.sandboxSessionId) {
+    return meta;
+  }
+
+  if (meta.status === "error") {
+    throw new Error(meta.errorMessage ?? "This workbench tab failed to prepare");
+  }
+
+  await ensureWorkbenchSession(c, tabId);
+  return await requireReadySessionMeta(c, tabId);
 }
 
 function shellFragment(parts: string[]): string {
@@ -662,6 +697,23 @@ async function enqueueWorkbenchRefresh(
   await self.send(command, body, { wait: false });
 }
 
+async function enqueueWorkbenchEnsureSession(c: any, tabId: string): Promise<void> {
+  const self = selfTask(c);
+  await self.send(
+    "task.command.workbench.ensure_session",
+    {
+      tabId,
+    },
+    {
+      wait: false,
+    },
+  );
+}
+
+function pendingWorkbenchSessionStatus(record: any): "pending_provision" | "pending_session_create" {
+  return record.activeSandboxId ? "pending_session_create" : "pending_provision";
+}
+
 async function maybeScheduleWorkbenchRefreshes(c: any, record: any, sessions: Array<any>): Promise<void> {
   const gitState = await readCachedGitState(c);
   if (record.activeSandboxId && !gitState.updatedAt) {
@@ -721,7 +773,7 @@ export async function ensureWorkbenchSeeded(c: any): Promise<any> {
 }
 
 function buildSessionSummary(record: any, meta: any): any {
-  const derivedSandboxSessionId = meta.sandboxSessionId ?? (meta.status === "pending_provision" && record.activeSessionId ? record.activeSessionId : null);
+  const derivedSandboxSessionId = meta.status === "ready" ? (meta.sandboxSessionId ?? null) : null;
   const sessionStatus =
     meta.status === "pending_provision" || meta.status === "pending_session_create"
       ? meta.status
@@ -991,12 +1043,12 @@ export async function createWorkbenchSession(c: any, model?: string): Promise<{ 
   await ensureSessionMeta(c, {
     tabId,
     model: model ?? defaultModelForAgent(record.agentType),
-    sandboxSessionId: tabId,
-    status: record.activeSandboxId ? "pending_session_create" : "pending_provision",
+    sandboxSessionId: null,
+    status: pendingWorkbenchSessionStatus(record),
     created: false,
   });
-  await ensureWorkbenchSession(c, tabId, model);
   await broadcastTaskUpdate(c, { sessionId: tabId });
+  await enqueueWorkbenchEnsureSession(c, tabId);
   return { tabId };
 }
 
@@ -1099,14 +1151,60 @@ export async function updateWorkbenchDraft(c: any, sessionId: string, text: stri
 }
 
 export async function changeWorkbenchModel(c: any, sessionId: string, model: string): Promise<void> {
-  await updateSessionMeta(c, sessionId, {
+  const meta = await readSessionMeta(c, sessionId);
+  if (!meta || meta.closed) {
+    return;
+  }
+
+  if (meta.model === model) {
+    return;
+  }
+
+  const record = await ensureWorkbenchSeeded(c);
+  let nextMeta = await updateSessionMeta(c, sessionId, {
     model,
   });
+  let shouldEnsure = nextMeta.status === "pending_provision" || nextMeta.status === "pending_session_create" || nextMeta.status === "error";
+
+  if (shouldRecreateSessionForModelChange(nextMeta)) {
+    const sandbox = getTaskSandbox(c, c.state.workspaceId, stableSandboxId(c));
+    await sandbox.destroySession(nextMeta.sandboxSessionId);
+    nextMeta = await updateSessionMeta(c, sessionId, {
+      sandboxSessionId: null,
+      status: pendingWorkbenchSessionStatus(record),
+      errorMessage: null,
+      transcriptJson: "[]",
+      transcriptUpdatedAt: null,
+      thinkingSinceMs: null,
+    });
+    shouldEnsure = true;
+  } else if (nextMeta.status === "ready" && nextMeta.sandboxSessionId) {
+    const sandbox = getTaskSandbox(c, c.state.workspaceId, stableSandboxId(c));
+    if (typeof sandbox.rawSendSessionMethod === "function") {
+      try {
+        await sandbox.rawSendSessionMethod(nextMeta.sandboxSessionId, "session/set_config_option", {
+          configId: "model",
+          value: model,
+        });
+      } catch {
+        // Some agents do not allow live model updates. Preserve the new preference in metadata.
+      }
+    }
+  } else if (nextMeta.status !== "ready") {
+    nextMeta = await updateSessionMeta(c, sessionId, {
+      status: pendingWorkbenchSessionStatus(record),
+      errorMessage: null,
+    });
+  }
+
+  if (shouldEnsure) {
+    await enqueueWorkbenchEnsureSession(c, sessionId);
+  }
   await broadcastTaskUpdate(c, { sessionId });
 }
 
 export async function sendWorkbenchMessage(c: any, sessionId: string, text: string, attachments: Array<any>): Promise<void> {
-  const meta = await requireReadySessionMeta(c, sessionId);
+  const meta = await ensureReadySessionMeta(c, sessionId);
   const record = await ensureWorkbenchSeeded(c);
   const runtime = await getTaskSandboxRuntime(c, record);
   await ensureSandboxRepo(c, runtime.sandbox, record);

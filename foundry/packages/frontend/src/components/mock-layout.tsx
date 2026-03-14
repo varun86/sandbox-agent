@@ -3,14 +3,16 @@ import { useNavigate } from "@tanstack/react-router";
 import { useStyletron } from "baseui";
 import {
   createErrorContext,
+  type FoundryOrganization,
   type TaskWorkbenchSnapshot,
+  type WorkbenchOpenPrSummary,
   type WorkbenchSessionSummary,
   type WorkbenchTaskDetail,
   type WorkbenchTaskSummary,
 } from "@sandbox-agent/foundry-shared";
 import { useInterest } from "@sandbox-agent/foundry-client";
 
-import { PanelLeft, PanelRight } from "lucide-react";
+import { CircleAlert, PanelLeft, PanelRight } from "lucide-react";
 import { useFoundryTokens } from "../app/theme";
 import { logger } from "../logging.js";
 
@@ -75,6 +77,59 @@ function sanitizeActiveTabId(task: Task, tabId: string | null | undefined, openD
   return openDiffs.length > 0 ? diffTabId(openDiffs[openDiffs.length - 1]!) : lastAgentTabId;
 }
 
+function githubInstallationWarningTitle(organization: FoundryOrganization): string {
+  return organization.github.installationStatus === "install_required" ? "GitHub App not installed" : "GitHub App needs reconnection";
+}
+
+function githubInstallationWarningDetail(organization: FoundryOrganization): string {
+  const statusDetail = organization.github.lastSyncLabel.trim();
+  const requirementDetail =
+    organization.github.installationStatus === "install_required"
+      ? "Webhooks are required for Foundry to function. Repo sync and PR updates will not work until the GitHub App is installed for this workspace."
+      : "Webhook delivery is unavailable. Repo sync and PR updates will not work until the GitHub App is reconnected.";
+  return statusDetail ? `${requirementDetail} ${statusDetail}.` : requirementDetail;
+}
+
+function GithubInstallationWarning({
+  organization,
+  css,
+  t,
+}: {
+  organization: FoundryOrganization;
+  css: ReturnType<typeof useStyletron>[0];
+  t: ReturnType<typeof useFoundryTokens>;
+}) {
+  if (organization.github.installationStatus === "connected") {
+    return null;
+  }
+
+  return (
+    <div
+      className={css({
+        position: "fixed",
+        bottom: "8px",
+        left: "8px",
+        zIndex: 99998,
+        display: "flex",
+        alignItems: "flex-start",
+        gap: "8px",
+        padding: "10px 12px",
+        backgroundColor: t.surfaceElevated,
+        border: `1px solid ${t.statusError}`,
+        borderRadius: "6px",
+        boxShadow: t.shadow,
+        maxWidth: "440px",
+      })}
+    >
+      <CircleAlert size={15} color={t.statusError} />
+      <div className={css({ display: "flex", flexDirection: "column", gap: "3px" })}>
+        <div className={css({ fontSize: "11px", fontWeight: 600, color: t.textPrimary })}>{githubInstallationWarningTitle(organization)}</div>
+        <div className={css({ fontSize: "11px", lineHeight: 1.45, color: t.textMuted })}>{githubInstallationWarningDetail(organization)}</div>
+      </div>
+    </div>
+  );
+}
+
 function toLegacyTab(
   summary: WorkbenchSessionSummary,
   sessionDetail?: { draft: Task["tabs"][number]["draft"]; transcript: Task["tabs"][number]["transcript"] },
@@ -125,6 +180,40 @@ function toLegacyTask(
   };
 }
 
+const OPEN_PR_TASK_PREFIX = "pr:";
+
+function openPrTaskId(prId: string): string {
+  return `${OPEN_PR_TASK_PREFIX}${prId}`;
+}
+
+function isOpenPrTaskId(taskId: string): boolean {
+  return taskId.startsWith(OPEN_PR_TASK_PREFIX);
+}
+
+function toLegacyOpenPrTask(pullRequest: WorkbenchOpenPrSummary): Task {
+  return {
+    id: openPrTaskId(pullRequest.prId),
+    repoId: pullRequest.repoId,
+    title: pullRequest.title,
+    status: "new",
+    runtimeStatus: undefined,
+    statusMessage: pullRequest.authorLogin ? `@${pullRequest.authorLogin}` : null,
+    repoName: pullRequest.repoFullName,
+    updatedAtMs: pullRequest.updatedAtMs,
+    branch: pullRequest.headRefName,
+    pullRequest: {
+      number: pullRequest.number,
+      status: pullRequest.isDraft ? "draft" : "ready",
+    },
+    tabs: [],
+    fileChanges: [],
+    diffs: {},
+    fileTree: [],
+    minutesUsed: 0,
+    activeSandboxId: null,
+  };
+}
+
 function sessionStateMessage(tab: Task["tabs"][number] | null | undefined): string | null {
   if (!tab) {
     return null;
@@ -153,7 +242,14 @@ function groupProjects(repos: Array<{ id: string; label: string }>, tasks: Task[
 }
 
 interface WorkbenchActions {
-  createTask(input: { repoId: string; task: string; title?: string; branch?: string; model?: ModelId }): Promise<{ taskId: string; tabId?: string }>;
+  createTask(input: {
+    repoId: string;
+    task: string;
+    title?: string;
+    branch?: string;
+    onBranch?: string;
+    model?: ModelId;
+  }): Promise<{ taskId: string; tabId?: string }>;
   markTaskUnread(input: { taskId: string }): Promise<void>;
   renameTask(input: { taskId: string; value: string }): Promise<void>;
   renameBranch(input: { taskId: string; value: string }): Promise<void>;
@@ -168,6 +264,10 @@ interface WorkbenchActions {
   closeTab(input: { taskId: string; tabId: string }): Promise<void>;
   addTab(input: { taskId: string; model?: string }): Promise<{ tabId: string }>;
   changeModel(input: { taskId: string; tabId: string; model: ModelId }): Promise<void>;
+  reloadGithubOrganization(): Promise<void>;
+  reloadGithubPullRequests(): Promise<void>;
+  reloadGithubRepository(repoId: string): Promise<void>;
+  reloadGithubPullRequest(repoId: string, prNumber: number): Promise<void>;
 }
 
 const TranscriptPanel = memo(function TranscriptPanel({
@@ -187,6 +287,7 @@ const TranscriptPanel = memo(function TranscriptPanel({
   onSidebarPeekEnd,
   rightSidebarCollapsed,
   onToggleRightSidebar,
+  selectedSessionHydrating = false,
   onNavigateToUsage,
 }: {
   taskWorkbenchClient: WorkbenchActions;
@@ -205,6 +306,7 @@ const TranscriptPanel = memo(function TranscriptPanel({
   onSidebarPeekEnd?: () => void;
   rightSidebarCollapsed?: boolean;
   onToggleRightSidebar?: () => void;
+  selectedSessionHydrating?: boolean;
   onNavigateToUsage?: () => void;
 }) {
   const t = useFoundryTokens();
@@ -216,6 +318,11 @@ const TranscriptPanel = memo(function TranscriptPanel({
   const [pendingHistoryTarget, setPendingHistoryTarget] = useState<{ messageId: string; tabId: string } | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [timerNowMs, setTimerNowMs] = useState(() => Date.now());
+  const [localDraft, setLocalDraft] = useState("");
+  const [localAttachments, setLocalAttachments] = useState<LineAttachment[]>([]);
+  const lastEditTimeRef = useRef(0);
+  const throttleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingDraftRef = useRef<{ text: string; attachments: LineAttachment[] } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messageRefs = useRef(new Map<string, HTMLDivElement>());
@@ -235,8 +342,27 @@ const TranscriptPanel = memo(function TranscriptPanel({
     !!activeAgentTab &&
     (activeAgentTab.status === "pending_provision" || activeAgentTab.status === "pending_session_create" || activeAgentTab.status === "error") &&
     activeMessages.length === 0;
-  const draft = promptTab?.draft.text ?? "";
-  const attachments = promptTab?.draft.attachments ?? [];
+  const serverDraft = promptTab?.draft.text ?? "";
+  const serverAttachments = promptTab?.draft.attachments ?? [];
+
+  // Sync server → local only when user hasn't typed recently (3s cooldown)
+  const DRAFT_SYNC_COOLDOWN_MS = 3_000;
+  useEffect(() => {
+    if (Date.now() - lastEditTimeRef.current > DRAFT_SYNC_COOLDOWN_MS) {
+      setLocalDraft(serverDraft);
+      setLocalAttachments(serverAttachments);
+    }
+  }, [serverDraft, serverAttachments]);
+
+  // Reset local draft immediately on tab/task switch
+  useEffect(() => {
+    lastEditTimeRef.current = 0;
+    setLocalDraft(promptTab?.draft.text ?? "");
+    setLocalAttachments(promptTab?.draft.attachments ?? []);
+  }, [promptTab?.id, task.id]);
+
+  const draft = localDraft;
+  const attachments = localAttachments;
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -343,20 +469,53 @@ const TranscriptPanel = memo(function TranscriptPanel({
     [editValue, task.id],
   );
 
+  const DRAFT_THROTTLE_MS = 500;
+
+  const flushDraft = useCallback(
+    (text: string, nextAttachments: LineAttachment[], tabId: string) => {
+      void taskWorkbenchClient.updateDraft({
+        taskId: task.id,
+        tabId,
+        text,
+        attachments: nextAttachments,
+      });
+    },
+    [task.id],
+  );
+
+  // Clean up throttle timer on unmount
+  useEffect(() => {
+    return () => {
+      if (throttleTimerRef.current) {
+        clearTimeout(throttleTimerRef.current);
+      }
+    };
+  }, []);
+
   const updateDraft = useCallback(
     (nextText: string, nextAttachments: LineAttachment[]) => {
       if (!promptTab) {
         return;
       }
 
-      void taskWorkbenchClient.updateDraft({
-        taskId: task.id,
-        tabId: promptTab.id,
-        text: nextText,
-        attachments: nextAttachments,
-      });
+      // Update local state immediately for responsive typing
+      lastEditTimeRef.current = Date.now();
+      setLocalDraft(nextText);
+      setLocalAttachments(nextAttachments);
+
+      // Throttle the network call
+      pendingDraftRef.current = { text: nextText, attachments: nextAttachments };
+      if (!throttleTimerRef.current) {
+        throttleTimerRef.current = setTimeout(() => {
+          throttleTimerRef.current = null;
+          if (pendingDraftRef.current) {
+            flushDraft(pendingDraftRef.current.text, pendingDraftRef.current.attachments, promptTab.id);
+            pendingDraftRef.current = null;
+          }
+        }, DRAFT_THROTTLE_MS);
+      }
     },
-    [task.id, promptTab],
+    [promptTab, flushDraft],
   );
 
   const sendMessage = useCallback(() => {
@@ -684,6 +843,33 @@ const TranscriptPanel = memo(function TranscriptPanel({
                     </button>
                   </>
                 )}
+              </div>
+            </div>
+          </ScrollBody>
+        ) : selectedSessionHydrating ? (
+          <ScrollBody>
+            <div
+              style={{
+                minHeight: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "32px",
+              }}
+            >
+              <div
+                style={{
+                  maxWidth: "420px",
+                  textAlign: "center",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "12px",
+                  alignItems: "center",
+                }}
+              >
+                <SpinnerDot size={16} />
+                <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 600 }}>Loading session</h2>
+                <p style={{ margin: 0, opacity: 0.75 }}>Fetching the latest transcript for this session.</p>
               </div>
             </div>
           </ScrollBody>
@@ -1099,12 +1285,25 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
       closeTab: (input) => backendClient.closeWorkbenchSession(workspaceId, input),
       addTab: (input) => backendClient.createWorkbenchSession(workspaceId, input),
       changeModel: (input) => backendClient.changeWorkbenchModel(workspaceId, input),
+      reloadGithubOrganization: () => backendClient.reloadGithubOrganization(workspaceId),
+      reloadGithubPullRequests: () => backendClient.reloadGithubPullRequests(workspaceId),
+      reloadGithubRepository: (repoId) => backendClient.reloadGithubRepository(workspaceId, repoId),
+      reloadGithubPullRequest: (repoId, prNumber) => backendClient.reloadGithubPullRequest(workspaceId, repoId, prNumber),
     }),
     [workspaceId],
   );
   const workspaceState = useInterest(interestManager, "workspace", { workspaceId });
   const workspaceRepos = workspaceState.data?.repos ?? [];
   const taskSummaries = workspaceState.data?.taskSummaries ?? [];
+  const openPullRequests = workspaceState.data?.openPullRequests ?? [];
+  const openPullRequestsByTaskId = useMemo(
+    () => new Map(openPullRequests.map((pullRequest) => [openPrTaskId(pullRequest.prId), pullRequest])),
+    [openPullRequests],
+  );
+  const selectedOpenPullRequest = useMemo(
+    () => (selectedTaskId ? (openPullRequestsByTaskId.get(selectedTaskId) ?? null) : null),
+    [openPullRequestsByTaskId, selectedTaskId],
+  );
   const selectedTaskSummary = useMemo(
     () => taskSummaries.find((task) => task.id === selectedTaskId) ?? taskSummaries[0] ?? null,
     [selectedTaskId, taskSummaries],
@@ -1169,10 +1368,12 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
       }
     }
 
-    return taskSummaries.map((summary) =>
+    const legacyTasks = taskSummaries.map((summary) =>
       summary.id === selectedTaskSummary?.id ? toLegacyTask(summary, taskState.data, sessionCache) : toLegacyTask(summary),
     );
-  }, [selectedTaskSummary, selectedSessionId, sessionState.data, taskState.data, taskSummaries, workspaceId]);
+    const legacyOpenPrs = openPullRequests.map((pullRequest) => toLegacyOpenPrTask(pullRequest));
+    return [...legacyTasks, ...legacyOpenPrs].sort((left, right) => right.updatedAtMs - left.updatedAtMs);
+  }, [openPullRequests, selectedTaskSummary, selectedSessionId, sessionState.data, taskState.data, taskSummaries, workspaceId]);
   const rawProjects = useMemo(() => groupProjects(workspaceRepos, tasks), [tasks, workspaceRepos]);
   const appSnapshot = useMockAppSnapshot();
   const activeOrg = activeMockOrganization(appSnapshot);
@@ -1200,9 +1401,11 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
   const leftWidthRef = useRef(leftWidth);
   const rightWidthRef = useRef(rightWidth);
   const autoCreatingSessionForTaskRef = useRef<Set<string>>(new Set());
+  const resolvingOpenPullRequestsRef = useRef<Set<string>>(new Set());
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
   const [rightSidebarOpen, setRightSidebarOpen] = useState(true);
   const [leftSidebarPeeking, setLeftSidebarPeeking] = useState(false);
+  const [materializingOpenPrId, setMaterializingOpenPrId] = useState<string | null>(null);
   const showDevPanel = useDevPanel();
   const peekTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1268,10 +1471,78 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
     startRightRef.current = rightWidthRef.current;
   }, []);
 
-  const activeTask = useMemo(() => tasks.find((task) => task.id === selectedTaskId) ?? tasks[0] ?? null, [tasks, selectedTaskId]);
+  const activeTask = useMemo(() => {
+    const realTasks = tasks.filter((task) => !isOpenPrTaskId(task.id));
+    if (selectedOpenPullRequest) {
+      return null;
+    }
+    if (selectedTaskId) {
+      return realTasks.find((task) => task.id === selectedTaskId) ?? realTasks[0] ?? null;
+    }
+    return realTasks[0] ?? null;
+  }, [selectedOpenPullRequest, selectedTaskId, tasks]);
+
+  const materializeOpenPullRequest = useCallback(
+    async (pullRequest: WorkbenchOpenPrSummary) => {
+      if (resolvingOpenPullRequestsRef.current.has(pullRequest.prId)) {
+        return;
+      }
+
+      resolvingOpenPullRequestsRef.current.add(pullRequest.prId);
+      setMaterializingOpenPrId(pullRequest.prId);
+
+      try {
+        const { taskId, tabId } = await taskWorkbenchClient.createTask({
+          repoId: pullRequest.repoId,
+          task: `Continue work on GitHub PR #${pullRequest.number}: ${pullRequest.title}`,
+          model: "gpt-5.3-codex",
+          title: pullRequest.title,
+          onBranch: pullRequest.headRefName,
+        });
+        await navigate({
+          to: "/workspaces/$workspaceId/tasks/$taskId",
+          params: {
+            workspaceId,
+            taskId,
+          },
+          search: { sessionId: tabId ?? undefined },
+          replace: true,
+        });
+      } catch (error) {
+        setMaterializingOpenPrId((current) => (current === pullRequest.prId ? null : current));
+        resolvingOpenPullRequestsRef.current.delete(pullRequest.prId);
+        logger.error(
+          {
+            prId: pullRequest.prId,
+            repoId: pullRequest.repoId,
+            branchName: pullRequest.headRefName,
+            ...createErrorContext(error),
+          },
+          "failed_to_materialize_open_pull_request_task",
+        );
+      }
+    },
+    [navigate, taskWorkbenchClient, workspaceId],
+  );
+
+  useEffect(() => {
+    if (!selectedOpenPullRequest) {
+      if (materializingOpenPrId) {
+        resolvingOpenPullRequestsRef.current.delete(materializingOpenPrId);
+      }
+      setMaterializingOpenPrId(null);
+      return;
+    }
+
+    void materializeOpenPullRequest(selectedOpenPullRequest);
+  }, [materializeOpenPullRequest, materializingOpenPrId, selectedOpenPullRequest]);
 
   useEffect(() => {
     if (activeTask) {
+      return;
+    }
+
+    if (selectedOpenPullRequest || materializingOpenPrId) {
       return;
     }
 
@@ -1291,11 +1562,12 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
       search: { sessionId: fallbackTask?.tabs[0]?.id ?? undefined },
       replace: true,
     });
-  }, [activeTask, tasks, navigate, workspaceId]);
+  }, [activeTask, materializingOpenPrId, navigate, selectedOpenPullRequest, tasks, workspaceId]);
 
   const openDiffs = activeTask ? sanitizeOpenDiffs(activeTask, openDiffsByTask[activeTask.id]) : [];
   const lastAgentTabId = activeTask ? sanitizeLastAgentTabId(activeTask, lastAgentTabIdByTask[activeTask.id]) : null;
   const activeTabId = activeTask ? sanitizeActiveTabId(activeTask, activeTabIdByTask[activeTask.id], openDiffs, lastAgentTabId) : null;
+  const selectedSessionHydrating = Boolean(selectedSessionId && activeTabId === selectedSessionId && sessionState.status === "loading" && !sessionState.data);
 
   const syncRouteSession = useCallback(
     (taskId: string, sessionId: string | null, replace = false) => {
@@ -1395,7 +1667,7 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
   }, [activeTask, selectedSessionId, syncRouteSession, taskWorkbenchClient]);
 
   const createTask = useCallback(
-    (overrideRepoId?: string) => {
+    (overrideRepoId?: string, options?: { title?: string; task?: string; branch?: string; onBranch?: string }) => {
       void (async () => {
         const repoId = overrideRepoId || selectedNewTaskRepoId;
         if (!repoId) {
@@ -1404,9 +1676,11 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
 
         const { taskId, tabId } = await taskWorkbenchClient.createTask({
           repoId,
-          task: "New task",
+          task: options?.task ?? "New task",
           model: "gpt-5.3-codex",
-          title: "New task",
+          title: options?.title ?? "New task",
+          ...(options?.branch ? { branch: options.branch } : {}),
+          ...(options?.onBranch ? { onBranch: options.onBranch } : {}),
         });
         await navigate({
           to: "/workspaces/$workspaceId/tasks/$taskId",
@@ -1418,7 +1692,7 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
         });
       })();
     },
-    [navigate, selectedNewTaskRepoId, workspaceId],
+    [navigate, selectedNewTaskRepoId, taskWorkbenchClient, workspaceId],
   );
 
   const openDiffTab = useCallback(
@@ -1447,6 +1721,14 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
 
   const selectTask = useCallback(
     (id: string) => {
+      if (isOpenPrTaskId(id)) {
+        const pullRequest = openPullRequestsByTaskId.get(id);
+        if (!pullRequest) {
+          return;
+        }
+        void materializeOpenPullRequest(pullRequest);
+        return;
+      }
       const task = tasks.find((candidate) => candidate.id === id) ?? null;
       void navigate({
         to: "/workspaces/$workspaceId/tasks/$taskId",
@@ -1457,7 +1739,7 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
         search: { sessionId: task?.tabs[0]?.id ?? undefined },
       });
     },
-    [tasks, navigate, workspaceId],
+    [materializeOpenPullRequest, navigate, openPullRequestsByTaskId, tasks, workspaceId],
   );
 
   const markTaskUnread = useCallback((id: string) => {
@@ -1616,6 +1898,7 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
   };
 
   if (!activeTask) {
+    const isMaterializingSelectedOpenPr = Boolean(selectedOpenPullRequest) || materializingOpenPrId != null;
     return (
       <>
         {dragRegion}
@@ -1636,7 +1919,7 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
                 projects={projects}
                 newTaskRepos={workspaceRepos}
                 selectedNewTaskRepoId={selectedNewTaskRepoId}
-                activeId=""
+                activeId={selectedTaskId ?? ""}
                 onSelect={selectTask}
                 onCreate={createTask}
                 onSelectNewTaskRepo={setSelectedNewTaskRepoId}
@@ -1646,6 +1929,10 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
                 onReorderProjects={reorderProjects}
                 taskOrderByProject={taskOrderByProject}
                 onReorderTasks={reorderTasks}
+                onReloadOrganization={() => void taskWorkbenchClient.reloadGithubOrganization()}
+                onReloadPullRequests={() => void taskWorkbenchClient.reloadGithubPullRequests()}
+                onReloadRepository={(repoId) => void taskWorkbenchClient.reloadGithubRepository(repoId)}
+                onReloadPullRequest={(repoId, prNumber) => void taskWorkbenchClient.reloadGithubPullRequest(repoId, prNumber)}
                 onToggleSidebar={() => setLeftSidebarOpen(false)}
               />
             </div>
@@ -1712,6 +1999,14 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
                           {activeOrg.github.importedRepoCount > 0 && <> {activeOrg.github.importedRepoCount} repos imported so far.</>}
                         </p>
                       </>
+                    ) : isMaterializingSelectedOpenPr && selectedOpenPullRequest ? (
+                      <>
+                        <SpinnerDot />
+                        <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 600 }}>Creating task from pull request</h2>
+                        <p style={{ margin: 0, opacity: 0.75 }}>
+                          Preparing a task for <strong>{selectedOpenPullRequest.title}</strong> on <strong>{selectedOpenPullRequest.headRefName}</strong>.
+                        </p>
+                      </>
                     ) : activeOrg?.github.syncStatus === "error" ? (
                       <>
                         <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 600, color: t.statusError }}>GitHub sync failed</h2>
@@ -1766,40 +2061,7 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
             </div>
           </div>
         </Shell>
-        {activeOrg && (activeOrg.github.installationStatus === "install_required" || activeOrg.github.installationStatus === "reconnect_required") && (
-          <div
-            className={css({
-              position: "fixed",
-              bottom: "8px",
-              left: "8px",
-              zIndex: 99998,
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-              padding: "6px 12px",
-              backgroundColor: t.surfaceElevated,
-              border: `1px solid ${t.statusError}`,
-              borderRadius: "6px",
-              boxShadow: t.shadow,
-              fontSize: "11px",
-              color: t.textPrimary,
-              maxWidth: "360px",
-            })}
-          >
-            <span
-              className={css({
-                width: "6px",
-                height: "6px",
-                borderRadius: "50%",
-                backgroundColor: t.statusError,
-                flexShrink: 0,
-              })}
-            />
-            <span>
-              GitHub App {activeOrg.github.installationStatus === "install_required" ? "not installed" : "needs reconnection"} — repo sync is unavailable
-            </span>
-          </div>
-        )}
+        {activeOrg && <GithubInstallationWarning organization={activeOrg} css={css} t={t} />}
         {showDevPanel && (
           <DevPanel
             workspaceId={workspaceId}
@@ -1832,7 +2094,7 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
               projects={projects}
               newTaskRepos={workspaceRepos}
               selectedNewTaskRepoId={selectedNewTaskRepoId}
-              activeId={activeTask.id}
+              activeId={selectedTaskId ?? activeTask.id}
               onSelect={selectTask}
               onCreate={createTask}
               onSelectNewTaskRepo={setSelectedNewTaskRepoId}
@@ -1842,6 +2104,10 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
               onReorderProjects={reorderProjects}
               taskOrderByProject={taskOrderByProject}
               onReorderTasks={reorderTasks}
+              onReloadOrganization={() => void taskWorkbenchClient.reloadGithubOrganization()}
+              onReloadPullRequests={() => void taskWorkbenchClient.reloadGithubPullRequests()}
+              onReloadRepository={(repoId) => void taskWorkbenchClient.reloadGithubRepository(repoId)}
+              onReloadPullRequest={(repoId, prNumber) => void taskWorkbenchClient.reloadGithubPullRequest(repoId, prNumber)}
               onToggleSidebar={() => setLeftSidebarOpen(false)}
             />
           </div>
@@ -1880,7 +2146,7 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
                 projects={projects}
                 newTaskRepos={workspaceRepos}
                 selectedNewTaskRepoId={selectedNewTaskRepoId}
-                activeId={activeTask.id}
+                activeId={selectedTaskId ?? activeTask.id}
                 onSelect={(id) => {
                   selectTask(id);
                   setLeftSidebarPeeking(false);
@@ -1893,6 +2159,10 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
                 onReorderProjects={reorderProjects}
                 taskOrderByProject={taskOrderByProject}
                 onReorderTasks={reorderTasks}
+                onReloadOrganization={() => void taskWorkbenchClient.reloadGithubOrganization()}
+                onReloadPullRequests={() => void taskWorkbenchClient.reloadGithubPullRequests()}
+                onReloadRepository={(repoId) => void taskWorkbenchClient.reloadGithubRepository(repoId)}
+                onReloadPullRequest={(repoId, prNumber) => void taskWorkbenchClient.reloadGithubPullRequest(repoId, prNumber)}
                 onToggleSidebar={() => {
                   setLeftSidebarPeeking(false);
                   setLeftSidebarOpen(true);
@@ -1930,6 +2200,7 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
               onSidebarPeekEnd={endPeek}
               rightSidebarCollapsed={!rightSidebarOpen}
               onToggleRightSidebar={() => setRightSidebarOpen(true)}
+              selectedSessionHydrating={selectedSessionHydrating}
               onNavigateToUsage={navigateToUsage}
             />
           </div>
@@ -1959,40 +2230,7 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
             </div>
           </div>
         </div>
-        {activeOrg && (activeOrg.github.installationStatus === "install_required" || activeOrg.github.installationStatus === "reconnect_required") && (
-          <div
-            className={css({
-              position: "fixed",
-              bottom: "8px",
-              left: "8px",
-              zIndex: 99998,
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-              padding: "6px 12px",
-              backgroundColor: t.surfaceElevated,
-              border: `1px solid ${t.statusError}`,
-              borderRadius: "6px",
-              boxShadow: t.shadow,
-              fontSize: "11px",
-              color: t.textPrimary,
-              maxWidth: "360px",
-            })}
-          >
-            <span
-              className={css({
-                width: "6px",
-                height: "6px",
-                borderRadius: "50%",
-                backgroundColor: t.statusError,
-                flexShrink: 0,
-              })}
-            />
-            <span>
-              GitHub App {activeOrg.github.installationStatus === "install_required" ? "not installed" : "needs reconnection"} — repo sync is unavailable
-            </span>
-          </div>
-        )}
+        {activeOrg && <GithubInstallationWarning organization={activeOrg} css={css} t={t} />}
         {showDevPanel && (
           <DevPanel
             workspaceId={workspaceId}

@@ -143,6 +143,7 @@ The client subscribes to `app` always, `workspace` when entering a workspace, `t
 - If a requested UI cannot be implemented cleanly with an existing `BaseUI` component, stop and ask the user whether they are sure they want to diverge from the system.
 - In that case, recommend the closest existing `BaseUI` components or compositions that could satisfy the need before proposing custom UI work.
 - Only introduce custom UI primitives when `BaseUI` and existing Foundry patterns are not sufficient, or when the user explicitly confirms they want the divergence.
+- **Styletron atomic CSS rule:** Never mix CSS shorthand properties with their longhand equivalents in the same style object (including nested pseudo-selectors like `:hover`), or in a base styled component whose consumers override with longhand via `$style`. This includes `padding`/`paddingLeft`, `margin`/`marginTop`, `background`/`backgroundColor`, `border`/`borderLeft`, etc. Styletron generates independent atomic classes for shorthand and longhand, so they conflict unpredictably. Use `backgroundColor: "transparent"` instead of `background: "none"` for button resets. Always use longhand properties when any side may be overridden individually.
 
 ## Runtime Policy
 
@@ -201,15 +202,37 @@ For all Rivet/RivetKit implementation:
 - Do not build blocking flows that wait on external systems to become ready or complete. Prefer push-based progression driven by actor messages, events, webhooks, or queue/workflow state changes.
 - Use workflows/background commands for any repo sync, sandbox provisioning, agent install, branch restack/rebase, or other multi-step external work. Do not keep user-facing actions/requests open while that work runs.
 - `send` policy: always `await` the `send(...)` call itself so enqueue failures surface immediately, but default to `wait: false`.
-- Only use `send(..., { wait: true })` for short, bounded local mutations (e.g. a DB write that returns a result the caller needs). Never use `wait: true` for operations that depend on external readiness, polling actors, provider setup, repo/network I/O, sandbox sessions, GitHub API calls, or long-running queue drains.
 - Never self-send with `wait: true` from inside a workflow handler — the workflow processes one message at a time, so the handler would deadlock waiting for the new message to be dequeued.
-- When an action is void-returning and triggers external work, use `wait: false` and let the UI react to state changes pushed by the workflow.
-- Request/action contract: wait only until the minimum resource needed for the client's next step exists. Example: task creation may wait for task actor creation/identity, but not for sandbox provisioning or session bootstrap.
 - Read paths must not force refresh/sync work inline. Serve the latest cached projection, mark staleness explicitly, and trigger background refresh separately when needed.
 - If a workflow needs to resume after some external work completes, model that as workflow state plus follow-up messages/events instead of holding the original request open.
 - No retries: never add retry loops (`withRetries`, `setTimeout` retry, exponential backoff) anywhere in the codebase. If an operation fails, surface the error immediately. If a dependency is not ready yet, model that explicitly with workflow state and resume from a push/event instead of polling or retry loops.
 - Never throw errors that expect the caller to retry (e.g. `throw new Error("... retry shortly")`). If a dependency is not ready, write the current state to the DB with an appropriate pending status, enqueue the async work, and return successfully. Let the client observe the pending → ready transition via push events.
 - Action return contract: every action that creates a resource must write the resource record to the DB before returning, so the client can immediately query/render it. The record may have a pending status, but it must exist. Never return an ID that doesn't yet have a corresponding DB row.
+
+### Action handler responsiveness
+
+Action handlers must return fast. The pattern:
+
+1. **Creating an entity** — `wait: true` is fine. Do the DB write, return the ID/record. The caller needs the ID to proceed. The record may have a pending status; that's expected.
+2. **Enqueuing work** (sending a message, triggering a sandbox operation, starting a sync) — `wait: false`. Write any precondition state to the DB synchronously, enqueue the work, and return. The client observes progress via push events on the relevant topic (session status, task status, etc.).
+3. **Validating preconditions** — check state synchronously in the action handler *before* enqueuing. If a precondition isn't met (e.g. session not ready, task not initialized), throw an error immediately. Do not implicitly provision missing dependencies or poll for readiness inside the action handler. It is the client's responsibility to ensure preconditions are met before calling the action.
+
+Examples:
+- `createTask` → `wait: true` (returns `{ taskId }`), then enqueue provisioning with `wait: false`. Client sees task appear immediately with pending status, observes `ready` via workspace events.
+- `sendWorkbenchMessage` → validate session is `ready` (throw if not), enqueue with `wait: false`. Client observes session transition to `running` → `idle` via session events.
+- `createWorkbenchSession` → `wait: true` (returns `{ tabId }`), enqueue sandbox provisioning with `wait: false`. Client observes `pending_provision` → `ready` via task events.
+
+Never use `wait: true` for operations that depend on external readiness, sandbox I/O, agent responses, git network operations, polling loops, or long-running queue drains. Never hold an action open while waiting for an external system to become ready — that is a polling/retry loop in disguise.
+
+### Task creation: resolve metadata before creating the actor
+
+When creating a task, all deterministic metadata (title, branch name) must be resolved synchronously in the parent actor (project) *before* the task actor is created. The task actor must never be created with null `branchName` or `title`.
+
+- Title is derived from the task description via `deriveFallbackTitle()` — pure string manipulation, no external I/O.
+- Branch name is derived from the title via `sanitizeBranchName()` + conflict checking against remote branches and the project's task index.
+- The project actor already has the repo clone and task index. Do the git fetch + name resolution there.
+- Do not defer naming to a background provision workflow. Do not poll for names to become available.
+- The `onBranch` path (attaching to an existing branch) and the new-task path should both produce a fully-named task record on return.
 - Actor handle policy:
 - Prefer explicit `get` or explicit `create` based on workflow intent; do not default to `getOrCreate`.
 - Use `get`/`getForId` when the actor is expected to already exist; if missing, surface an explicit `Actor not found` error with recovery context.
@@ -235,6 +258,8 @@ For all Rivet/RivetKit implementation:
   - For Foundry live verification, use `rivet-dev/sandbox-agent-testing` as the default testing repo unless the task explicitly says otherwise.
   - Secrets (e.g. `OPENAI_API_KEY`, `GITHUB_TOKEN`/`GH_TOKEN`) must be provided via environment variables, never hardcoded in the repo.
   - `~/misc/env.txt` and `~/misc/the-foundry.env` contain the expected local OpenAI + GitHub OAuth/App config for dev.
+  - For local GitHub webhook development, use the configured Smee proxy (`SMEE_URL`) to forward deliveries into `POST /v1/webhooks/github`. Check `.env` / `foundry/.env` if you need the current channel URL.
+  - If GitHub repos, PRs, or install state are not showing up, verify that the GitHub App is installed for the workspace and that webhook delivery is enabled and healthy. Foundry depends on webhook events for GitHub-backed state; missing webhooks means the product will appear broken.
   - Do not assume `gh auth token` is sufficient for Foundry task provisioning against private repos. Sandbox/bootstrap git clone, push, and PR flows require a repo-capable `GITHUB_TOKEN`/`GH_TOKEN` in the backend container.
   - Preferred product behavior for org workspaces is to mint a GitHub App installation token from the workspace installation and inject it into backend/sandbox git operations. Do not rely on an operator's ambient CLI auth as the long-term solution.
 - Treat client E2E tests in `packages/client/test` as the primary end-to-end source of truth for product behavior.

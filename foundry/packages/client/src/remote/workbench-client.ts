@@ -100,7 +100,8 @@ class RemoteWorkbenchStore implements TaskWorkbenchClient {
 
   async updateDraft(input: TaskWorkbenchUpdateDraftInput): Promise<void> {
     await this.backend.updateWorkbenchDraft(this.workspaceId, input);
-    await this.refresh();
+    // Skip refresh — the server broadcast will trigger it, and the frontend
+    // holds local draft state to avoid the round-trip overwriting user input.
   }
 
   async sendMessage(input: TaskWorkbenchSendMessageInput): Promise<void> {

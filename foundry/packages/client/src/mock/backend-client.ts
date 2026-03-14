@@ -249,6 +249,7 @@ export function createMockBackendClient(defaultWorkspaceId = "default"): Backend
         };
       }),
       taskSummaries,
+      openPullRequests: [],
     };
   };
 
@@ -762,6 +763,14 @@ export function createMockBackendClient(defaultWorkspaceId = "default"): Backend
       emitWorkspaceSnapshot();
       emitTaskUpdate(input.taskId);
     },
+
+    async reloadGithubOrganization(): Promise<void> {},
+
+    async reloadGithubPullRequests(): Promise<void> {},
+
+    async reloadGithubRepository(): Promise<void> {},
+
+    async reloadGithubPullRequest(): Promise<void> {},
 
     async health(): Promise<{ ok: true }> {
       return { ok: true };

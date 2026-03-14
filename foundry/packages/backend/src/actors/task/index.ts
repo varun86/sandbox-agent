@@ -101,6 +101,10 @@ interface TaskWorkbenchSendMessageCommand {
   attachments: Array<any>;
 }
 
+interface TaskWorkbenchSendMessageActionInput extends TaskWorkbenchSendMessageInput {
+  waitForCompletion?: boolean;
+}
+
 interface TaskWorkbenchCreateSessionCommand {
   model?: string;
 }
@@ -317,9 +321,9 @@ export const task = actor({
       );
     },
 
-    async sendWorkbenchMessage(c, input: TaskWorkbenchSendMessageInput): Promise<void> {
+    async sendWorkbenchMessage(c, input: TaskWorkbenchSendMessageActionInput): Promise<void> {
       const self = selfTask(c);
-      await self.send(
+      const result = await self.send(
         taskWorkflowQueueName("task.command.workbench.send_message"),
         {
           sessionId: input.tabId,
@@ -327,9 +331,13 @@ export const task = actor({
           attachments: input.attachments,
         } satisfies TaskWorkbenchSendMessageCommand,
         {
-          wait: false,
+          wait: input.waitForCompletion === true,
+          ...(input.waitForCompletion === true ? { timeout: 10 * 60_000 } : {}),
         },
       );
+      if (input.waitForCompletion === true) {
+        expectQueueResponse(result);
+      }
     },
 
     async stopWorkbenchSession(c, input: TaskTabCommand): Promise<void> {

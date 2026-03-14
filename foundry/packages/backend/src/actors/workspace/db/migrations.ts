@@ -84,6 +84,8 @@ CREATE TABLE \`organization_profile\` (
 	\`github_installation_id\` integer,
 	\`github_last_sync_label\` text NOT NULL,
 	\`github_last_sync_at\` integer,
+	\`github_last_webhook_at\` integer,
+	\`github_last_webhook_event\` text,
 	\`stripe_customer_id\` text,
 	\`stripe_subscription_id\` text,
 	\`stripe_price_id\` text,

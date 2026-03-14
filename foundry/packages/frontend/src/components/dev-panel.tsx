@@ -71,10 +71,10 @@ function timeAgo(ts: number | null): string {
   if (!ts) return "never";
   const seconds = Math.floor((Date.now() - ts) / 1000);
   if (seconds < 5) return "now";
-  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 60) return `${seconds}s ago`;
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  return `${Math.floor(minutes / 60)}h`;
+  if (minutes < 60) return `${minutes}m ago`;
+  return `${Math.floor(minutes / 60)}h ago`;
 }
 
 function statusColor(status: string, t: ReturnType<typeof useFoundryTokens>): string {
@@ -157,8 +157,11 @@ export const DevPanel = memo(function DevPanel({ workspaceId, snapshot, organiza
   }, [now]);
 
   const repos = snapshot.repos ?? [];
+  const prCount = (snapshot.tasks ?? []).filter((task) => task.pullRequest != null).length;
   const focusedTaskStatus = focusedTask?.runtimeStatus ?? focusedTask?.status ?? null;
   const focusedTaskState = describeTaskState(focusedTaskStatus, focusedTask?.statusMessage ?? null);
+  const lastWebhookAt = organization?.github.lastWebhookAt ?? null;
+  const hasRecentWebhook = lastWebhookAt != null && now - lastWebhookAt < 5 * 60_000;
 
   const mono = css({
     fontFamily: "ui-monospace, SFMono-Regular, 'SF Mono', Consolas, monospace",
@@ -436,8 +439,28 @@ export const DevPanel = memo(function DevPanel({ workspaceId, snapshot, organiza
                 <span className={css({ color: t.textPrimary, flex: 1 })}>Sync</span>
                 <span className={`${mono} ${css({ color: syncStatusColor(organization.github.syncStatus, t) })}`}>{organization.github.syncStatus}</span>
               </div>
+              <div className={css({ display: "flex", alignItems: "center", gap: "6px" })}>
+                <span
+                  className={css({
+                    width: "5px",
+                    height: "5px",
+                    borderRadius: "50%",
+                    backgroundColor: hasRecentWebhook ? t.statusSuccess : t.textMuted,
+                    flexShrink: 0,
+                  })}
+                />
+                <span className={css({ color: t.textPrimary, flex: 1 })}>Webhook</span>
+                {lastWebhookAt != null ? (
+                  <span className={`${mono} ${css({ color: hasRecentWebhook ? t.textPrimary : t.textMuted })}`}>
+                    {organization.github.lastWebhookEvent} · {timeAgo(lastWebhookAt)}
+                  </span>
+                ) : (
+                  <span className={`${mono} ${css({ color: t.textMuted })}`}>never received</span>
+                )}
+              </div>
               <div className={css({ display: "flex", gap: "10px", marginTop: "2px" })}>
-                <Stat label="repos imported" value={organization.github.importedRepoCount} t={t} css={css} />
+                <Stat label="repos" value={organization.github.importedRepoCount} t={t} css={css} />
+                <Stat label="PRs" value={prCount} t={t} css={css} />
               </div>
               {organization.github.connectedAccount && (
                 <div className={`${mono} ${css({ color: t.textMuted, marginTop: "1px" })}`}>@{organization.github.connectedAccount}</div>

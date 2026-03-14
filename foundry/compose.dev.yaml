@@ -93,6 +93,27 @@ services:
       - "foundry_shared_node_modules:/app/foundry/packages/shared/node_modules"
       - "foundry_pnpm_store:/tmp/.local/share/pnpm/store"
 
+  smee:
+    image: node:20-alpine
+    depends_on:
+      - backend
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      SMEE_URL: "${SMEE_URL:-}"
+      SMEE_TARGET: "${SMEE_TARGET:-http://backend:7741/v1/webhooks/github}"
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        if [ -z "$SMEE_URL" ]; then
+          echo "SMEE_URL is required for local GitHub webhook forwarding" >&2
+          exit 1
+        fi
+        exec npx --yes smee-client --url "$SMEE_URL" --target "$SMEE_TARGET"
+    restart: unless-stopped
+
 volumes:
   foundry_backend_root_node_modules: {}
   foundry_backend_backend_node_modules: {}

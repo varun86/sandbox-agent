@@ -1,5 +1,5 @@
 import type { FoundryAppSnapshot } from "./app-shell.js";
-import type { WorkbenchRepoSummary, WorkbenchSessionDetail, WorkbenchTaskDetail, WorkbenchTaskSummary } from "./workbench.js";
+import type { WorkbenchOpenPrSummary, WorkbenchRepoSummary, WorkbenchSessionDetail, WorkbenchTaskDetail, WorkbenchTaskSummary } from "./workbench.js";
 
 export interface SandboxProcessSnapshot {
   id: string;
@@ -21,7 +21,9 @@ export type WorkspaceEvent =
   | { type: "taskRemoved"; taskId: string }
   | { type: "repoAdded"; repo: WorkbenchRepoSummary }
   | { type: "repoUpdated"; repo: WorkbenchRepoSummary }
-  | { type: "repoRemoved"; repoId: string };
+  | { type: "repoRemoved"; repoId: string }
+  | { type: "pullRequestUpdated"; pullRequest: WorkbenchOpenPrSummary }
+  | { type: "pullRequestRemoved"; prId: string };
 
 /** Task-level events broadcast by the task actor. */
 export type TaskEvent = { type: "taskDetailUpdated"; detail: WorkbenchTaskDetail };

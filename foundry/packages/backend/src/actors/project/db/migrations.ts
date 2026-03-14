@@ -29,21 +29,6 @@ export default {
 	\`updated_at\` integer NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE \`pr_cache\` (
-	\`branch_name\` text PRIMARY KEY NOT NULL,
-	\`pr_number\` integer NOT NULL,
-	\`state\` text NOT NULL,
-	\`title\` text NOT NULL,
-	\`pr_url\` text,
-	\`pr_author\` text,
-	\`is_draft\` integer DEFAULT 0 NOT NULL,
-	\`ci_status\` text,
-	\`review_status\` text,
-	\`reviewer\` text,
-	\`fetched_at\` integer,
-	\`updated_at\` integer NOT NULL
-);
---> statement-breakpoint
 CREATE TABLE \`repo_meta\` (
 	\`id\` integer PRIMARY KEY NOT NULL,
 	\`remote_url\` text NOT NULL,
