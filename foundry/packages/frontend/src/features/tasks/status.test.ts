@@ -34,10 +34,13 @@ describe("describeTaskState", () => {
 });
 
 describe("isProvisioningTaskStatus", () => {
-  it("treats all init states as provisioning", () => {
+  it("treats in-progress init states as provisioning", () => {
     expect(isProvisioningTaskStatus("init_bootstrap_db")).toBe(true);
     expect(isProvisioningTaskStatus("init_ensure_name")).toBe(true);
-    expect(isProvisioningTaskStatus("init_complete")).toBe(true);
+  });
+
+  it("does not treat init_complete as provisioning (task is ready)", () => {
+    expect(isProvisioningTaskStatus("init_complete")).toBe(false);
   });
 
   it("does not treat steady-state or terminal states as provisioning", () => {

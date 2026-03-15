@@ -37,6 +37,11 @@ export const taskRuntime = sqliteTable(
   (table) => [check("task_runtime_singleton_id_check", sql`${table.id} = 1`)],
 );
 
+/**
+ * Coordinator index of SandboxInstanceActor instances.
+ * Tracks all sandbox instances provisioned for this task. Only one
+ * is active at a time (referenced by taskRuntime.activeSandboxId).
+ */
 export const taskSandboxes = sqliteTable("task_sandboxes", {
   sandboxId: text("sandbox_id").notNull().primaryKey(),
   sandboxProviderId: text("sandbox_provider_id").notNull(),
@@ -48,6 +53,12 @@ export const taskSandboxes = sqliteTable("task_sandboxes", {
   updatedAt: integer("updated_at").notNull(),
 });
 
+/**
+ * Coordinator index of workbench sessions within this task.
+ * The task actor is the coordinator for sessions. Each row holds session
+ * metadata, model, status, transcript, and draft state. Sessions are
+ * sub-entities of the task — no separate session actor in the DB.
+ */
 export const taskWorkbenchSessions = sqliteTable("task_workbench_sessions", {
   sessionId: text("session_id").notNull().primaryKey(),
   sandboxSessionId: text("sandbox_session_id"),

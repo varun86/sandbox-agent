@@ -386,9 +386,22 @@ async function getTaskSandboxRuntime(
   };
 }
 
-async function ensureSandboxRepo(c: any, sandbox: any, record: any): Promise<void> {
+/**
+ * Track whether the sandbox repo has been fully prepared (cloned + fetched + checked out)
+ * for the current actor lifecycle. Subsequent calls can skip the expensive `git fetch`
+ * when `skipFetch` is true (used by sendWorkbenchMessage to avoid blocking on every prompt).
+ */
+let sandboxRepoPrepared = false;
+
+async function ensureSandboxRepo(c: any, sandbox: any, record: any, opts?: { skipFetchIfPrepared?: boolean }): Promise<void> {
   if (!record.branchName) {
     throw new Error("cannot prepare a sandbox repo before the task branch exists");
+  }
+
+  // If the repo was already prepared and the caller allows skipping fetch, just return.
+  // The clone, fetch, and checkout already happened on a prior call.
+  if (opts?.skipFetchIfPrepared && sandboxRepoPrepared) {
+    return;
   }
 
   const auth = await resolveOrganizationGithubAuth(c, c.state.organizationId);
@@ -426,6 +439,8 @@ async function ensureSandboxRepo(c: any, sandbox: any, record: any): Promise<voi
   if ((result.exitCode ?? 0) !== 0) {
     throw new Error(`sandbox repo preparation failed (${result.exitCode ?? 1}): ${[result.stdout, result.stderr].filter(Boolean).join("")}`);
   }
+
+  sandboxRepoPrepared = true;
 }
 
 async function executeInSandbox(
@@ -1191,7 +1206,9 @@ export async function sendWorkbenchMessage(c: any, sessionId: string, text: stri
   const meta = requireSendableSessionMeta(await readSessionMeta(c, sessionId), sessionId);
   const record = await ensureWorkbenchSeeded(c);
   const runtime = await getTaskSandboxRuntime(c, record);
-  await ensureSandboxRepo(c, runtime.sandbox, record);
+  // Skip git fetch on subsequent messages — the repo was already prepared during session
+  // creation. This avoids a 5-30s network round-trip to GitHub on every prompt.
+  await ensureSandboxRepo(c, runtime.sandbox, record, { skipFetchIfPrepared: true });
   const prompt = [text.trim(), ...attachments.map((attachment: any) => `@ ${attachment.filePath}:${attachment.lineNumber}\n${attachment.lineContent}`)].filter(
     Boolean,
   );

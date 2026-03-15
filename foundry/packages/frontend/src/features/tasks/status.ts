@@ -10,12 +10,7 @@ export interface TaskStateDescriptor {
 
 export function isProvisioningTaskStatus(status: TaskDisplayStatus | null | undefined): boolean {
   return (
-    status === "new" ||
-    status === "init_bootstrap_db" ||
-    status === "init_enqueue_provision" ||
-    status === "init_ensure_name" ||
-    status === "init_assert_name" ||
-    status === "init_complete"
+    status === "new" || status === "init_bootstrap_db" || status === "init_enqueue_provision" || status === "init_ensure_name" || status === "init_assert_name"
   );
 }
 

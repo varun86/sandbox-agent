@@ -2,6 +2,11 @@ import { integer, sqliteTable, text } from "rivetkit/db/drizzle";
 
 // SQLite is per organization actor instance, so no organizationId column needed.
 
+/**
+ * Coordinator index of RepositoryActor instances.
+ * The organization actor is the coordinator for repositories.
+ * Rows are created/removed when repos are added/removed from the organization.
+ */
 export const repos = sqliteTable("repos", {
   repoId: text("repo_id").notNull().primaryKey(),
   remoteUrl: text("remote_url").notNull(),
@@ -9,15 +14,21 @@ export const repos = sqliteTable("repos", {
   updatedAt: integer("updated_at").notNull(),
 });
 
+/**
+ * Coordinator index of TaskActor instances.
+ * Fast taskId → repoId lookup so the organization can route requests
+ * to the correct RepositoryActor without scanning all repos.
+ */
 export const taskLookup = sqliteTable("task_lookup", {
   taskId: text("task_id").notNull().primaryKey(),
   repoId: text("repo_id").notNull(),
 });
 
 /**
- * Materialized sidebar projection maintained by task actors.
- * The source of truth still lives on each task actor; this table exists so
- * organization reads can stay local and avoid fan-out across child actors.
+ * Coordinator index of TaskActor instances — materialized sidebar projection.
+ * Task actors push summary updates to the organization actor via
+ * applyTaskSummaryUpdate(). Source of truth lives on each TaskActor;
+ * this table exists so organization reads stay local without fan-out.
  */
 export const taskSummaries = sqliteTable("task_summaries", {
   taskId: text("task_id").notNull().primaryKey(),
@@ -87,6 +98,11 @@ export const invoices = sqliteTable("invoices", {
   createdAt: integer("created_at").notNull(),
 });
 
+/**
+ * Coordinator index of AuthUserActor instances — routes session token → userId.
+ * Better Auth adapter uses this to resolve which user actor to query
+ * before the user identity is known.
+ */
 export const authSessionIndex = sqliteTable("auth_session_index", {
   sessionId: text("session_id").notNull().primaryKey(),
   sessionToken: text("session_token").notNull(),
@@ -95,12 +111,20 @@ export const authSessionIndex = sqliteTable("auth_session_index", {
   updatedAt: integer("updated_at").notNull(),
 });
 
+/**
+ * Coordinator index of AuthUserActor instances — routes email → userId.
+ * Better Auth adapter uses this to resolve which user actor to query.
+ */
 export const authEmailIndex = sqliteTable("auth_email_index", {
   email: text("email").notNull().primaryKey(),
   userId: text("user_id").notNull(),
   updatedAt: integer("updated_at").notNull(),
 });
 
+/**
+ * Coordinator index of AuthUserActor instances — routes OAuth account → userId.
+ * Better Auth adapter uses this to resolve which user actor to query.
+ */
 export const authAccountIndex = sqliteTable("auth_account_index", {
   id: text("id").notNull().primaryKey(),
   providerId: text("provider_id").notNull(),

@@ -61,11 +61,7 @@ interface RepoOverviewInput {
   repoId: string;
 }
 
-const ORGANIZATION_QUEUE_NAMES = [
-  "organization.command.createTask",
-  "organization.command.syncGithubOrganizationRepos",
-  "organization.command.syncGithubSession",
-] as const;
+const ORGANIZATION_QUEUE_NAMES = ["organization.command.createTask", "organization.command.syncGithubSession"] as const;
 const SANDBOX_AGENT_REPO = "rivet-dev/sandbox-agent";
 
 type OrganizationQueueName = (typeof ORGANIZATION_QUEUE_NAMES)[number];
@@ -379,19 +375,6 @@ export async function runOrganizationWorkflow(ctx: any): Promise<void> {
           run: async () => {
             const { syncGithubOrganizations } = await import("./app-shell.js");
             await syncGithubOrganizations(loopCtx, msg.body as { sessionId: string; accessToken: string });
-          },
-        });
-        await msg.complete({ ok: true });
-        return Loop.continue(undefined);
-      }
-
-      if (msg.name === "organization.command.syncGithubOrganizationRepos") {
-        await loopCtx.step({
-          name: "organization-sync-github-organization-repos",
-          timeout: 60_000,
-          run: async () => {
-            const { syncGithubOrganizationRepos } = await import("./app-shell.js");
-            await syncGithubOrganizationRepos(loopCtx, msg.body as { sessionId: string; organizationId: string });
           },
         });
         await msg.complete({ ok: true });

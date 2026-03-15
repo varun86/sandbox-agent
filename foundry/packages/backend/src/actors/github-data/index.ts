@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { eq } from "drizzle-orm";
-import { actor } from "rivetkit";
+import { actor, queue } from "rivetkit";
+import { workflow, Loop } from "rivetkit/workflow";
 import type { FoundryOrganization } from "@sandbox-agent/foundry-shared";
 import { getActorRuntimeContext } from "../context.js";
 import { getOrCreateOrganization, getTask } from "../handles.js";
@@ -536,8 +537,69 @@ async function runFullSync(c: any, input: FullSyncInput = {}) {
   };
 }
 
+const GITHUB_DATA_QUEUE_NAMES = ["githubData.command.syncRepos"] as const;
+
+async function runGithubDataWorkflow(ctx: any): Promise<void> {
+  // Initial sync: if this actor was just created and has never synced,
+  // kick off the first full sync automatically.
+  await ctx.step({
+    name: "github-data-initial-sync",
+    timeout: 5 * 60_000,
+    run: async () => {
+      const meta = await readMeta(ctx);
+      if (meta.syncStatus !== "pending") {
+        return; // Already synced or syncing — skip initial sync
+      }
+      try {
+        await runFullSync(ctx, { label: "Importing repository catalog..." });
+      } catch (error) {
+        // Best-effort initial sync. Write the error to meta so the client
+        // sees the failure and can trigger a manual retry.
+        const currentMeta = await readMeta(ctx);
+        const organization = await getOrCreateOrganization(ctx, ctx.state.organizationId);
+        await organization.markOrganizationSyncFailed({
+          message: error instanceof Error ? error.message : "GitHub import failed",
+          installationStatus: currentMeta.installationStatus,
+        });
+      }
+    },
+  });
+
+  // Command loop for explicit sync requests (reload, re-import, etc.)
+  await ctx.loop("github-data-command-loop", async (loopCtx: any) => {
+    const msg = await loopCtx.queue.next("next-github-data-command", {
+      names: [...GITHUB_DATA_QUEUE_NAMES],
+      completable: true,
+    });
+    if (!msg) {
+      return Loop.continue(undefined);
+    }
+
+    try {
+      if (msg.name === "githubData.command.syncRepos") {
+        await loopCtx.step({
+          name: "github-data-sync-repos",
+          timeout: 5 * 60_000,
+          run: async () => {
+            const body = msg.body as FullSyncInput;
+            await runFullSync(loopCtx, body);
+          },
+        });
+        await msg.complete({ ok: true });
+        return Loop.continue(undefined);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await msg.complete({ error: message }).catch(() => {});
+    }
+
+    return Loop.continue(undefined);
+  });
+}
+
 export const githubData = actor({
   db: githubDataDb,
+  queues: Object.fromEntries(GITHUB_DATA_QUEUE_NAMES.map((name) => [name, queue()])),
   options: {
     name: "GitHub Data",
     icon: "github",
@@ -546,6 +608,7 @@ export const githubData = actor({
   createState: (_c, input: GithubDataInput) => ({
     organizationId: input.organizationId,
   }),
+  run: workflow(runGithubDataWorkflow),
   actions: {
     async getSummary(c) {
       const repositories = await c.db.select().from(githubRepositories).all();

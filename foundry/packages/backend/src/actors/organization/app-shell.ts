@@ -596,49 +596,6 @@ async function syncGithubOrganizationsInternal(c: any, input: { sessionId: strin
   });
 }
 
-export async function syncGithubOrganizationRepos(c: any, input: { sessionId: string; organizationId: string }): Promise<void> {
-  assertAppOrganization(c);
-  const session = await requireSignedInSession(c, input.sessionId);
-  requireEligibleOrganization(session, input.organizationId);
-
-  const organizationHandle = await getOrCreateOrganization(c, input.organizationId);
-  const organizationState = await getOrganizationState(organizationHandle);
-  const githubData = await getOrCreateGithubData(c, input.organizationId);
-
-  try {
-    await githubData.fullSync({
-      accessToken: session.githubAccessToken,
-      connectedAccount: organizationState.snapshot.github.connectedAccount,
-      installationId: organizationState.githubInstallationId,
-      installationStatus: organizationState.snapshot.github.installationStatus,
-      githubLogin: organizationState.githubLogin,
-      kind: organizationState.snapshot.kind,
-      label: "Importing repository catalog...",
-    });
-
-    // Broadcast updated app snapshot so connected clients see the new repos
-    c.broadcast("appUpdated", {
-      type: "appUpdated",
-      snapshot: await buildAppSnapshot(c, input.sessionId),
-    });
-  } catch (error) {
-    const installationStatus =
-      error instanceof GitHubAppError && (error.status === 403 || error.status === 404)
-        ? "reconnect_required"
-        : organizationState.snapshot.github.installationStatus;
-    await organizationHandle.markOrganizationSyncFailed({
-      message: error instanceof Error ? error.message : "GitHub import failed",
-      installationStatus,
-    });
-
-    // Broadcast sync failure so the client updates status
-    c.broadcast("appUpdated", {
-      type: "appUpdated",
-      snapshot: await buildAppSnapshot(c, input.sessionId),
-    });
-  }
-}
-
 async function readOrganizationProfileRow(c: any) {
   assertOrganizationShell(c);
   return await c.db.select().from(organizationProfile).where(eq(organizationProfile.id, PROFILE_ROW_ID)).get();
@@ -1113,26 +1070,11 @@ export const organizationAppActions = {
     requireEligibleOrganization(session, input.organizationId);
     await getBetterAuthService().setActiveOrganization(input.sessionId, input.organizationId);
 
-    const organizationHandle = await getOrCreateOrganization(c, input.organizationId);
-    const organizationState = await getOrganizationState(organizationHandle);
-    if (organizationState.snapshot.github.syncStatus !== "synced") {
-      if (organizationState.snapshot.github.syncStatus !== "syncing") {
-        await organizationHandle.markOrganizationSyncStarted({
-          label: "Importing repository catalog...",
-        });
+    // Ensure the GitHub data actor exists. If it's newly created, its own
+    // workflow will detect the pending sync status and run the initial
+    // full sync automatically — no orchestration needed here.
+    await getOrCreateGithubData(c, input.organizationId);
 
-        const self = selfOrganization(c);
-        await self.send(
-          "organization.command.syncGithubOrganizationRepos",
-          { sessionId: input.sessionId, organizationId: input.organizationId },
-          {
-            wait: false,
-          },
-        );
-      }
-
-      return await buildAppSnapshot(c, input.sessionId);
-    }
     return await buildAppSnapshot(c, input.sessionId);
   },
 
@@ -1157,24 +1099,20 @@ export const organizationAppActions = {
     const session = await requireSignedInSession(c, input.sessionId);
     requireEligibleOrganization(session, input.organizationId);
 
-    const organizationHandle = await getOrCreateOrganization(c, input.organizationId);
-    const organizationState = await getOrganizationState(organizationHandle);
-    if (organizationState.snapshot.github.syncStatus === "syncing") {
+    const githubData = await getOrCreateGithubData(c, input.organizationId);
+    const summary = await githubData.getSummary({});
+    if (summary.syncStatus === "syncing") {
       return await buildAppSnapshot(c, input.sessionId);
     }
 
+    // Mark sync started on the organization, then send directly to the
+    // GitHub data actor's own workflow queue.
+    const organizationHandle = await getOrCreateOrganization(c, input.organizationId);
     await organizationHandle.markOrganizationSyncStarted({
       label: "Importing repository catalog...",
     });
 
-    const self = selfOrganization(c);
-    await self.send(
-      "organization.command.syncGithubOrganizationRepos",
-      { sessionId: input.sessionId, organizationId: input.organizationId },
-      {
-        wait: false,
-      },
-    );
+    await githubData.send("githubData.command.syncRepos", { label: "Importing repository catalog..." }, { wait: false });
 
     return await buildAppSnapshot(c, input.sessionId);
   },

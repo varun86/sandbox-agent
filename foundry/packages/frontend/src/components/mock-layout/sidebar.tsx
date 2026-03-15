@@ -671,7 +671,7 @@ export const Sidebar = memo(function Sidebar({
                 const isRunning = task.sessions.some((s) => s.status === "running");
                 const isProvisioning =
                   !isPullRequestItem &&
-                  (String(task.status).startsWith("init_") ||
+                  ((String(task.status).startsWith("init_") && task.status !== "init_complete") ||
                     task.status === "new" ||
                     task.sessions.some((s) => s.status === "pending_provision" || s.status === "pending_session_create"));
                 const hasUnread = task.sessions.some((s) => s.unread);
@@ -810,11 +810,7 @@ export const Sidebar = memo(function Sidebar({
 
               if (item.type === "task-drop-zone") {
                 const { repository, taskCount } = item;
-                const isDropTarget =
-                  drag?.type === "task" &&
-                  drag.repositoryId === repository.id &&
-                  drag.overIdx === taskCount &&
-                  drag.fromIdx !== taskCount;
+                const isDropTarget = drag?.type === "task" && drag.repositoryId === repository.id && drag.overIdx === taskCount && drag.fromIdx !== taskCount;
                 return (
                   <div
                     key={item.key}
@@ -851,8 +847,7 @@ export const Sidebar = memo(function Sidebar({
               }
 
               if (item.type === "repository-drop-zone") {
-                const isDropTarget =
-                  drag?.type === "repository" && drag.overIdx === item.repositoryCount && drag.fromIdx !== item.repositoryCount;
+                const isDropTarget = drag?.type === "repository" && drag.overIdx === item.repositoryCount && drag.fromIdx !== item.repositoryCount;
                 return (
                   <div
                     key={item.key}
