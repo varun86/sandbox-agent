@@ -1,7 +1,8 @@
 "use client";
 
 import type { ReactNode, RefObject } from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranscriptVirtualizer } from "./useTranscriptVirtualizer.ts";
 
 export type PermissionReply = "once" | "always" | "reject";
 
@@ -98,10 +99,14 @@ export interface AgentTranscriptProps {
   className?: string;
   classNames?: Partial<AgentTranscriptClassNames>;
   endRef?: RefObject<HTMLDivElement>;
+  scrollRef?: RefObject<HTMLDivElement>;
+  scrollToEntryId?: string | null;
   sessionError?: string | null;
   eventError?: string | null;
   isThinking?: boolean;
   agentId?: string;
+  virtualize?: boolean;
+  onAtBottomChange?: (atBottom: boolean) => void;
   onEventClick?: (eventId: string) => void;
   onPermissionReply?: (permissionId: string, reply: PermissionReply) => void;
   isDividerEntry?: (entry: TranscriptEntry) => boolean;
@@ -123,6 +128,8 @@ type GroupedEntries =
   | { type: "tool-group"; entries: TranscriptEntry[] }
   | { type: "divider"; entries: TranscriptEntry[] }
   | { type: "permission"; entries: TranscriptEntry[] };
+
+const VIRTUAL_GROUP_GAP_PX = 12;
 
 const DEFAULT_CLASS_NAMES: AgentTranscriptClassNames = {
   root: "sa-agent-transcript",
@@ -324,9 +331,21 @@ const buildGroupedEntries = (entries: TranscriptEntry[], isDividerEntry: (entry:
   return groupedEntries;
 };
 
+const getGroupedEntryKey = (group: GroupedEntries, index: number): string => {
+  const firstEntry = group.entries[0];
+
+  if (group.type === "tool-group") {
+    return `tool-group:${firstEntry?.id ?? index}`;
+  }
+
+  return firstEntry?.id ?? `${group.type}:${index}`;
+};
+
 const ToolItem = ({
   entry,
   isLast,
+  expanded,
+  onExpandedChange,
   classNames,
   onEventClick,
   canOpenEvent,
@@ -337,6 +356,8 @@ const ToolItem = ({
 }: {
   entry: TranscriptEntry;
   isLast: boolean;
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
   classNames: AgentTranscriptClassNames;
   onEventClick?: (eventId: string) => void;
   canOpenEvent: (entry: TranscriptEntry) => boolean;
@@ -345,7 +366,6 @@ const ToolItem = ({
   renderChevron: (expanded: boolean) => ReactNode;
   renderEventLinkContent: (entry: TranscriptEntry) => ReactNode;
 }) => {
-  const [expanded, setExpanded] = useState(false);
   const isTool = entry.kind === "tool";
   const isReasoning = entry.kind === "reasoning";
   const isMeta = entry.kind === "meta";
@@ -382,7 +402,7 @@ const ToolItem = ({
           disabled={!hasContent}
           onClick={() => {
             if (hasContent) {
-              setExpanded((value) => !value);
+              onExpandedChange(!expanded);
             }
           }}
         >
@@ -469,6 +489,10 @@ const ToolItem = ({
 
 const ToolGroup = ({
   entries,
+  expanded,
+  onExpandedChange,
+  expandedItemIds,
+  onToolItemExpandedChange,
   classNames,
   onEventClick,
   canOpenEvent,
@@ -480,6 +504,10 @@ const ToolGroup = ({
   renderEventLinkContent,
 }: {
   entries: TranscriptEntry[];
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
+  expandedItemIds: Record<string, boolean>;
+  onToolItemExpandedChange: (entryId: string, expanded: boolean) => void;
   classNames: AgentTranscriptClassNames;
   onEventClick?: (eventId: string) => void;
   canOpenEvent: (entry: TranscriptEntry) => boolean;
@@ -490,7 +518,6 @@ const ToolGroup = ({
   renderChevron: (expanded: boolean) => ReactNode;
   renderEventLinkContent: (entry: TranscriptEntry) => ReactNode;
 }) => {
-  const [expanded, setExpanded] = useState(false);
   const hasFailed = entries.some((entry) => entry.kind === "tool" && entry.toolStatus === "failed");
 
   if (entries.length === 1) {
@@ -499,6 +526,8 @@ const ToolGroup = ({
         <ToolItem
           entry={entries[0]}
           isLast={true}
+          expanded={Boolean(expandedItemIds[entries[0]!.id])}
+          onExpandedChange={(nextExpanded) => onToolItemExpandedChange(entries[0]!.id, nextExpanded)}
           classNames={classNames}
           onEventClick={onEventClick}
           canOpenEvent={canOpenEvent}
@@ -518,7 +547,7 @@ const ToolGroup = ({
         className={cx(classNames.toolGroupHeader, expanded && "expanded")}
         data-slot="tool-group-header"
         data-expanded={expanded ? "true" : undefined}
-        onClick={() => setExpanded((value) => !value)}
+        onClick={() => onExpandedChange(!expanded)}
       >
         <span className={classNames.toolGroupIcon} data-slot="tool-group-icon">
           {renderToolGroupIcon(entries, expanded)}
@@ -537,6 +566,8 @@ const ToolGroup = ({
               key={entry.id}
               entry={entry}
               isLast={index === entries.length - 1}
+              expanded={Boolean(expandedItemIds[entry.id])}
+              onExpandedChange={(nextExpanded) => onToolItemExpandedChange(entry.id, nextExpanded)}
               classNames={classNames}
               onEventClick={onEventClick}
               canOpenEvent={canOpenEvent}
@@ -636,10 +667,14 @@ export const AgentTranscript = ({
   className,
   classNames: classNameOverrides,
   endRef,
+  scrollRef,
+  scrollToEntryId,
   sessionError,
   eventError,
   isThinking,
   agentId,
+  virtualize = false,
+  onAtBottomChange,
   onEventClick,
   onPermissionReply,
   isDividerEntry = defaultIsDividerEntry,
@@ -657,83 +692,199 @@ export const AgentTranscript = ({
 }: AgentTranscriptProps) => {
   const resolvedClassNames = useMemo(() => mergeClassNames(DEFAULT_CLASS_NAMES, classNameOverrides), [classNameOverrides]);
   const groupedEntries = useMemo(() => buildGroupedEntries(entries, isDividerEntry), [entries, isDividerEntry]);
+  const [expandedToolGroups, setExpandedToolGroups] = useState<Record<string, boolean>>({});
+  const [expandedToolItems, setExpandedToolItems] = useState<Record<string, boolean>>({});
+  const lastScrollTargetRef = useRef<string | null>(null);
+  const isVirtualized = virtualize && Boolean(scrollRef);
+  const { virtualizer, isFollowingRef } = useTranscriptVirtualizer(groupedEntries, isVirtualized ? scrollRef : undefined, onAtBottomChange);
+
+  useEffect(() => {
+    if (!scrollToEntryId) {
+      lastScrollTargetRef.current = null;
+      return;
+    }
+
+    if (!isVirtualized || scrollToEntryId === lastScrollTargetRef.current) {
+      return;
+    }
+
+    const targetIndex = groupedEntries.findIndex((group) => group.entries.some((entry) => entry.id === scrollToEntryId));
+    if (targetIndex < 0) {
+      return;
+    }
+
+    lastScrollTargetRef.current = scrollToEntryId;
+
+    const frameId = requestAnimationFrame(() => {
+      virtualizer.scrollToIndex(targetIndex, {
+        align: "center",
+        behavior: "smooth",
+      });
+    });
+
+    return () => {
+      cancelAnimationFrame(frameId);
+    };
+  }, [groupedEntries, isVirtualized, scrollToEntryId, virtualizer]);
+
+  useEffect(() => {
+    if (!isVirtualized || !scrollRef?.current || !isFollowingRef.current) {
+      return;
+    }
+
+    const scrollElement = scrollRef.current;
+    const frameId = requestAnimationFrame(() => {
+      scrollElement.scrollTo({ top: scrollElement.scrollHeight });
+    });
+
+    return () => {
+      cancelAnimationFrame(frameId);
+    };
+  }, [eventError, isFollowingRef, isThinking, isVirtualized, scrollRef, sessionError]);
+
+  const setToolGroupExpanded = (groupKey: string, expanded: boolean) => {
+    setExpandedToolGroups((current) => {
+      if (current[groupKey] === expanded) {
+        return current;
+      }
+      return { ...current, [groupKey]: expanded };
+    });
+  };
+
+  const setToolItemExpanded = (entryId: string, expanded: boolean) => {
+    setExpandedToolItems((current) => {
+      if (current[entryId] === expanded) {
+        return current;
+      }
+      return { ...current, [entryId]: expanded };
+    });
+  };
+
+  const renderGroup = (group: GroupedEntries, index: number) => {
+    if (group.type === "divider") {
+      const entry = group.entries[0];
+      const title = entry.meta?.title ?? "Status";
+      return (
+        <div key={entry.id} className={resolvedClassNames.divider} data-slot="divider">
+          <div className={resolvedClassNames.dividerLine} data-slot="divider-line" />
+          <span className={resolvedClassNames.dividerText} data-slot="divider-text">
+            {title}
+          </span>
+          <div className={resolvedClassNames.dividerLine} data-slot="divider-line" />
+        </div>
+      );
+    }
+
+    if (group.type === "tool-group") {
+      const groupKey = getGroupedEntryKey(group, index);
+
+      return (
+        <ToolGroup
+          key={groupKey}
+          entries={group.entries}
+          expanded={Boolean(expandedToolGroups[groupKey])}
+          onExpandedChange={(expanded) => setToolGroupExpanded(groupKey, expanded)}
+          expandedItemIds={expandedToolItems}
+          onToolItemExpandedChange={setToolItemExpanded}
+          classNames={resolvedClassNames}
+          onEventClick={onEventClick}
+          canOpenEvent={canOpenEvent}
+          getToolGroupSummary={getToolGroupSummary}
+          renderInlinePendingIndicator={renderInlinePendingIndicator}
+          renderToolItemIcon={renderToolItemIcon}
+          renderToolGroupIcon={renderToolGroupIcon}
+          renderChevron={renderChevron}
+          renderEventLinkContent={renderEventLinkContent}
+        />
+      );
+    }
+
+    if (group.type === "permission") {
+      const entry = group.entries[0];
+      return (
+        <PermissionPrompt
+          key={entry.id}
+          entry={entry}
+          classNames={resolvedClassNames}
+          onPermissionReply={onPermissionReply}
+          renderPermissionIcon={renderPermissionIcon}
+          renderPermissionOptionContent={renderPermissionOptionContent}
+        />
+      );
+    }
+
+    const entry = group.entries[0];
+    const messageVariant = getMessageVariant(entry);
+
+    return (
+      <div
+        key={entry.id}
+        className={cx(resolvedClassNames.message, messageVariant, "no-avatar")}
+        data-slot="message"
+        data-kind={entry.kind}
+        data-role={entry.role}
+        data-variant={messageVariant}
+        data-severity={entry.meta?.severity}
+      >
+        <div className={resolvedClassNames.messageContent} data-slot="message-content">
+          {entry.text ? (
+            <div className={resolvedClassNames.messageText} data-slot="message-text">
+              {renderMessageText(entry)}
+            </div>
+          ) : (
+            <span className={resolvedClassNames.thinkingIndicator} data-slot="thinking-indicator">
+              {renderInlinePendingIndicator()}
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
-    <div className={cx(resolvedClassNames.root, className)} data-slot="root">
-      {groupedEntries.map((group, index) => {
-        if (group.type === "divider") {
-          const entry = group.entries[0];
-          const title = entry.meta?.title ?? "Status";
-          return (
-            <div key={entry.id} className={resolvedClassNames.divider} data-slot="divider">
-              <div className={resolvedClassNames.dividerLine} data-slot="divider-line" />
-              <span className={resolvedClassNames.dividerText} data-slot="divider-text">
-                {title}
-              </span>
-              <div className={resolvedClassNames.dividerLine} data-slot="divider-line" />
-            </div>
-          );
-        }
+    <div className={cx(resolvedClassNames.root, className)} data-slot="root" data-virtualized={isVirtualized ? "true" : undefined}>
+      {isVirtualized ? (
+        <div
+          data-slot="virtual-list"
+          style={{
+            height: `${virtualizer.getTotalSize()}px`,
+            position: "relative",
+            width: "100%",
+          }}
+        >
+          {virtualizer.getVirtualItems().map((virtualItem) => {
+            const group = groupedEntries[virtualItem.index];
+            if (!group) {
+              return null;
+            }
 
-        if (group.type === "tool-group") {
-          return (
-            <ToolGroup
-              key={`tool-group-${index}`}
-              entries={group.entries}
-              classNames={resolvedClassNames}
-              onEventClick={onEventClick}
-              canOpenEvent={canOpenEvent}
-              getToolGroupSummary={getToolGroupSummary}
-              renderInlinePendingIndicator={renderInlinePendingIndicator}
-              renderToolItemIcon={renderToolItemIcon}
-              renderToolGroupIcon={renderToolGroupIcon}
-              renderChevron={renderChevron}
-              renderEventLinkContent={renderEventLinkContent}
-            />
-          );
-        }
-
-        if (group.type === "permission") {
-          const entry = group.entries[0];
-          return (
-            <PermissionPrompt
-              key={entry.id}
-              entry={entry}
-              classNames={resolvedClassNames}
-              onPermissionReply={onPermissionReply}
-              renderPermissionIcon={renderPermissionIcon}
-              renderPermissionOptionContent={renderPermissionOptionContent}
-            />
-          );
-        }
-
-        const entry = group.entries[0];
-        const messageVariant = getMessageVariant(entry);
-
-        return (
-          <div
-            key={entry.id}
-            className={cx(resolvedClassNames.message, messageVariant, "no-avatar")}
-            data-slot="message"
-            data-kind={entry.kind}
-            data-role={entry.role}
-            data-variant={messageVariant}
-            data-severity={entry.meta?.severity}
-          >
-            <div className={resolvedClassNames.messageContent} data-slot="message-content">
-              {entry.text ? (
-                <div className={resolvedClassNames.messageText} data-slot="message-text">
-                  {renderMessageText(entry)}
+            return (
+              <div
+                key={getGroupedEntryKey(group, virtualItem.index)}
+                data-index={virtualItem.index}
+                ref={(node) => {
+                  if (node) {
+                    virtualizer.measureElement(node);
+                  }
+                }}
+                style={{
+                  left: 0,
+                  position: "absolute",
+                  top: 0,
+                  transform: `translateY(${virtualItem.start}px)`,
+                  width: "100%",
+                }}
+              >
+                <div style={{ paddingBottom: virtualItem.index === groupedEntries.length - 1 ? 0 : `${VIRTUAL_GROUP_GAP_PX}px` }}>
+                  {renderGroup(group, virtualItem.index)}
                 </div>
-              ) : (
-                <span className={resolvedClassNames.thinkingIndicator} data-slot="thinking-indicator">
-                  {renderInlinePendingIndicator()}
-                </span>
-              )}
-            </div>
-          </div>
-        );
-      })}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        groupedEntries.map((group, index) => renderGroup(group, index))
+      )}
       {sessionError ? (
         <div className={resolvedClassNames.error} data-slot="error" data-source="session">
           {sessionError}
@@ -753,7 +904,7 @@ export const AgentTranscript = ({
             </div>
           ))
         : null}
-      <div ref={endRef} className={resolvedClassNames.endAnchor} data-slot="end-anchor" />
+      {!isVirtualized ? <div ref={endRef} className={resolvedClassNames.endAnchor} data-slot="end-anchor" /> : null}
     </div>
   );
 };

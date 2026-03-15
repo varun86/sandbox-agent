@@ -1,5 +1,5 @@
 import { AgentTranscript, type AgentTranscriptClassNames, type TranscriptEntry } from "@sandbox-agent/react";
-import { memo, useMemo, type MutableRefObject, type Ref } from "react";
+import { memo, useEffect, useMemo, type MutableRefObject, type RefObject } from "react";
 import { useStyletron } from "baseui";
 import { LabelSmall, LabelXSmall } from "baseui/typography";
 import { Copy } from "lucide-react";
@@ -14,11 +14,15 @@ const TranscriptMessageBody = memo(function TranscriptMessageBody({
   messageRefs,
   copiedMessageId,
   onCopyMessage,
+  isTarget,
+  onTargetRendered,
 }: {
   message: Message;
   messageRefs: MutableRefObject<Map<string, HTMLDivElement>>;
   copiedMessageId: string | null;
   onCopyMessage: (message: Message) => void;
+  isTarget?: boolean;
+  onTargetRendered?: () => void;
 }) {
   const [css] = useStyletron();
   const t = useFoundryTokens();
@@ -26,6 +30,20 @@ const TranscriptMessageBody = memo(function TranscriptMessageBody({
   const isCopied = copiedMessageId === message.id;
   const messageTimestamp = formatMessageTimestamp(message.createdAtMs);
   const displayFooter = isUser ? messageTimestamp : message.durationMs ? `${messageTimestamp} • Took ${formatMessageDuration(message.durationMs)}` : null;
+
+  useEffect(() => {
+    if (!isTarget) {
+      return;
+    }
+
+    const targetNode = messageRefs.current.get(message.id);
+    if (!targetNode) {
+      return;
+    }
+
+    targetNode.scrollIntoView({ behavior: "smooth", block: "center" });
+    onTargetRendered?.();
+  }, [isTarget, message.id, messageRefs, onTargetRendered]);
 
   return (
     <div
@@ -127,15 +145,19 @@ export const MessageList = memo(function MessageList({
   messageRefs,
   historyEvents,
   onSelectHistoryEvent,
+  targetMessageId,
+  onTargetMessageResolved,
   copiedMessageId,
   onCopyMessage,
   thinkingTimerLabel,
 }: {
   tab: AgentTab | null | undefined;
-  scrollRef: Ref<HTMLDivElement>;
+  scrollRef: RefObject<HTMLDivElement>;
   messageRefs: MutableRefObject<Map<string, HTMLDivElement>>;
   historyEvents: HistoryEvent[];
   onSelectHistoryEvent: (event: HistoryEvent) => void;
+  targetMessageId?: string | null;
+  onTargetMessageResolved?: () => void;
   copiedMessageId: string | null;
   onCopyMessage: (message: Message) => void;
   thinkingTimerLabel: string | null;
@@ -144,6 +166,7 @@ export const MessageList = memo(function MessageList({
   const t = useFoundryTokens();
   const messages = useMemo(() => buildDisplayMessages(tab), [tab]);
   const messagesById = useMemo(() => new Map(messages.map((message) => [message.id, message])), [messages]);
+  const messageIndexById = useMemo(() => new Map(messages.map((message, index) => [message.id, index])), [messages]);
   const transcriptEntries = useMemo<TranscriptEntry[]>(
     () =>
       messages.map((message) => ({
@@ -192,6 +215,37 @@ export const MessageList = memo(function MessageList({
       letterSpacing: "0.01em",
     }),
   };
+  const scrollContainerClass = css({
+    padding: "16px 52px 16px 20px",
+    display: "flex",
+    flexDirection: "column",
+    flex: 1,
+    minHeight: 0,
+    overflowY: "auto",
+  });
+
+  useEffect(() => {
+    if (!targetMessageId) {
+      return;
+    }
+
+    const targetNode = messageRefs.current.get(targetMessageId);
+    if (targetNode) {
+      targetNode.scrollIntoView({ behavior: "smooth", block: "center" });
+      onTargetMessageResolved?.();
+      return;
+    }
+
+    const targetIndex = messageIndexById.get(targetMessageId);
+    if (targetIndex == null) {
+      return;
+    }
+
+    scrollRef.current?.scrollTo({
+      top: Math.max(0, targetIndex * 88),
+      behavior: "smooth",
+    });
+  }, [messageIndexById, messageRefs, onTargetMessageResolved, scrollRef, targetMessageId]);
 
   return (
     <>
@@ -201,17 +255,7 @@ export const MessageList = memo(function MessageList({
         }
       `}</style>
       {historyEvents.length > 0 ? <HistoryMinimap events={historyEvents} onSelect={onSelectHistoryEvent} /> : null}
-      <div
-        ref={scrollRef}
-        className={css({
-          padding: "16px 52px 16px 20px",
-          display: "flex",
-          flexDirection: "column",
-          flex: 1,
-          minHeight: 0,
-          overflowY: "auto",
-        })}
-      >
+      <div ref={scrollRef} className={scrollContainerClass}>
         {tab && transcriptEntries.length === 0 ? (
           <div
             className={css({
@@ -232,13 +276,25 @@ export const MessageList = memo(function MessageList({
           <AgentTranscript
             entries={transcriptEntries}
             classNames={transcriptClassNames}
+            scrollRef={scrollRef}
+            scrollToEntryId={targetMessageId}
+            virtualize
             renderMessageText={(entry) => {
               const message = messagesById.get(entry.id);
               if (!message) {
                 return null;
               }
 
-              return <TranscriptMessageBody message={message} messageRefs={messageRefs} copiedMessageId={copiedMessageId} onCopyMessage={onCopyMessage} />;
+              return (
+                <TranscriptMessageBody
+                  message={message}
+                  messageRefs={messageRefs}
+                  copiedMessageId={copiedMessageId}
+                  onCopyMessage={onCopyMessage}
+                  isTarget={targetMessageId === entry.id}
+                  onTargetRendered={onTargetMessageResolved}
+                />
+              );
             }}
             isThinking={Boolean(tab && tab.status === "running" && transcriptEntries.length > 0)}
             renderThinkingState={() => (

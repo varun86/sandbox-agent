@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "@tanstack/react-router";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { useStyletron } from "baseui";
 import { LabelSmall, LabelXSmall } from "baseui/typography";
 import { Select, type Value } from "baseui/select";
@@ -68,9 +69,6 @@ export const Sidebar = memo(function Sidebar({
   onMarkUnread,
   onRenameTask,
   onRenameBranch,
-  onReorderProjects,
-  taskOrderByProject,
-  onReorderTasks,
   onReloadOrganization,
   onReloadPullRequests,
   onReloadRepository,
@@ -87,9 +85,6 @@ export const Sidebar = memo(function Sidebar({
   onMarkUnread: (id: string) => void;
   onRenameTask: (id: string) => void;
   onRenameBranch: (id: string) => void;
-  onReorderProjects: (fromIndex: number, toIndex: number) => void;
-  taskOrderByProject: Record<string, string[]>;
-  onReorderTasks: (projectId: string, fromIndex: number, toIndex: number) => void;
   onReloadOrganization: () => void;
   onReloadPullRequests: () => void;
   onReloadRepository: (repoId: string) => void;
@@ -103,66 +98,7 @@ export const Sidebar = memo(function Sidebar({
   const [hoveredProjectId, setHoveredProjectId] = useState<string | null>(null);
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const headerMenuRef = useRef<HTMLDivElement>(null);
-
-  // Mouse-based drag and drop state
-  type DragState =
-    | { type: "project"; fromIdx: number; overIdx: number | null }
-    | { type: "task"; projectId: string; fromIdx: number; overIdx: number | null }
-    | null;
-  const [drag, setDrag] = useState<DragState>(null);
-  const dragRef = useRef<DragState>(null);
-  const startYRef = useRef(0);
-  const didDragRef = useRef(false);
-
-  // Attach global mousemove/mouseup when dragging
-  useEffect(() => {
-    if (!drag) return;
-    const onMove = (e: MouseEvent) => {
-      // Detect which element is under the cursor using data attributes
-      const el = document.elementFromPoint(e.clientX, e.clientY);
-      if (!el) return;
-      const projectEl = (el as HTMLElement).closest?.("[data-project-idx]") as HTMLElement | null;
-      const taskEl = (el as HTMLElement).closest?.("[data-task-idx]") as HTMLElement | null;
-
-      if (drag.type === "project" && projectEl) {
-        const overIdx = Number(projectEl.dataset.projectIdx);
-        if (overIdx !== drag.overIdx) {
-          setDrag({ ...drag, overIdx });
-          dragRef.current = { ...drag, overIdx };
-        }
-      } else if (drag.type === "task" && taskEl) {
-        const overProjectId = taskEl.dataset.taskProjectId ?? "";
-        const overIdx = Number(taskEl.dataset.taskIdx);
-        if (overProjectId === drag.projectId && overIdx !== drag.overIdx) {
-          setDrag({ ...drag, overIdx });
-          dragRef.current = { ...drag, overIdx };
-        }
-      }
-      // Mark that we actually moved (to distinguish from clicks)
-      if (Math.abs(e.clientY - startYRef.current) > 4) {
-        didDragRef.current = true;
-      }
-    };
-    const onUp = () => {
-      const d = dragRef.current;
-      if (d && didDragRef.current && d.overIdx !== null && d.fromIdx !== d.overIdx) {
-        if (d.type === "project") {
-          onReorderProjects(d.fromIdx, d.overIdx);
-        } else {
-          onReorderTasks(d.projectId, d.fromIdx, d.overIdx);
-        }
-      }
-      dragRef.current = null;
-      didDragRef.current = false;
-      setDrag(null);
-    };
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-    return () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    };
-  }, [drag, onReorderProjects, onReorderTasks]);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!headerMenuOpen) {
@@ -180,6 +116,26 @@ export const Sidebar = memo(function Sidebar({
 
   const [createSelectOpen, setCreateSelectOpen] = useState(false);
   const selectOptions = useMemo(() => newTaskRepos.map((repo) => ({ id: repo.id, label: stripCommonOrgPrefix(repo.label, newTaskRepos) })), [newTaskRepos]);
+  type FlatItem = { key: string; type: "project-header"; project: ProjectSection } | { key: string; type: "task"; project: ProjectSection; task: Task };
+  const flatItems = useMemo<FlatItem[]>(
+    () =>
+      projects.flatMap((project) => {
+        const items: FlatItem[] = [{ key: `project:${project.id}`, type: "project-header", project }];
+        if (!collapsedProjects[project.id]) {
+          items.push(...project.tasks.map((task) => ({ key: `task:${task.id}`, type: "task" as const, project, task })));
+        }
+        return items;
+      }),
+    [collapsedProjects, projects],
+  );
+  const virtualizer = useVirtualizer({
+    count: flatItems.length,
+    getItemKey: (index) => flatItems[index]?.key ?? index,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 40,
+    overscan: 12,
+    measureElement: (element) => element.getBoundingClientRect().height,
+  });
 
   return (
     <SPanel>
@@ -463,342 +419,270 @@ export const Sidebar = memo(function Sidebar({
           </div>
         )}
       </PanelHeaderBar>
-      <ScrollBody>
-        <div className={css({ padding: "8px", display: "flex", flexDirection: "column", gap: "4px" })}>
-          {projects.map((project, projectIndex) => {
-            const isCollapsed = collapsedProjects[project.id] === true;
-            const isProjectDropTarget = drag?.type === "project" && drag.overIdx === projectIndex && drag.fromIdx !== projectIndex;
-            const isBeingDragged = drag?.type === "project" && drag.fromIdx === projectIndex && didDragRef.current;
-            const orderedTaskIds = taskOrderByProject[project.id];
-            const orderedTasks = orderedTaskIds
-              ? (() => {
-                  const byId = new Map(project.tasks.map((t) => [t.id, t]));
-                  const sorted = orderedTaskIds.map((id) => byId.get(id)).filter(Boolean) as typeof project.tasks;
-                  for (const t of project.tasks) {
-                    if (!orderedTaskIds.includes(t.id)) sorted.push(t);
-                  }
-                  return sorted;
-                })()
-              : project.tasks;
+      <ScrollBody ref={scrollRef}>
+        <div className={css({ padding: "8px" })}>
+          <div
+            className={css({ position: "relative", width: "100%" })}
+            style={{
+              height: `${virtualizer.getTotalSize()}px`,
+            }}
+          >
+            {virtualizer.getVirtualItems().map((virtualItem) => {
+              const item = flatItems[virtualItem.index];
+              if (!item) {
+                return null;
+              }
 
-            return (
-              <div
-                key={project.id}
-                data-project-idx={projectIndex}
-                className={css({
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "4px",
-                  position: "relative",
-                  opacity: isBeingDragged ? 0.4 : 1,
-                  transition: "opacity 150ms ease",
-                  "::before": {
-                    content: '""',
-                    position: "absolute",
-                    top: "-2px",
-                    left: 0,
-                    right: 0,
-                    height: "2px",
-                    backgroundColor: isProjectDropTarget ? t.textPrimary : "transparent",
-                    transition: "background-color 100ms ease",
-                  },
-                })}
-              >
-                <div
-                  onMouseEnter={() => setHoveredProjectId(project.id)}
-                  onMouseLeave={() => setHoveredProjectId((cur) => (cur === project.id ? null : cur))}
-                  onMouseDown={(event) => {
-                    if (event.button !== 0) return;
-                    startYRef.current = event.clientY;
-                    didDragRef.current = false;
-                    setHoveredProjectId(null);
-                    const state: DragState = { type: "project", fromIdx: projectIndex, overIdx: null };
-                    dragRef.current = state;
-                    setDrag(state);
-                  }}
-                  onClick={() => {
-                    if (!didDragRef.current) {
-                      setCollapsedProjects((current) => ({
-                        ...current,
-                        [project.id]: !current[project.id],
-                      }));
-                    }
-                  }}
-                  onContextMenu={(event) =>
-                    contextMenu.open(event, [
-                      { label: "Reload repository", onClick: () => onReloadRepository(project.id) },
-                      { label: "New task", onClick: () => onCreate(project.id) },
-                    ])
-                  }
-                  data-project-header
-                  className={css({
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    padding: "10px 8px 4px",
-                    gap: "8px",
-                    cursor: "grab",
-                    userSelect: "none",
-                  })}
-                >
-                  <div className={css({ display: "flex", alignItems: "center", gap: "4px", overflow: "hidden" })}>
-                    <div className={css({ position: "relative", width: "14px", height: "14px", flexShrink: 0 })}>
-                      <span
-                        className={css({
-                          position: "absolute",
-                          inset: 0,
-                          display: "inline-flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          borderRadius: "3px",
-                          fontSize: "9px",
-                          fontWeight: 700,
-                          lineHeight: 1,
-                          color: t.textOnAccent,
-                          backgroundColor: projectIconColor(project.label),
-                        })}
-                        data-project-icon
-                      >
-                        {projectInitial(project.label)}
-                      </span>
-                      <span className={css({ position: "absolute", inset: 0, display: "none", alignItems: "center", justifyContent: "center" })} data-chevron>
-                        {isCollapsed ? <ChevronDown size={12} color={t.textTertiary} /> : <ChevronUp size={12} color={t.textTertiary} />}
-                      </span>
-                    </div>
-                    <LabelSmall
-                      color={t.textSecondary}
-                      $style={{
-                        fontSize: "11px",
-                        fontWeight: 700,
-                        letterSpacing: "0.05em",
-                        textTransform: "uppercase",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {stripCommonOrgPrefix(project.label, projects)}
-                    </LabelSmall>
-                  </div>
-                  <div className={css({ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 })}>
-                    {isCollapsed ? <LabelXSmall color={t.textTertiary}>{formatRelativeAge(project.updatedAtMs)}</LabelXSmall> : null}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setHoveredProjectId(null);
-                        onSelectNewTaskRepo(project.id);
-                        onCreate(project.id);
-                      }}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      className={css({
-                        display: "inline-flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        width: "26px",
-                        height: "26px",
-                        borderRadius: "6px",
-                        border: "none",
-                        backgroundColor: "transparent",
-                        padding: 0,
-                        margin: 0,
-                        cursor: "pointer",
-                        color: t.textTertiary,
-                        opacity: hoveredProjectId === project.id ? 1 : 0,
-                        transition: "opacity 150ms ease, background-color 200ms ease, color 200ms ease",
-                        pointerEvents: hoveredProjectId === project.id ? "auto" : "none",
-                        ":hover": { backgroundColor: t.interactiveHover, color: t.textSecondary },
-                      })}
-                      title={`New task in ${project.label}`}
-                    >
-                      <Plus size={12} color={t.textTertiary} />
-                    </button>
-                  </div>
-                </div>
+              if (item.type === "project-header") {
+                const project = item.project;
+                const isCollapsed = collapsedProjects[project.id] === true;
 
-                {!isCollapsed &&
-                  orderedTasks.map((task, taskIndex) => {
-                    const isActive = task.id === activeId;
-                    const isPullRequestItem = isPullRequestSidebarItem(task);
-                    const isDim = task.status === "archived";
-                    const isRunning = task.tabs.some((tab) => tab.status === "running");
-                    const isProvisioning =
-                      !isPullRequestItem &&
-                      (String(task.status).startsWith("init_") ||
-                        task.status === "new" ||
-                        task.tabs.some((tab) => tab.status === "pending_provision" || tab.status === "pending_session_create"));
-                    const hasUnread = task.tabs.some((tab) => tab.unread);
-                    const isDraft = task.pullRequest == null || task.pullRequest.status === "draft";
-                    const totalAdded = task.fileChanges.reduce((sum, file) => sum + file.added, 0);
-                    const totalRemoved = task.fileChanges.reduce((sum, file) => sum + file.removed, 0);
-                    const hasDiffs = totalAdded > 0 || totalRemoved > 0;
-                    const isTaskDropTarget = drag?.type === "task" && drag.projectId === project.id && drag.overIdx === taskIndex && drag.fromIdx !== taskIndex;
-                    const isTaskBeingDragged = drag?.type === "task" && drag.projectId === project.id && drag.fromIdx === taskIndex && didDragRef.current;
-
-                    return (
+                return (
+                  <div
+                    key={item.key}
+                    ref={(node) => {
+                      if (node) {
+                        virtualizer.measureElement(node);
+                      }
+                    }}
+                    style={{
+                      left: 0,
+                      position: "absolute",
+                      top: 0,
+                      transform: `translateY(${virtualItem.start}px)`,
+                      width: "100%",
+                    }}
+                  >
+                    <div className={css({ paddingBottom: "4px" })}>
                       <div
-                        key={task.id}
-                        data-task-idx={taskIndex}
-                        data-task-project-id={project.id}
-                        onMouseDown={(event) => {
-                          if (event.button !== 0) return;
-                          // Only start task drag if not already in a project drag
-                          if (dragRef.current) return;
-                          event.stopPropagation();
-                          startYRef.current = event.clientY;
-                          didDragRef.current = false;
-                          const state: DragState = { type: "task", projectId: project.id, fromIdx: taskIndex, overIdx: null };
-                          dragRef.current = state;
-                          setDrag(state);
-                        }}
+                        onMouseEnter={() => setHoveredProjectId(project.id)}
+                        onMouseLeave={() => setHoveredProjectId((cur) => (cur === project.id ? null : cur))}
                         onClick={() => {
-                          if (!didDragRef.current) {
-                            onSelect(task.id);
-                          }
+                          setCollapsedProjects((current) => ({
+                            ...current,
+                            [project.id]: !current[project.id],
+                          }));
                         }}
-                        onContextMenu={(event) => {
-                          if (isPullRequestItem && task.pullRequest) {
-                            contextMenu.open(event, [
-                              { label: "Reload pull request", onClick: () => onReloadPullRequest(task.repoId, task.pullRequest!.number) },
-                              { label: "Create task", onClick: () => onSelect(task.id) },
-                            ]);
-                            return;
-                          }
+                        onContextMenu={(event) =>
                           contextMenu.open(event, [
-                            { label: "Rename task", onClick: () => onRenameTask(task.id) },
-                            { label: "Rename branch", onClick: () => onRenameBranch(task.id) },
-                            { label: "Mark as unread", onClick: () => onMarkUnread(task.id) },
-                          ]);
-                        }}
+                            { label: "Reload repository", onClick: () => onReloadRepository(project.id) },
+                            { label: "New task", onClick: () => onCreate(project.id) },
+                          ])
+                        }
+                        data-project-header
                         className={css({
-                          padding: "8px 12px",
-                          borderRadius: "8px",
-                          position: "relative",
-                          backgroundColor: isActive ? t.interactiveHover : "transparent",
-                          opacity: isTaskBeingDragged ? 0.4 : 1,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          padding: "10px 8px 4px",
+                          gap: "8px",
                           cursor: "pointer",
-                          transition: "all 150ms ease",
-                          "::before": {
-                            content: '""',
-                            position: "absolute",
-                            top: "-2px",
-                            left: 0,
-                            right: 0,
-                            height: "2px",
-                            backgroundColor: isTaskDropTarget ? t.textPrimary : "transparent",
-                            transition: "background-color 100ms ease",
-                          },
-                          ":hover": {
-                            backgroundColor: t.interactiveHover,
-                          },
+                          userSelect: "none",
                         })}
                       >
-                        <div className={css({ display: "flex", alignItems: "center", gap: "8px" })}>
-                          <div
+                        <div className={css({ display: "flex", alignItems: "center", gap: "4px", overflow: "hidden" })}>
+                          <div className={css({ position: "relative", width: "14px", height: "14px", flexShrink: 0 })}>
+                            <span
+                              className={css({
+                                position: "absolute",
+                                inset: 0,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                borderRadius: "3px",
+                                fontSize: "9px",
+                                fontWeight: 700,
+                                lineHeight: 1,
+                                color: t.textOnAccent,
+                                backgroundColor: projectIconColor(project.label),
+                              })}
+                              data-project-icon
+                            >
+                              {projectInitial(project.label)}
+                            </span>
+                            <span
+                              className={css({ position: "absolute", inset: 0, display: "none", alignItems: "center", justifyContent: "center" })}
+                              data-chevron
+                            >
+                              {isCollapsed ? <ChevronDown size={12} color={t.textTertiary} /> : <ChevronUp size={12} color={t.textTertiary} />}
+                            </span>
+                          </div>
+                          <LabelSmall
+                            color={t.textSecondary}
+                            $style={{
+                              fontSize: "11px",
+                              fontWeight: 700,
+                              letterSpacing: "0.05em",
+                              textTransform: "uppercase",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {stripCommonOrgPrefix(project.label, projects)}
+                          </LabelSmall>
+                        </div>
+                        <div className={css({ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 })}>
+                          {isCollapsed ? <LabelXSmall color={t.textTertiary}>{formatRelativeAge(project.updatedAtMs)}</LabelXSmall> : null}
+                          <button
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setHoveredProjectId(null);
+                              onSelectNewTaskRepo(project.id);
+                              onCreate(project.id);
+                            }}
                             className={css({
-                              width: "14px",
-                              minWidth: "14px",
-                              height: "14px",
-                              display: "flex",
+                              display: "inline-flex",
                               alignItems: "center",
                               justifyContent: "center",
-                              flexShrink: 0,
+                              width: "26px",
+                              height: "26px",
+                              borderRadius: "6px",
+                              border: "none",
+                              backgroundColor: "transparent",
+                              padding: 0,
+                              margin: 0,
+                              cursor: "pointer",
+                              color: t.textTertiary,
+                              opacity: hoveredProjectId === project.id ? 1 : 0,
+                              transition: "opacity 150ms ease, background-color 200ms ease, color 200ms ease",
+                              pointerEvents: hoveredProjectId === project.id ? "auto" : "none",
+                              ":hover": { backgroundColor: t.interactiveHover, color: t.textSecondary },
                             })}
+                            title={`New task in ${project.label}`}
                           >
-                            {isPullRequestItem ? (
-                              <GitPullRequestDraft size={13} color={isDraft ? t.accent : t.textSecondary} />
-                            ) : (
-                              <TaskIndicator isRunning={isRunning} isProvisioning={isProvisioning} hasUnread={hasUnread} isDraft={isDraft} />
-                            )}
-                          </div>
-                          <div className={css({ minWidth: 0, flex: 1, display: "flex", flexDirection: "column", gap: "1px" })}>
-                            <LabelSmall
-                              $style={{
-                                fontWeight: hasUnread ? 600 : 400,
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                                minWidth: 0,
-                                flexShrink: 1,
-                              }}
-                              color={hasUnread ? t.textPrimary : t.textSecondary}
-                            >
-                              {task.title}
-                            </LabelSmall>
-                            {isPullRequestItem && task.statusMessage ? (
-                              <LabelXSmall color={t.textTertiary} $style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {task.statusMessage}
-                              </LabelXSmall>
-                            ) : null}
-                          </div>
-                          {task.pullRequest != null ? (
-                            <span className={css({ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 })}>
-                              <LabelXSmall color={t.textSecondary} $style={{ fontWeight: 600 }}>
-                                #{task.pullRequest.number}
-                              </LabelXSmall>
-                              {task.pullRequest.status === "draft" ? <CloudUpload size={11} color={t.accent} /> : null}
-                            </span>
-                          ) : (
-                            <GitPullRequestDraft size={11} color={t.textTertiary} />
-                          )}
-                          {hasDiffs ? (
-                            <div className={css({ display: "flex", gap: "4px", flexShrink: 0, marginLeft: "auto" })}>
-                              <span className={css({ fontSize: "11px", color: t.statusSuccess })}>+{totalAdded}</span>
-                              <span className={css({ fontSize: "11px", color: t.statusError })}>-{totalRemoved}</span>
-                            </div>
-                          ) : null}
-                          <LabelXSmall color={t.textTertiary} $style={{ flexShrink: 0, marginLeft: hasDiffs ? undefined : "auto" }}>
-                            {formatRelativeAge(task.updatedAtMs)}
-                          </LabelXSmall>
+                            <Plus size={12} color={t.textTertiary} />
+                          </button>
                         </div>
                       </div>
-                    );
-                  })}
-                {/* Bottom drop zone for dragging to end of task list */}
-                {!isCollapsed && (
-                  <div
-                    data-task-idx={orderedTasks.length}
-                    data-task-project-id={project.id}
-                    className={css({
-                      minHeight: "4px",
-                      position: "relative",
-                      "::before": {
-                        content: '""',
-                        position: "absolute",
-                        top: 0,
-                        left: 0,
-                        right: 0,
-                        height: "2px",
-                        backgroundColor:
-                          drag?.type === "task" && drag.projectId === project.id && drag.overIdx === orderedTasks.length && drag.fromIdx !== orderedTasks.length
-                            ? t.textPrimary
-                            : "transparent",
-                        transition: "background-color 100ms ease",
-                      },
-                    })}
-                  />
-                )}
-              </div>
-            );
-          })}
-          {/* Bottom drop zone for dragging project to end of list */}
-          <div
-            data-project-idx={projects.length}
-            className={css({
-              minHeight: "4px",
-              position: "relative",
-              "::before": {
-                content: '""',
-                position: "absolute",
-                top: 0,
-                left: 0,
-                right: 0,
-                height: "2px",
-                backgroundColor:
-                  drag?.type === "project" && drag.overIdx === projects.length && drag.fromIdx !== projects.length ? t.textPrimary : "transparent",
-                transition: "background-color 100ms ease",
-              },
+                    </div>
+                  </div>
+                );
+              }
+
+              const { project, task } = item;
+              const isActive = task.id === activeId;
+              const isPullRequestItem = isPullRequestSidebarItem(task);
+              const isRunning = task.tabs.some((tab) => tab.status === "running");
+              const isProvisioning =
+                !isPullRequestItem &&
+                (String(task.status).startsWith("init_") ||
+                  task.status === "new" ||
+                  task.tabs.some((tab) => tab.status === "pending_provision" || tab.status === "pending_session_create"));
+              const hasUnread = task.tabs.some((tab) => tab.unread);
+              const isDraft = task.pullRequest == null || task.pullRequest.status === "draft";
+              const totalAdded = task.fileChanges.reduce((sum, file) => sum + file.added, 0);
+              const totalRemoved = task.fileChanges.reduce((sum, file) => sum + file.removed, 0);
+              const hasDiffs = totalAdded > 0 || totalRemoved > 0;
+
+              return (
+                <div
+                  key={item.key}
+                  ref={(node) => {
+                    if (node) {
+                      virtualizer.measureElement(node);
+                    }
+                  }}
+                  style={{
+                    left: 0,
+                    position: "absolute",
+                    top: 0,
+                    transform: `translateY(${virtualItem.start}px)`,
+                    width: "100%",
+                  }}
+                >
+                  <div className={css({ paddingBottom: "4px" })}>
+                    <div
+                      onClick={() => onSelect(task.id)}
+                      onContextMenu={(event) => {
+                        if (isPullRequestItem && task.pullRequest) {
+                          contextMenu.open(event, [
+                            { label: "Reload pull request", onClick: () => onReloadPullRequest(task.repoId, task.pullRequest!.number) },
+                            { label: "Create task", onClick: () => onSelect(task.id) },
+                          ]);
+                          return;
+                        }
+                        contextMenu.open(event, [
+                          { label: "Rename task", onClick: () => onRenameTask(task.id) },
+                          { label: "Rename branch", onClick: () => onRenameBranch(task.id) },
+                          { label: "Mark as unread", onClick: () => onMarkUnread(task.id) },
+                        ]);
+                      }}
+                      className={css({
+                        padding: "8px 12px",
+                        borderRadius: "8px",
+                        backgroundColor: isActive ? t.interactiveHover : "transparent",
+                        cursor: "pointer",
+                        transition: "all 150ms ease",
+                        ":hover": {
+                          backgroundColor: t.interactiveHover,
+                        },
+                      })}
+                    >
+                      <div className={css({ display: "flex", alignItems: "center", gap: "8px" })}>
+                        <div
+                          className={css({
+                            width: "14px",
+                            minWidth: "14px",
+                            height: "14px",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            flexShrink: 0,
+                          })}
+                        >
+                          {isPullRequestItem ? (
+                            <GitPullRequestDraft size={13} color={isDraft ? t.accent : t.textSecondary} />
+                          ) : (
+                            <TaskIndicator isRunning={isRunning} isProvisioning={isProvisioning} hasUnread={hasUnread} isDraft={isDraft} />
+                          )}
+                        </div>
+                        <div className={css({ minWidth: 0, flex: 1, display: "flex", flexDirection: "column", gap: "1px" })}>
+                          <LabelSmall
+                            $style={{
+                              fontWeight: hasUnread ? 600 : 400,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                              minWidth: 0,
+                              flexShrink: 1,
+                            }}
+                            color={hasUnread ? t.textPrimary : t.textSecondary}
+                          >
+                            {task.title}
+                          </LabelSmall>
+                          {isPullRequestItem && task.statusMessage ? (
+                            <LabelXSmall color={t.textTertiary} $style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {task.statusMessage}
+                            </LabelXSmall>
+                          ) : null}
+                        </div>
+                        {task.pullRequest != null ? (
+                          <span className={css({ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 })}>
+                            <LabelXSmall color={t.textSecondary} $style={{ fontWeight: 600 }}>
+                              #{task.pullRequest.number}
+                            </LabelXSmall>
+                            {task.pullRequest.status === "draft" ? <CloudUpload size={11} color={t.accent} /> : null}
+                          </span>
+                        ) : (
+                          <GitPullRequestDraft size={11} color={t.textTertiary} />
+                        )}
+                        {hasDiffs ? (
+                          <div className={css({ display: "flex", gap: "4px", flexShrink: 0, marginLeft: "auto" })}>
+                            <span className={css({ fontSize: "11px", color: t.statusSuccess })}>+{totalAdded}</span>
+                            <span className={css({ fontSize: "11px", color: t.statusError })}>-{totalRemoved}</span>
+                          </div>
+                        ) : null}
+                        <LabelXSmall color={t.textTertiary} $style={{ flexShrink: 0, marginLeft: hasDiffs ? undefined : "auto" }}>
+                          {formatRelativeAge(task.updatedAtMs)}
+                        </LabelXSmall>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
             })}
-          />
+          </div>
         </div>
       </ScrollBody>
       <SidebarFooter />

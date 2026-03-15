@@ -392,20 +392,6 @@ const TranscriptPanel = memo(function TranscriptPanel({
   }, [draft, activeTabId, task.id]);
 
   useEffect(() => {
-    if (!pendingHistoryTarget || activeTabId !== pendingHistoryTarget.tabId) {
-      return;
-    }
-
-    const targetNode = messageRefs.current.get(pendingHistoryTarget.messageId);
-    if (!targetNode) {
-      return;
-    }
-
-    targetNode.scrollIntoView({ behavior: "smooth", block: "center" });
-    setPendingHistoryTarget(null);
-  }, [activeMessages.length, activeTabId, pendingHistoryTarget]);
-
-  useEffect(() => {
     if (!copiedMessageId) {
       return;
     }
@@ -694,13 +680,6 @@ const TranscriptPanel = memo(function TranscriptPanel({
 
       if (activeTabId !== event.tabId) {
         switchTab(event.tabId);
-        return;
-      }
-
-      const targetNode = messageRefs.current.get(event.messageId);
-      if (targetNode) {
-        targetNode.scrollIntoView({ behavior: "smooth", block: "center" });
-        setPendingHistoryTarget(null);
       }
     },
     [activeTabId, switchTab],
@@ -932,6 +911,8 @@ const TranscriptPanel = memo(function TranscriptPanel({
               messageRefs={messageRefs}
               historyEvents={historyEvents}
               onSelectHistoryEvent={jumpToHistoryEvent}
+              targetMessageId={pendingHistoryTarget && activeTabId === pendingHistoryTarget.tabId ? pendingHistoryTarget.messageId : null}
+              onTargetMessageResolved={() => setPendingHistoryTarget(null)}
               copiedMessageId={copiedMessageId}
               onCopyMessage={(message) => {
                 void copyMessage(message);
@@ -1382,16 +1363,7 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
       void navigate({ to: "/organizations/$organizationId/billing" as never, params: { organizationId: activeOrg.id } as never });
     }
   }, [activeOrg, navigate]);
-  const [projectOrder, setProjectOrder] = useState<string[] | null>(null);
-  const projects = useMemo(() => {
-    if (!projectOrder) return rawProjects;
-    const byId = new Map(rawProjects.map((p) => [p.id, p]));
-    const ordered = projectOrder.map((id) => byId.get(id)).filter(Boolean) as typeof rawProjects;
-    for (const p of rawProjects) {
-      if (!projectOrder.includes(p.id)) ordered.push(p);
-    }
-    return ordered;
-  }, [rawProjects, projectOrder]);
+  const projects = rawProjects;
   const [activeTabIdByTask, setActiveTabIdByTask] = useState<Record<string, string | null>>({});
   const [lastAgentTabIdByTask, setLastAgentTabIdByTask] = useState<Record<string, string | null>>({});
   const [openDiffsByTask, setOpenDiffsByTask] = useState<Record<string, string[]>>({});
@@ -1417,30 +1389,6 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
   const endPeek = useCallback(() => {
     peekTimeoutRef.current = setTimeout(() => setLeftSidebarPeeking(false), 200);
   }, []);
-
-  const reorderProjects = useCallback(
-    (fromIndex: number, toIndex: number) => {
-      const ids = projects.map((p) => p.id);
-      const [moved] = ids.splice(fromIndex, 1);
-      ids.splice(toIndex, 0, moved!);
-      setProjectOrder(ids);
-    },
-    [projects],
-  );
-
-  const [taskOrderByProject, setTaskOrderByProject] = useState<Record<string, string[]>>({});
-  const reorderTasks = useCallback(
-    (projectId: string, fromIndex: number, toIndex: number) => {
-      const project = projects.find((p) => p.id === projectId);
-      if (!project) return;
-      const currentOrder = taskOrderByProject[projectId] ?? project.tasks.map((t) => t.id);
-      const ids = [...currentOrder];
-      const [moved] = ids.splice(fromIndex, 1);
-      ids.splice(toIndex, 0, moved!);
-      setTaskOrderByProject((prev) => ({ ...prev, [projectId]: ids }));
-    },
-    [projects, taskOrderByProject],
-  );
 
   useEffect(() => {
     leftWidthRef.current = leftWidth;
@@ -1926,9 +1874,6 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
                 onMarkUnread={markTaskUnread}
                 onRenameTask={renameTask}
                 onRenameBranch={renameBranch}
-                onReorderProjects={reorderProjects}
-                taskOrderByProject={taskOrderByProject}
-                onReorderTasks={reorderTasks}
                 onReloadOrganization={() => void taskWorkbenchClient.reloadGithubOrganization()}
                 onReloadPullRequests={() => void taskWorkbenchClient.reloadGithubPullRequests()}
                 onReloadRepository={(repoId) => void taskWorkbenchClient.reloadGithubRepository(repoId)}
@@ -2101,9 +2046,6 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
               onMarkUnread={markTaskUnread}
               onRenameTask={renameTask}
               onRenameBranch={renameBranch}
-              onReorderProjects={reorderProjects}
-              taskOrderByProject={taskOrderByProject}
-              onReorderTasks={reorderTasks}
               onReloadOrganization={() => void taskWorkbenchClient.reloadGithubOrganization()}
               onReloadPullRequests={() => void taskWorkbenchClient.reloadGithubPullRequests()}
               onReloadRepository={(repoId) => void taskWorkbenchClient.reloadGithubRepository(repoId)}
@@ -2156,9 +2098,6 @@ export function MockLayout({ workspaceId, selectedTaskId, selectedSessionId }: M
                 onMarkUnread={markTaskUnread}
                 onRenameTask={renameTask}
                 onRenameBranch={renameBranch}
-                onReorderProjects={reorderProjects}
-                taskOrderByProject={taskOrderByProject}
-                onReorderTasks={reorderTasks}
                 onReloadOrganization={() => void taskWorkbenchClient.reloadGithubOrganization()}
                 onReloadPullRequests={() => void taskWorkbenchClient.reloadGithubPullRequests()}
                 onReloadRepository={(repoId) => void taskWorkbenchClient.reloadGithubRepository(repoId)}

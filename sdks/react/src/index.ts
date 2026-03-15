@@ -2,6 +2,7 @@ export { AgentConversation } from "./AgentConversation.tsx";
 export { AgentTranscript } from "./AgentTranscript.tsx";
 export { ChatComposer } from "./ChatComposer.tsx";
 export { ProcessTerminal } from "./ProcessTerminal.tsx";
+export { useTranscriptVirtualizer } from "./useTranscriptVirtualizer.ts";
 
 export type {
   AgentConversationClassNames,

@@ -10,11 +10,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@sandbox-agent/react": "workspace:*",
     "@sandbox-agent/foundry-client": "workspace:*",
     "@sandbox-agent/foundry-shared": "workspace:*",
+    "@sandbox-agent/react": "workspace:*",
     "@tanstack/react-query": "^5.85.5",
     "@tanstack/react-router": "^1.132.23",
+    "@tanstack/react-virtual": "^3.13.22",
     "baseui": "^16.1.1",
     "lucide-react": "^0.542.0",
     "react": "^19.1.1",

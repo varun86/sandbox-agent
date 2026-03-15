@@ -7,7 +7,7 @@ import {
   type TranscriptEntry,
 } from "@sandbox-agent/react";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, ExternalLink, Info, PlayCircle, Send, Shield, Wrench, X } from "lucide-react";
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
 import MarkdownText from "./MarkdownText";
 
 const agentLogos: Record<string, string> = {
@@ -84,7 +84,7 @@ export interface InspectorConversationProps {
   entries: TranscriptEntry[];
   sessionError: string | null;
   eventError?: string | null;
-  messagesEndRef: React.RefObject<HTMLDivElement>;
+  scrollRef: RefObject<HTMLDivElement>;
   onEventClick?: (eventId: string) => void;
   isThinking?: boolean;
   agentId?: string;
@@ -102,7 +102,7 @@ const InspectorConversation = ({
   entries,
   sessionError,
   eventError,
-  messagesEndRef,
+  scrollRef,
   onEventClick,
   isThinking,
   agentId,
@@ -119,12 +119,13 @@ const InspectorConversation = ({
     <AgentConversation
       entries={entries}
       classNames={conversationClassNames}
+      scrollRef={scrollRef}
       emptyState={emptyState}
       transcriptClassNames={transcriptClassNames}
       transcriptProps={{
-        endRef: messagesEndRef,
         sessionError,
         eventError,
+        virtualize: true,
         onEventClick,
         isThinking,
         agentId,

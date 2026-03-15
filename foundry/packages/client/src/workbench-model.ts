@@ -235,6 +235,41 @@ function minutesAgo(minutes: number): number {
   return NOW_MS - minutes * 60_000;
 }
 
+function buildTranscriptStressMessages(pairCount: number): LegacyMessage[] {
+  const startedAtMs = NOW_MS - pairCount * 8_000;
+  const messages: LegacyMessage[] = [];
+
+  for (let index = 0; index < pairCount; index++) {
+    const sequence = index + 1;
+    const createdAtMs = startedAtMs + index * 8_000;
+
+    messages.push({
+      id: `stress-user-${sequence}`,
+      role: "user",
+      agent: null,
+      createdAtMs,
+      lines: [
+        `Stress prompt ${sequence}: summarize the current state of the transcript virtualizer.`,
+        `Keep the answer focused on scroll position, render cost, and preserved expansion state.`,
+      ],
+    });
+
+    messages.push({
+      id: `stress-agent-${sequence}`,
+      role: "agent",
+      agent: "codex",
+      createdAtMs: createdAtMs + 3_000,
+      lines: [
+        `Stress reply ${sequence}: the list should only render visible rows plus overscan while preserving scroll anchoring near the bottom.`,
+        `Grouping, minimap navigation, and per-row UI should remain stable even as older rows unmount.`,
+      ],
+      durationMs: 2_500,
+    });
+  }
+
+  return messages;
+}
+
 export function parseDiffLines(diff: string): ParsedDiffLine[] {
   return diff.split("\n").map((text, index) => {
     if (text.startsWith("@@")) {
@@ -1188,6 +1223,35 @@ export function buildInitialTasks(): Task[] {
       diffs: {},
       fileTree: [],
       minutesUsed: 0,
+    },
+    {
+      id: "stress-transcript",
+      repoId: "sandbox-agent",
+      title: "Transcript virtualization stress test",
+      status: "idle",
+      repoName: "rivet-dev/sandbox-agent",
+      updatedAtMs: minutesAgo(40),
+      branch: "perf/transcript-virtualizer",
+      pullRequest: null,
+      tabs: [
+        {
+          id: "stress-transcript-tab",
+          sessionId: "stress-transcript-session",
+          sessionName: "Virtualizer stress session",
+          agent: "Codex",
+          model: "gpt-5.3-codex",
+          status: "idle",
+          thinkingSinceMs: null,
+          unread: false,
+          created: true,
+          draft: { text: "", attachments: [], updatedAtMs: null },
+          transcript: transcriptFromLegacyMessages("stress-transcript-tab", buildTranscriptStressMessages(1600)),
+        },
+      ],
+      fileChanges: [],
+      diffs: {},
+      fileTree: [],
+      minutesUsed: 18,
     },
     {
       id: "status-running",

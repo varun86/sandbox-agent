@@ -1,6 +1,6 @@
 import type { TranscriptEntry } from "@sandbox-agent/react";
 import { AlertTriangle, Archive, CheckSquare, MessageSquare, Plus, Square, Terminal } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import type { AgentInfo } from "sandbox-agent";
 import { formatShortId } from "../../utils/format";
 
@@ -40,7 +40,7 @@ const ChatPanel = ({
   agents,
   agentsLoading,
   agentsError,
-  messagesEndRef,
+  scrollRef,
   agentLabel,
   modelLabel,
   currentAgentVersion,
@@ -71,7 +71,7 @@ const ChatPanel = ({
   agents: AgentInfo[];
   agentsLoading: boolean;
   agentsError: string | null;
-  messagesEndRef: React.RefObject<HTMLDivElement>;
+  scrollRef: RefObject<HTMLDivElement>;
   agentLabel: string;
   modelLabel?: string | null;
   currentAgentVersion?: string | null;
@@ -233,7 +233,7 @@ const ChatPanel = ({
           entries={transcriptEntries}
           sessionError={sessionError}
           eventError={null}
-          messagesEndRef={messagesEndRef}
+          scrollRef={scrollRef}
           onEventClick={onEventClick}
           isThinking={isThinking}
           agentId={agentId}

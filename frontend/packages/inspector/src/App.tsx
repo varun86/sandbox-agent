@@ -286,7 +286,7 @@ export default function App() {
   const [highlightedEventId, setHighlightedEventId] = useState<string | null>(null);
   const [debugPanelCollapsed, setDebugPanelCollapsed] = useState(false);
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const transcriptScrollRef = useRef<HTMLDivElement>(null);
 
   const clientRef = useRef<SandboxAgent | null>(null);
   const activeSessionRef = useRef<Session | null>(null);
@@ -1434,10 +1434,6 @@ export default function App() {
       });
   }, [connected, sessionId, sessions, getClient, subscribeToSession]);
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [transcriptEntries]);
-
   const currentAgent = agents.find((agent) => agent.id === agentId);
   const agentLabel = agentDisplayNames[agentId] ?? agentId;
   const selectedSession = sessions.find((s) => s.sessionId === sessionId);
@@ -1743,7 +1739,7 @@ export default function App() {
           }
           agentsLoading={agentsLoading}
           agentsError={agentsError}
-          messagesEndRef={messagesEndRef}
+          scrollRef={transcriptScrollRef}
           agentLabel={agentLabel}
           modelLabel={modelPillLabel}
           currentAgentVersion={currentAgent?.version ?? null}

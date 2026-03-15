@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
 import { AgentTranscript, type AgentTranscriptClassNames, type AgentTranscriptProps, type TranscriptEntry } from "./AgentTranscript.tsx";
 import { ChatComposer, type ChatComposerClassNames, type ChatComposerProps } from "./ChatComposer.tsx";
 
@@ -18,9 +18,10 @@ export interface AgentConversationProps {
   emptyState?: ReactNode;
   transcriptClassName?: string;
   transcriptClassNames?: Partial<AgentTranscriptClassNames>;
+  scrollRef?: RefObject<HTMLDivElement>;
   composerClassName?: string;
   composerClassNames?: Partial<ChatComposerClassNames>;
-  transcriptProps?: Omit<AgentTranscriptProps, "entries" | "className" | "classNames">;
+  transcriptProps?: Omit<AgentTranscriptProps, "entries" | "className" | "classNames" | "scrollRef">;
   composerProps?: Omit<ChatComposerProps, "className" | "classNames">;
 }
 
@@ -47,6 +48,7 @@ export const AgentConversation = ({
   emptyState,
   transcriptClassName,
   transcriptClassNames,
+  scrollRef,
   composerClassName,
   composerClassNames,
   transcriptProps,
@@ -58,12 +60,18 @@ export const AgentConversation = ({
   return (
     <div className={cx(resolvedClassNames.root, className)} data-slot="root">
       {hasTranscriptContent ? (
-        <AgentTranscript
-          entries={entries}
-          className={cx(resolvedClassNames.transcript, transcriptClassName)}
-          classNames={transcriptClassNames}
-          {...transcriptProps}
-        />
+        scrollRef ? (
+          <div className={cx(resolvedClassNames.transcript, transcriptClassName)} data-slot="transcript" ref={scrollRef}>
+            <AgentTranscript entries={entries} classNames={transcriptClassNames} {...transcriptProps} />
+          </div>
+        ) : (
+          <AgentTranscript
+            entries={entries}
+            className={cx(resolvedClassNames.transcript, transcriptClassName)}
+            classNames={transcriptClassNames}
+            {...transcriptProps}
+          />
+        )
       ) : emptyState ? (
         <div className={resolvedClassNames.emptyState} data-slot="empty-state">
           {emptyState}
