@@ -51,6 +51,7 @@
             "pages": [
               "quickstart",
               "sdk-overview",
+              "llm-credentials",
               "react-components",
               {
                 "group": "Deploy",
@@ -90,7 +91,6 @@
               {
                 "group": "More",
                 "pages": [
-                  "credentials",
                   "daemon",
                   "cors",
                   "session-restoration",

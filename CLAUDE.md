@@ -13,6 +13,7 @@
 - Never mention "ACP" in user-facing docs (`docs/**/*.mdx`) except in docs that are specifically about ACP itself (e.g. `docs/acp-http-client.mdx`).
 - Never expose underlying protocol method names (e.g. `session/request_permission`, `session/create`, `_sandboxagent/session/detach`) in non-ACP docs. Describe the behavior in user-facing terms instead.
 - Do not describe the underlying protocol implementation in docs. Only document the SDK surface (methods, types, options). ACP protocol details belong exclusively in ACP-specific pages.
+- Do not use em dashes (`—`) in docs. Use commas, periods, or parentheses instead.
 
 ### Docs Source Of Truth (HTTP/CLI)
 
