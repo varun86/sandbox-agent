@@ -216,6 +216,18 @@ export class SandboxAgentError extends Error {
   }
 }
 
+export class SandboxDestroyedError extends Error {
+  readonly sandboxId: string;
+  readonly provider: string;
+
+  constructor(sandboxId: string, provider: string, options?: { cause?: unknown }) {
+    super(`Sandbox '${provider}/${sandboxId}' no longer exists and cannot be reconnected.`, options);
+    this.name = "SandboxDestroyedError";
+    this.sandboxId = sandboxId;
+    this.provider = provider;
+  }
+}
+
 export class UnsupportedSessionCategoryError extends Error {
   readonly sessionId: string;
   readonly category: string;
@@ -904,6 +916,7 @@ export class SandboxAgent {
     const createdSandbox = !existingSandbox;
 
     if (existingSandbox) {
+      await provider.reconnect?.(rawSandboxId);
       await provider.ensureServer?.(rawSandboxId);
     }
 
@@ -996,6 +1009,50 @@ export class SandboxAgent {
     try {
       if (provider && rawSandboxId) {
         await provider.destroy(rawSandboxId);
+      } else if (!provider || !rawSandboxId) {
+        throw new Error("SandboxAgent is not attached to a provisioned sandbox.");
+      }
+    } finally {
+      await this.dispose();
+      this.sandboxProvider = undefined;
+      this.sandboxProviderId = undefined;
+      this.sandboxProviderRawId = undefined;
+    }
+  }
+
+  async pauseSandbox(): Promise<void> {
+    const provider = this.sandboxProvider;
+    const rawSandboxId = this.sandboxProviderRawId;
+
+    try {
+      if (provider && rawSandboxId) {
+        if (provider.pause) {
+          await provider.pause(rawSandboxId);
+        } else {
+          await provider.destroy(rawSandboxId);
+        }
+      } else if (!provider || !rawSandboxId) {
+        throw new Error("SandboxAgent is not attached to a provisioned sandbox.");
+      }
+    } finally {
+      await this.dispose();
+      this.sandboxProvider = undefined;
+      this.sandboxProviderId = undefined;
+      this.sandboxProviderRawId = undefined;
+    }
+  }
+
+  async killSandbox(): Promise<void> {
+    const provider = this.sandboxProvider;
+    const rawSandboxId = this.sandboxProviderRawId;
+
+    try {
+      if (provider && rawSandboxId) {
+        if (provider.kill) {
+          await provider.kill(rawSandboxId);
+        } else {
+          await provider.destroy(rawSandboxId);
+        }
       } else if (!provider || !rawSandboxId) {
         throw new Error("SandboxAgent is not attached to a provisioned sandbox.");
       }

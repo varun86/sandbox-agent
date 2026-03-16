@@ -291,7 +291,7 @@ function providerSuite(entry: ProviderEntry) {
 
     afterEach(async () => {
       if (!sdk) return;
-      await sdk.destroySandbox().catch(async () => {
+      await sdk.killSandbox().catch(async () => {
         await sdk?.dispose().catch(() => {});
       });
       sdk = undefined;
@@ -363,6 +363,11 @@ function providerSuite(entry: ProviderEntry) {
             skipHealthCheck: true,
           });
           await expect(reconnected.listAgents()).rejects.toThrow();
+        }
+
+        if (entry.name === "e2b") {
+          const rawSandboxId = sandboxId?.slice(sandboxId.indexOf("/") + 1);
+          await entry.createProvider().kill?.(rawSandboxId!);
         }
       },
       entry.startTimeoutMs,

@@ -9,6 +9,25 @@ export interface SandboxProvider {
   destroy(sandboxId: string): Promise<void>;
 
   /**
+   * Reconnect to an existing sandbox before the SDK attempts health checks.
+   * Providers can use this to resume paused sandboxes or surface provider-specific
+   * reconnect errors.
+   */
+  reconnect?(sandboxId: string): Promise<void>;
+
+  /**
+   * Gracefully stop or pause a sandbox without permanently deleting it.
+   * When omitted, callers should fall back to `destroy()`.
+   */
+  pause?(sandboxId: string): Promise<void>;
+
+  /**
+   * Permanently delete a sandbox. When omitted, callers should fall back to
+   * `destroy()`.
+   */
+  kill?(sandboxId: string): Promise<void>;
+
+  /**
    * Return the sandbox-agent base URL for this sandbox.
    * Providers that cannot expose a URL should implement `getFetch()` instead.
    */

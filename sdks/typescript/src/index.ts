@@ -3,6 +3,7 @@ export {
   ProcessTerminalSession,
   SandboxAgent,
   SandboxAgentError,
+  SandboxDestroyedError,
   Session,
   UnsupportedPermissionReplyError,
   UnsupportedSessionCategoryError,
