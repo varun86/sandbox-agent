@@ -43,15 +43,27 @@ declare module "@sandbox-agent/react" {
     className?: string;
     classNames?: Partial<AgentTranscriptClassNames>;
     endRef?: RefObject<HTMLDivElement>;
+    scrollRef?: RefObject<HTMLDivElement>;
+    scrollToEntryId?: string | null;
     sessionError?: string | null;
     eventError?: string | null;
     isThinking?: boolean;
     agentId?: string;
+    virtualize?: boolean;
+    onAtBottomChange?: (atBottom: boolean) => void;
     onEventClick?: (eventId: string) => void;
     onPermissionReply?: (permissionId: string, reply: PermissionReply) => void;
+    isDividerEntry?: (entry: TranscriptEntry) => boolean;
+    canOpenEvent?: (entry: TranscriptEntry) => boolean;
+    getToolGroupSummary?: (entries: TranscriptEntry[]) => string;
     renderMessageText?: (entry: TranscriptEntry) => ReactNode;
     renderInlinePendingIndicator?: () => ReactNode;
     renderThinkingState?: (context: { agentId?: string }) => ReactNode;
+    renderToolItemIcon?: (entry: TranscriptEntry) => ReactNode;
+    renderToolGroupIcon?: (entries: TranscriptEntry[], expanded: boolean) => ReactNode;
+    renderChevron?: (expanded: boolean) => ReactNode;
+    renderEventLinkContent?: (entry: TranscriptEntry) => ReactNode;
+    renderPermissionIcon?: (entry: TranscriptEntry) => ReactNode;
     renderPermissionOptionContent?: (context: PermissionOptionRenderContext) => ReactNode;
   }
 

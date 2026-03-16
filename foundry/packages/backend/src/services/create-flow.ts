@@ -1,3 +1,5 @@
+import { BRANCH_NAME_PREFIXES } from "./branch-name-prefixes.js";
+
 export interface ResolveCreateFlowDecisionInput {
   task: string;
   explicitTitle?: string;
@@ -89,30 +91,42 @@ export function sanitizeBranchName(input: string): string {
   return trimmed.slice(0, 50).replace(/-+$/g, "");
 }
 
+function generateRandomSuffix(length: number): string {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let result = "";
+  for (let i = 0; i < length; i++) {
+    result += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return result;
+}
+
+function generateBranchName(): string {
+  const prefix = BRANCH_NAME_PREFIXES[Math.floor(Math.random() * BRANCH_NAME_PREFIXES.length)]!;
+  const suffix = generateRandomSuffix(4);
+  return `${prefix}-${suffix}`;
+}
+
 export function resolveCreateFlowDecision(input: ResolveCreateFlowDecisionInput): ResolveCreateFlowDecisionResult {
   const explicitBranch = input.explicitBranchName?.trim();
   const title = deriveFallbackTitle(input.task, input.explicitTitle);
-  const generatedBase = sanitizeBranchName(title) || "task";
-
-  const branchBase = explicitBranch && explicitBranch.length > 0 ? explicitBranch : generatedBase;
 
   const existingBranches = new Set(input.localBranches.map((value) => value.trim()).filter((value) => value.length > 0));
   const existingTaskBranches = new Set(input.taskBranches.map((value) => value.trim()).filter((value) => value.length > 0));
   const conflicts = (name: string): boolean => existingBranches.has(name) || existingTaskBranches.has(name);
 
-  if (explicitBranch && conflicts(branchBase)) {
-    throw new Error(`Branch '${branchBase}' already exists. Choose a different --name/--branch value.`);
+  if (explicitBranch && explicitBranch.length > 0) {
+    if (conflicts(explicitBranch)) {
+      throw new Error(`Branch '${explicitBranch}' already exists. Choose a different --name/--branch value.`);
+    }
+    return { title, branchName: explicitBranch };
   }
 
-  if (explicitBranch) {
-    return { title, branchName: branchBase };
-  }
-
-  let candidate = branchBase;
-  let index = 2;
-  while (conflicts(candidate)) {
-    candidate = `${branchBase}-${index}`;
-    index += 1;
+  // Generate a random McMaster-Carr-style branch name, retrying on conflicts
+  let candidate = generateBranchName();
+  let attempts = 0;
+  while (conflicts(candidate) && attempts < 100) {
+    candidate = generateBranchName();
+    attempts += 1;
   }
 
   return {

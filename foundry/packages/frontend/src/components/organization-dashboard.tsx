@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import type { AgentType, RepoBranchRecord, RepoOverview, TaskWorkbenchSnapshot, WorkbenchTaskStatus } from "@sandbox-agent/foundry-shared";
+import type { RepoBranchRecord, RepoOverview, TaskWorkspaceSnapshot, WorkspaceTaskStatus } from "@sandbox-agent/foundry-shared";
 import { currentFoundryOrganization, useSubscription } from "@sandbox-agent/foundry-client";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -14,7 +14,6 @@ import { StyledDivider } from "baseui/divider";
 import { styled, useStyletron } from "baseui";
 import { HeadingSmall, HeadingXSmall, LabelSmall, LabelXSmall, MonoLabelSmall, ParagraphSmall } from "baseui/typography";
 import { Bot, CircleAlert, FolderGit2, GitBranch, MessageSquareText, SendHorizontal } from "lucide-react";
-import { formatDiffStat } from "../features/tasks/model";
 import { deriveHeaderStatus, describeTaskState } from "../features/tasks/status";
 import { HeaderStatusPill } from "./mock-layout/ui";
 import { buildTranscript, resolveSessionSelection } from "../features/sessions/model";
@@ -95,23 +94,11 @@ const FILTER_OPTIONS: SelectItem[] = [
   { id: "all", label: "All Branches" },
 ];
 
-const AGENT_OPTIONS: SelectItem[] = [
-  { id: "codex", label: "codex" },
-  { id: "claude", label: "claude" },
-];
-
-function statusKind(status: WorkbenchTaskStatus): StatusTagKind {
+function statusKind(status: WorkspaceTaskStatus): StatusTagKind {
   if (status === "running") return "positive";
   if (status === "error") return "negative";
-  if (status === "new" || String(status).startsWith("init_")) return "warning";
+  if (String(status).startsWith("init_")) return "warning";
   return "neutral";
-}
-
-function normalizeAgent(agent: string | null): AgentType | undefined {
-  if (agent === "claude" || agent === "codex") {
-    return agent;
-  }
-  return undefined;
 }
 
 function formatTime(value: number): string {
@@ -160,7 +147,7 @@ function repoSummary(overview: RepoOverview | undefined): {
     if (row.taskId) {
       mapped += 1;
     }
-    if (row.prNumber && row.prState !== "MERGED" && row.prState !== "CLOSED") {
+    if (row.pullRequest && row.pullRequest.state !== "MERGED" && row.pullRequest.state !== "CLOSED") {
       openPrs += 1;
     }
   }
@@ -174,13 +161,23 @@ function repoSummary(overview: RepoOverview | undefined): {
 }
 
 function branchKind(row: RepoBranchRecord): StatusTagKind {
-  if (row.prState === "OPEN" || row.prState === "DRAFT") {
+  if (row.pullRequest?.isDraft || row.pullRequest?.state === "OPEN") {
     return "warning";
   }
-  if (row.prState === "MERGED") {
+  if (row.pullRequest?.state === "MERGED") {
     return "positive";
   }
   return "neutral";
+}
+
+function branchPullRequestLabel(branch: RepoBranchRecord): string {
+  if (!branch.pullRequest) {
+    return "no pr";
+  }
+  if (branch.pullRequest.isDraft) {
+    return "draft";
+  }
+  return branch.pullRequest.state.toLowerCase();
 }
 
 function matchesOverviewFilter(branch: RepoBranchRecord, filter: RepoOverviewFilter): boolean {
@@ -332,23 +329,17 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
   const [createTaskOpen, setCreateTaskOpen] = useState(false);
   const [selectedOverviewBranch, setSelectedOverviewBranch] = useState<string | null>(null);
   const [overviewFilter, setOverviewFilter] = useState<RepoOverviewFilter>("active");
-  const [newAgentType, setNewAgentType] = useState<AgentType>(() => {
-    try {
-      const raw = globalThis.localStorage?.getItem("hf.settings.agentType");
-      return raw === "claude" || raw === "codex" ? raw : "codex";
-    } catch {
-      return "codex";
-    }
-  });
   const [createError, setCreateError] = useState<string | null>(null);
 
   const appState = useSubscription(subscriptionManager, "app", {});
   const activeOrg = appState.data ? currentFoundryOrganization(appState.data) : null;
 
   const organizationState = useSubscription(subscriptionManager, "organization", { organizationId });
-  const repos = organizationState.data?.repos ?? [];
-  const rows = organizationState.data?.taskSummaries ?? [];
-  const selectedSummary = useMemo(() => rows.find((row) => row.id === selectedTaskId) ?? rows[0] ?? null, [rows, selectedTaskId]);
+  const reposData = organizationState.data?.repos;
+  const rowsData = organizationState.data?.taskSummaries;
+  const repos = reposData ?? [];
+  const rows = rowsData ?? [];
+  const selectedSummary = useMemo(() => rows.find((row) => row.id === selectedTaskId) ?? rows[0] ?? null, [rowsData, selectedTaskId]);
   const taskState = useSubscription(
     subscriptionManager,
     "task",
@@ -374,6 +365,7 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
   });
 
   useEffect(() => {
+    const repos = reposData ?? [];
     if (repoOverviewMode && selectedRepoId) {
       setCreateRepoId(selectedRepoId);
       return;
@@ -381,17 +373,11 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
     if (!createRepoId && repos.length > 0) {
       setCreateRepoId(repos[0]!.id);
     }
-  }, [createRepoId, repoOverviewMode, repos, selectedRepoId]);
-
-  useEffect(() => {
-    try {
-      globalThis.localStorage?.setItem("hf.settings.agentType", newAgentType);
-    } catch {
-      // ignore storage failures
-    }
-  }, [newAgentType]);
+  }, [createRepoId, repoOverviewMode, reposData, selectedRepoId]);
 
   const repoGroups = useMemo(() => {
+    const repos = reposData ?? [];
+    const rows = rowsData ?? [];
     const byRepo = new Map<string, typeof rows>();
     for (const row of rows) {
       const bucket = byRepo.get(row.repoId);
@@ -419,7 +405,7 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
         }
         return a.repoLabel.localeCompare(b.repoLabel);
       });
-  }, [repos, rows]);
+  }, [reposData, rowsData]);
 
   const selectedForSession = repoOverviewMode ? null : (taskState.data ?? null);
 
@@ -432,6 +418,7 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
   }, [selectedForSession]);
 
   useEffect(() => {
+    const rows = rowsData ?? [];
     if (!repoOverviewMode && !selectedTaskId && rows.length > 0) {
       void navigate({
         to: "/organizations/$organizationId/tasks/$taskId",
@@ -443,18 +430,19 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
         replace: true,
       });
     }
-  }, [navigate, repoOverviewMode, rows, selectedTaskId, organizationId]);
+  }, [navigate, repoOverviewMode, rowsData, selectedTaskId, organizationId]);
 
   useEffect(() => {
     setActiveSessionId(null);
     setDraft("");
   }, [selectedForSession?.id]);
 
-  const sessionRows = selectedForSession?.sessionsSummary ?? [];
-  const taskRuntimeStatus = selectedForSession?.runtimeStatus ?? selectedForSession?.status ?? null;
-  const taskStatusState = describeTaskState(taskRuntimeStatus, selectedForSession?.statusMessage ?? null);
+  const sessionRowsData = selectedForSession?.sessionsSummary;
+  const sessionRows = sessionRowsData ?? [];
+  const taskStatus = selectedForSession?.status ?? null;
+  const taskStatusState = describeTaskState(taskStatus);
   const taskStateSummary = `${taskStatusState.title}. ${taskStatusState.detail}`;
-  const shouldUseTaskStateEmptyState = Boolean(selectedForSession && taskRuntimeStatus && taskRuntimeStatus !== "running" && taskRuntimeStatus !== "idle");
+  const shouldUseTaskStateEmptyState = Boolean(selectedForSession && taskStatus && taskStatus !== "running" && taskStatus !== "idle");
   const sessionSelection = useMemo(
     () =>
       resolveSessionSelection({
@@ -469,7 +457,7 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
           status: session.status,
         })),
       }),
-    [activeSessionId, selectedForSession?.activeSessionId, sessionRows],
+    [activeSessionId, selectedForSession?.activeSessionId, sessionRowsData],
   );
   const resolvedSessionId = sessionSelection.sessionId;
   const staleSessionId = sessionSelection.staleSessionId;
@@ -485,7 +473,7 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
         }
       : null,
   );
-  const selectedSessionSummary = useMemo(() => sessionRows.find((session) => session.id === resolvedSessionId) ?? null, [resolvedSessionId, sessionRows]);
+  const selectedSessionSummary = useMemo(() => sessionRows.find((session) => session.id === resolvedSessionId) ?? null, [resolvedSessionId, sessionRowsData]);
   const isPendingProvision = selectedSessionSummary?.status === "pending_provision";
   const isPendingSessionCreate = selectedSessionSummary?.status === "pending_session_create";
   const isSessionError = selectedSessionSummary?.status === "error";
@@ -505,8 +493,6 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
       repoId: task.repoId,
       title: task.title,
       status: task.status,
-      runtimeStatus: selectedForSession?.runtimeStatus ?? null,
-      statusMessage: selectedForSession?.statusMessage ?? null,
       branch: task.branch ?? null,
       activeSandboxId: selectedForSession?.activeSandboxId ?? null,
       activeSessionId: selectedForSession?.activeSessionId ?? null,
@@ -515,7 +501,7 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
     };
   }, [repoOverviewMode, selectedForSession, selectedSummary]);
   const devPanelSnapshot = useMemo(
-    (): TaskWorkbenchSnapshot => ({
+    (): TaskWorkspaceSnapshot => ({
       organizationId,
       repos: repos.map((repo) => ({ id: repo.id, label: repo.label })),
       repositories: [],
@@ -524,8 +510,6 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
         repoId: task.repoId,
         title: task.title,
         status: task.status,
-        runtimeStatus: selectedForSession?.id === task.id ? selectedForSession.runtimeStatus : undefined,
-        statusMessage: selectedForSession?.id === task.id ? selectedForSession.statusMessage : null,
         repoName: task.repoName,
         updatedAtMs: task.updatedAtMs,
         branch: task.branch ?? null,
@@ -546,20 +530,21 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
         activeSandboxId: selectedForSession?.id === task.id ? selectedForSession.activeSandboxId : null,
       })),
     }),
-    [repos, rows, selectedForSession, organizationId],
+    [reposData, rowsData, selectedForSession, organizationId],
   );
 
   const startSessionFromTask = async (): Promise<{ id: string; status: "running" | "idle" | "error" }> => {
     if (!selectedForSession || !activeSandbox?.sandboxId) {
       throw new Error("No sandbox is available for this task");
     }
+    const preferredAgent = selectedSessionSummary?.agent === "Claude" ? "claude" : selectedSessionSummary?.agent === "Codex" ? "codex" : undefined;
     return backendClient.createSandboxSession({
       organizationId,
       sandboxProviderId: activeSandbox.sandboxProviderId,
       sandboxId: activeSandbox.sandboxId,
       prompt: selectedForSession.task,
       cwd: activeSandbox.cwd ?? undefined,
-      agent: normalizeAgent(selectedForSession.agentType),
+      agent: preferredAgent,
     });
   };
 
@@ -616,7 +601,6 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
         organizationId,
         repoId,
         task,
-        agentType: newAgentType,
         explicitTitle: draftTitle || undefined,
         explicitBranchName: createOnBranch ? undefined : draftBranchName || undefined,
         onBranch: createOnBranch ?? undefined,
@@ -654,16 +638,15 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
     setCreateTaskOpen(true);
   };
 
-  const repoOptions = useMemo(() => repos.map((repo) => createOption({ id: repo.id, label: repo.label })), [repos]);
+  const repoOptions = useMemo(() => repos.map((repo) => createOption({ id: repo.id, label: repo.label })), [reposData]);
   const selectedRepoOption = repoOptions.find((option) => option.id === createRepoId) ?? null;
-  const selectedAgentOption = useMemo(() => createOption(AGENT_OPTIONS.find((option) => option.id === newAgentType) ?? AGENT_OPTIONS[0]!), [newAgentType]);
   const selectedFilterOption = useMemo(
     () => createOption(FILTER_OPTIONS.find((option) => option.id === overviewFilter) ?? FILTER_OPTIONS[0]!),
     [overviewFilter],
   );
   const sessionOptions = useMemo(
     () => sessionRows.map((session) => createOption({ id: session.id, label: `${session.sessionName} (${session.status})` })),
-    [sessionRows],
+    [sessionRowsData],
   );
   const selectedSessionOption = sessionOptions.find((option) => option.id === resolvedSessionId) ?? null;
 
@@ -1057,23 +1040,23 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
                               </div>
                               <div className={cellClass}>{branch.taskTitle ?? branch.taskId ?? "-"}</div>
                               <div className={cellClass}>
-                                {branch.prNumber ? (
+                                {branch.pullRequest ? (
                                   <a
-                                    href={branch.prUrl ?? undefined}
+                                    href={branch.pullRequest.url}
                                     target="_blank"
                                     rel="noreferrer"
                                     className={css({
                                       color: theme.colors.contentPrimary,
                                     })}
                                   >
-                                    #{branch.prNumber} {branch.prState ?? "open"}
+                                    #{branch.pullRequest.number} {branchPullRequestLabel(branch)}
                                   </a>
                                 ) : (
                                   <span className={css({ color: theme.colors.contentSecondary })}>-</span>
                                 )}
                               </div>
                               <div className={cellClass}>
-                                {branch.ciStatus ?? "-"} / {branch.reviewStatus ?? "-"}
+                                {branch.ciStatus ?? "-"} / {branch.pullRequest ? (branch.pullRequest.isDraft ? "draft" : "ready") : "-"}
                               </div>
                               <div className={cellClass}>{formatRelativeAge(branch.updatedAt)}</div>
                               <div className={cellClass}>
@@ -1098,7 +1081,7 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
                                     </Button>
                                   ) : null}
 
-                                  <StatusPill kind={branchKind(branch)}>{branch.prState?.toLowerCase() ?? "no pr"}</StatusPill>
+                                  <StatusPill kind={branchKind(branch)}>{branchPullRequestLabel(branch)}</StatusPill>
                                 </div>
                               </div>
                             </div>
@@ -1137,8 +1120,7 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
                     {selectedForSession ? (
                       <HeaderStatusPill
                         status={deriveHeaderStatus(
-                          taskRuntimeStatus ?? selectedForSession.status,
-                          selectedForSession.statusMessage ?? null,
+                          taskStatus ?? selectedForSession.status,
                           selectedSessionSummary?.status ?? null,
                           selectedSessionSummary?.errorMessage ?? null,
                           Boolean(activeSandbox?.sandboxId),
@@ -1266,8 +1248,9 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
                             <ParagraphSmall marginTop="0" marginBottom="0" color="contentSecondary">
                               {shouldUseTaskStateEmptyState
                                 ? taskStateSummary
-                                : (selectedForSession?.statusMessage ??
-                                  (isPendingProvision ? "The task is still provisioning." : "The session is being created."))}
+                                : isPendingProvision
+                                  ? "The task is still provisioning."
+                                  : "The session is being created."}
                             </ParagraphSmall>
                           </div>
                         ) : null}
@@ -1277,15 +1260,13 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
                             {shouldUseTaskStateEmptyState
                               ? taskStateSummary
                               : isPendingProvision
-                                ? (selectedForSession.statusMessage ?? "Provisioning sandbox...")
+                                ? "Provisioning sandbox..."
                                 : isPendingSessionCreate
                                   ? "Creating session..."
                                   : isSessionError
                                     ? (selectedSessionSummary?.errorMessage ?? "Session failed to start.")
                                     : !activeSandbox?.sandboxId
-                                      ? selectedForSession.statusMessage
-                                        ? `Sandbox unavailable: ${selectedForSession.statusMessage}`
-                                        : "This task is still provisioning its sandbox."
+                                      ? "This task is still provisioning its sandbox."
                                       : staleSessionId
                                         ? `Session ${staleSessionId} is unavailable. Start a new session to continue.`
                                         : resolvedSessionId
@@ -1458,7 +1439,7 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
                         <MetaRow label="Branch" value={selectedBranchOverview.branchName} mono />
                         <MetaRow label="Commit" value={selectedBranchOverview.commitSha.slice(0, 10)} mono />
                         <MetaRow label="Task" value={selectedBranchOverview.taskTitle ?? selectedBranchOverview.taskId ?? "-"} />
-                        <MetaRow label="PR" value={selectedBranchOverview.prUrl ?? "-"} />
+                        <MetaRow label="PR" value={selectedBranchOverview.pullRequest?.url ?? "-"} />
                         <MetaRow label="Updated" value={new Date(selectedBranchOverview.updatedAt).toLocaleTimeString()} />
                       </div>
                     )}
@@ -1483,7 +1464,7 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
                       gap: theme.sizing.scale300,
                     })}
                   >
-                    <MetaRow label="State" value={taskRuntimeStatus ?? "-"} mono />
+                    <MetaRow label="State" value={taskStatus ?? "-"} mono />
                     <MetaRow label="State detail" value={taskStatusState.detail} />
                     <MetaRow label="Task" value={selectedForSession.id} mono />
                     <MetaRow label="Sandbox" value={selectedForSession.activeSandboxId ?? "-"} mono />
@@ -1504,9 +1485,8 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
                     })}
                   >
                     <MetaRow label="Branch" value={selectedForSession.branch ?? "-"} mono />
-                    <MetaRow label="Diff" value={formatDiffStat(selectedForSession.diffStat)} />
-                    <MetaRow label="PR" value={selectedForSession.prUrl ?? "-"} />
-                    <MetaRow label="Review" value={selectedForSession.reviewStatus ?? "-"} />
+                    <MetaRow label="PR" value={selectedForSession.pullRequest?.url ?? "-"} />
+                    <MetaRow label="Review" value={selectedForSession.pullRequest ? (selectedForSession.pullRequest.isDraft ? "draft" : "ready") : "-"} />
                   </div>
                 </section>
 
@@ -1529,7 +1509,7 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
                   </div>
                 </section>
 
-                {taskRuntimeStatus === "error" ? (
+                {taskStatus === "error" ? (
                   <div
                     className={css({
                       padding: "12px",
@@ -1605,25 +1585,6 @@ export function OrganizationDashboard({ organizationId, selectedTaskId, selected
                     No imported repos yet. Create the repository in GitHub first, then sync repos from organization settings.
                   </ParagraphSmall>
                 ) : null}
-              </div>
-
-              <div>
-                <LabelXSmall color="contentSecondary" marginBottom="scale200">
-                  Agent
-                </LabelXSmall>
-                <Select
-                  options={AGENT_OPTIONS.map(createOption)}
-                  value={selectValue(selectedAgentOption)}
-                  clearable={false}
-                  searchable={false}
-                  onChange={(params: OnChangeParams) => {
-                    const next = optionId(params.value);
-                    if (next === "claude" || next === "codex") {
-                      setNewAgentType(next);
-                    }
-                  }}
-                  overrides={selectTestIdOverrides("task-create-agent")}
-                />
               </div>
 
               <div>

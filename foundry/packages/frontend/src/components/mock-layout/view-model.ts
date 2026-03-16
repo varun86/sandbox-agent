@@ -1,42 +1,28 @@
+import {
+  DEFAULT_WORKSPACE_MODEL_GROUPS as SharedModelGroups,
+  workspaceModelLabel as sharedWorkspaceModelLabel,
+  workspaceProviderAgent as sharedWorkspaceProviderAgent,
+} from "@sandbox-agent/foundry-shared";
 import type {
-  WorkbenchAgentKind as AgentKind,
-  WorkbenchSession as AgentSession,
-  WorkbenchDiffLineKind as DiffLineKind,
-  WorkbenchFileChange as FileChange,
-  WorkbenchFileTreeNode as FileTreeNode,
-  WorkbenchTask as Task,
-  WorkbenchHistoryEvent as HistoryEvent,
-  WorkbenchLineAttachment as LineAttachment,
-  WorkbenchModelGroup as ModelGroup,
-  WorkbenchModelId as ModelId,
-  WorkbenchParsedDiffLine as ParsedDiffLine,
-  WorkbenchRepositorySection as RepositorySection,
-  WorkbenchTranscriptEvent as TranscriptEvent,
+  WorkspaceAgentKind as AgentKind,
+  WorkspaceSession as AgentSession,
+  WorkspaceDiffLineKind as DiffLineKind,
+  WorkspaceFileChange as FileChange,
+  WorkspaceFileTreeNode as FileTreeNode,
+  WorkspaceTask as Task,
+  WorkspaceHistoryEvent as HistoryEvent,
+  WorkspaceLineAttachment as LineAttachment,
+  WorkspaceModelGroup as ModelGroup,
+  WorkspaceModelId as ModelId,
+  WorkspaceParsedDiffLine as ParsedDiffLine,
+  WorkspaceRepositorySection as RepositorySection,
+  WorkspaceTranscriptEvent as TranscriptEvent,
 } from "@sandbox-agent/foundry-shared";
 import { extractEventText } from "../../features/sessions/model";
 
 export type { RepositorySection };
 
-export const MODEL_GROUPS: ModelGroup[] = [
-  {
-    provider: "Claude",
-    models: [
-      { id: "claude-sonnet-4", label: "Sonnet 4" },
-      { id: "claude-opus-4", label: "Opus 4" },
-    ],
-  },
-  {
-    provider: "OpenAI",
-    models: [
-      { id: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
-      { id: "gpt-5.4", label: "GPT-5.4" },
-      { id: "gpt-5.2-codex", label: "GPT-5.2 Codex" },
-      { id: "gpt-5.1-codex-max", label: "GPT-5.1 Codex Max" },
-      { id: "gpt-5.2", label: "GPT-5.2" },
-      { id: "gpt-5.1-codex-mini", label: "GPT-5.1 Codex Mini" },
-    ],
-  },
-];
+export const MODEL_GROUPS: ModelGroup[] = SharedModelGroups;
 
 export function formatRelativeAge(updatedAtMs: number, nowMs = Date.now()): string {
   const deltaSeconds = Math.max(0, Math.floor((nowMs - updatedAtMs) / 1000));
@@ -94,15 +80,11 @@ export function formatMessageDuration(durationMs: number): string {
 }
 
 export function modelLabel(id: ModelId): string {
-  const group = MODEL_GROUPS.find((candidate) => candidate.models.some((model) => model.id === id));
-  const model = group?.models.find((candidate) => candidate.id === id);
-  return model && group ? `${group.provider} ${model.label}` : id;
+  return sharedWorkspaceModelLabel(id, MODEL_GROUPS);
 }
 
 export function providerAgent(provider: string): AgentKind {
-  if (provider === "Claude") return "Claude";
-  if (provider === "OpenAI") return "Codex";
-  return "Cursor";
+  return sharedWorkspaceProviderAgent(provider);
 }
 
 const DIFF_PREFIX = "diff:";

@@ -4,6 +4,7 @@ import type {
   FoundryOrganization,
   FoundryUser,
   UpdateFoundryOrganizationProfileInput,
+  WorkspaceModelId,
 } from "@sandbox-agent/foundry-shared";
 import type { BackendClient } from "./backend-client.js";
 import { getMockFoundryAppClient } from "./mock-app.js";
@@ -17,6 +18,7 @@ export interface FoundryAppClient {
   skipStarterRepo(): Promise<void>;
   starStarterRepo(organizationId: string): Promise<void>;
   selectOrganization(organizationId: string): Promise<void>;
+  setDefaultModel(model: WorkspaceModelId): Promise<void>;
   updateOrganizationProfile(input: UpdateFoundryOrganizationProfileInput): Promise<void>;
   triggerGithubSync(organizationId: string): Promise<void>;
   completeHostedCheckout(organizationId: string, planId: FoundryBillingPlanId): Promise<void>;

@@ -1,7 +1,7 @@
-import type { TaskStatus, WorkbenchSessionStatus } from "@sandbox-agent/foundry-shared";
+import type { TaskStatus, WorkspaceSessionStatus } from "@sandbox-agent/foundry-shared";
 import type { HeaderStatusInfo } from "../../components/mock-layout/ui";
 
-export type TaskDisplayStatus = TaskStatus | "new";
+export type TaskDisplayStatus = TaskStatus;
 
 export interface TaskStateDescriptor {
   title: string;
@@ -9,15 +9,11 @@ export interface TaskStateDescriptor {
 }
 
 export function isProvisioningTaskStatus(status: TaskDisplayStatus | null | undefined): boolean {
-  return (
-    status === "new" || status === "init_bootstrap_db" || status === "init_enqueue_provision" || status === "init_ensure_name" || status === "init_assert_name"
-  );
+  return status === "init_bootstrap_db" || status === "init_enqueue_provision" || status === "init_ensure_name" || status === "init_assert_name";
 }
 
 export function defaultTaskStatusMessage(status: TaskDisplayStatus | null | undefined): string {
   switch (status) {
-    case "new":
-      return "Task created. Waiting to initialize.";
     case "init_bootstrap_db":
       return "Creating task records.";
     case "init_enqueue_provision":
@@ -54,15 +50,14 @@ export function defaultTaskStatusMessage(status: TaskDisplayStatus | null | unde
   }
 }
 
-export function resolveTaskStateDetail(status: TaskDisplayStatus | null | undefined, statusMessage: string | null | undefined): string {
-  const normalized = statusMessage?.trim();
-  return normalized && normalized.length > 0 ? normalized : defaultTaskStatusMessage(status);
+export function resolveTaskStateDetail(status: TaskDisplayStatus | null | undefined): string {
+  return defaultTaskStatusMessage(status);
 }
 
-export function describeTaskState(status: TaskDisplayStatus | null | undefined, statusMessage: string | null | undefined): TaskStateDescriptor {
+export function describeTaskState(status: TaskDisplayStatus | null | undefined): TaskStateDescriptor {
   return {
     title: status ? `Task state: ${status}` : "Task state unavailable",
-    detail: resolveTaskStateDetail(status, statusMessage),
+    detail: resolveTaskStateDetail(status),
   };
 }
 
@@ -72,8 +67,7 @@ export function describeTaskState(status: TaskDisplayStatus | null | undefined, 
  */
 export function deriveHeaderStatus(
   taskStatus: TaskDisplayStatus | null | undefined,
-  taskStatusMessage: string | null | undefined,
-  sessionStatus: WorkbenchSessionStatus | null | undefined,
+  sessionStatus: WorkspaceSessionStatus | null | undefined,
   sessionErrorMessage: string | null | undefined,
   hasSandbox?: boolean,
 ): HeaderStatusInfo {
@@ -93,7 +87,7 @@ export function deriveHeaderStatus(
       variant: "error",
       label: "Error",
       spinning: false,
-      tooltip: taskStatusMessage ?? "Task entered an error state.",
+      tooltip: "Task entered an error state.",
     };
   }
 
@@ -103,7 +97,7 @@ export function deriveHeaderStatus(
       variant: "warning",
       label: "No sandbox",
       spinning: false,
-      tooltip: taskStatusMessage ?? "Sandbox is not available for this task.",
+      tooltip: "Sandbox is not available for this task.",
     };
   }
 
@@ -113,7 +107,7 @@ export function deriveHeaderStatus(
       variant: "warning",
       label: "Provisioning",
       spinning: true,
-      tooltip: resolveTaskStateDetail(taskStatus, taskStatusMessage),
+      tooltip: resolveTaskStateDetail(taskStatus),
     };
   }
 

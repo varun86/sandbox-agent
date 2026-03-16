@@ -305,7 +305,8 @@ export function TerminalPane({ organizationId, taskId, isExpanded, onExpand, onC
     setProcessTabs([]);
   }, [taskId]);
 
-  const processes = processesState.data ?? [];
+  const processesData = processesState.data;
+  const processes = processesData ?? [];
 
   const openTerminalTab = useCallback((process: SandboxProcessRecord) => {
     setProcessTabs((current) => {
@@ -361,7 +362,7 @@ export function TerminalPane({ organizationId, taskId, isExpanded, onExpand, onC
   const activeProcessTab = activeSessionId ? (processTabsById.get(activeSessionId) ?? null) : null;
   const activeTerminalProcess = useMemo(
     () => (activeProcessTab ? (processes.find((process) => process.id === activeProcessTab.processId) ?? null) : null),
-    [activeProcessTab, processes],
+    [activeProcessTab, processesData],
   );
 
   const emptyBodyClassName = css({

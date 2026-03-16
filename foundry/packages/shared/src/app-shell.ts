@@ -1,9 +1,15 @@
-import type { WorkbenchModelId } from "./workbench.js";
+import type { WorkspaceModelId } from "./workspace.js";
 
 export type FoundryBillingPlanId = "free" | "team";
 export type FoundryBillingStatus = "active" | "trialing" | "past_due" | "scheduled_cancel";
 export type FoundryGithubInstallationStatus = "connected" | "install_required" | "reconnect_required";
 export type FoundryGithubSyncStatus = "pending" | "syncing" | "synced" | "error";
+export type FoundryGithubSyncPhase =
+  | "discovering_repositories"
+  | "syncing_repositories"
+  | "syncing_branches"
+  | "syncing_members"
+  | "syncing_pull_requests";
 export type FoundryOrganizationKind = "personal" | "organization";
 export type FoundryStarterRepoStatus = "pending" | "starred" | "skipped";
 
@@ -14,6 +20,7 @@ export interface FoundryUser {
   githubLogin: string;
   roleLabel: string;
   eligibleOrganizationIds: string[];
+  defaultModel: WorkspaceModelId;
 }
 
 export interface FoundryOrganizationMember {
@@ -52,6 +59,10 @@ export interface FoundryGithubState {
   lastSyncAt: number | null;
   lastWebhookAt: number | null;
   lastWebhookEvent: string;
+  syncGeneration?: number;
+  syncPhase?: FoundryGithubSyncPhase | null;
+  processedRepositoryCount?: number;
+  totalRepositoryCount?: number;
 }
 
 export interface FoundryOrganizationSettings {
@@ -59,7 +70,6 @@ export interface FoundryOrganizationSettings {
   slug: string;
   primaryDomain: string;
   seatAccrualMode: "first_prompt";
-  defaultModel: WorkbenchModelId;
   autoImportRepos: boolean;
 }
 

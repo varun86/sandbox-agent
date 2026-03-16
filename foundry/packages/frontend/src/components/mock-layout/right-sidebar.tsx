@@ -125,7 +125,7 @@ export const RightSidebar = memo(function RightSidebar({
     });
     observer.observe(node);
   }, []);
-  const pullRequestUrl = task.pullRequest != null ? `https://github.com/${task.repoName}/pull/${task.pullRequest.number}` : null;
+  const pullRequestUrl = task.pullRequest?.url ?? null;
 
   const copyFilePath = useCallback(async (path: string) => {
     try {

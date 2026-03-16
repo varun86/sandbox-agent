@@ -50,6 +50,20 @@ class FakeActorConn implements ActorConn {
 function organizationSnapshot(): OrganizationSummarySnapshot {
   return {
     organizationId: "org-1",
+    github: {
+      connectedAccount: "octocat",
+      installationStatus: "connected",
+      syncStatus: "synced",
+      importedRepoCount: 1,
+      lastSyncLabel: "Synced just now",
+      lastSyncAt: 10,
+      lastWebhookAt: null,
+      lastWebhookEvent: "",
+      syncGeneration: 1,
+      syncPhase: null,
+      processedRepositoryCount: 1,
+      totalRepositoryCount: 1,
+    },
     repos: [{ id: "repo-1", label: "repo-1", taskCount: 1, latestActivityMs: 10 }],
     taskSummaries: [
       {
@@ -61,10 +75,10 @@ function organizationSnapshot(): OrganizationSummarySnapshot {
         updatedAtMs: 10,
         branch: "main",
         pullRequest: null,
+        activeSessionId: null,
         sessionsSummary: [],
       },
     ],
-    openPullRequests: [],
   };
 }
 
@@ -115,19 +129,43 @@ describe("RemoteSubscriptionManager", () => {
     ]);
 
     conn.emit("organizationUpdated", {
-      type: "taskSummaryUpdated",
-      taskSummary: {
-        id: "task-1",
-        repoId: "repo-1",
-        title: "Updated task",
-        status: "running",
-        repoName: "repo-1",
-        updatedAtMs: 20,
-        branch: "feature/live",
-        pullRequest: null,
-        sessionsSummary: [],
+      type: "organizationUpdated",
+      snapshot: {
+        organizationId: "org-1",
+        github: {
+          connectedAccount: "octocat",
+          installationStatus: "connected",
+          syncStatus: "syncing",
+          importedRepoCount: 1,
+          lastSyncLabel: "Syncing repositories...",
+          lastSyncAt: 10,
+          lastWebhookAt: null,
+          lastWebhookEvent: "",
+          syncGeneration: 2,
+          syncPhase: "syncing_branches",
+          processedRepositoryCount: 1,
+          totalRepositoryCount: 3,
+        },
+        repos: [],
+        taskSummaries: [
+          {
+            id: "task-1",
+            repoId: "repo-1",
+            title: "Updated task",
+            status: "running",
+            repoName: "repo-1",
+            updatedAtMs: 20,
+            branch: "feature/live",
+            pullRequest: null,
+            activeSessionId: null,
+            sessionsSummary: [],
+          },
+        ],
       },
     } satisfies OrganizationEvent);
+
+    // applyEvent chains onto an internal promise — flush the microtask queue
+    await flushAsyncWork();
 
     expect(manager.getSnapshot("organization", params)?.taskSummaries[0]?.title).toBe("Updated task");
     expect(listenerA).toHaveBeenCalled();

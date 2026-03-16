@@ -2,12 +2,14 @@ import { actor } from "rivetkit";
 import { e2b, sandboxActor } from "rivetkit/sandbox";
 import { existsSync } from "node:fs";
 import Dockerode from "dockerode";
+import { DEFAULT_WORKSPACE_MODEL_GROUPS, workspaceModelGroupsFromSandboxAgents, type WorkspaceModelGroup } from "@sandbox-agent/foundry-shared";
 import { SandboxAgent } from "sandbox-agent";
 import { getActorRuntimeContext } from "../context.js";
 import { organizationKey } from "../keys.js";
+import { logActorWarning, resolveErrorMessage } from "../logging.js";
 import { resolveSandboxProviderId } from "../../sandbox-config.js";
 
-const SANDBOX_REPO_CWD = "/home/sandbox/organization/repo";
+const SANDBOX_REPO_CWD = "/home/user/repo";
 const DEFAULT_LOCAL_SANDBOX_IMAGE = "rivetdev/sandbox-agent:full";
 const DEFAULT_LOCAL_SANDBOX_PORT = 2468;
 const dockerClient = new Dockerode({ socketPath: "/var/run/docker.sock" });
@@ -203,6 +205,13 @@ const baseTaskSandbox = sandboxActor({
         create: () => ({
           template: config.sandboxProviders.e2b.template ?? "sandbox-agent-full-0.3.x",
           envs: sandboxEnvObject(),
+          // TEMPORARY: Default E2B timeout is 5 minutes which is too short.
+          // Set to 1 hour as a stopgap. Remove this once the E2B provider in
+          // sandbox-agent uses betaCreate + autoPause (see
+          // .context/proposal-rivetkit-sandbox-resilience.md). At that point
+          // the provider handles timeout/pause lifecycle and this override is
+          // unnecessary.
+          timeoutMs: 60 * 60 * 1000,
         }),
         installAgents: ["claude", "codex"],
       });
@@ -219,8 +228,12 @@ async function broadcastProcesses(c: any, actions: Record<string, (...args: any[
       type: "processesUpdated",
       processes: listed.processes ?? [],
     });
-  } catch {
+  } catch (error) {
     // Process broadcasts are best-effort. Callers still receive the primary action result.
+    logActorWarning("taskSandbox", "broadcastProcesses failed", {
+      sandboxId: c.state?.sandboxId,
+      error: resolveErrorMessage(error),
+    });
   }
 }
 
@@ -256,6 +269,26 @@ async function providerForConnection(c: any): Promise<any | null> {
 
   c.vars.provider = provider;
   return provider;
+}
+
+async function listWorkspaceModelGroupsForSandbox(c: any): Promise<WorkspaceModelGroup[]> {
+  const provider = await providerForConnection(c);
+  if (!provider || !c.state.sandboxId || typeof provider.connectAgent !== "function") {
+    return DEFAULT_WORKSPACE_MODEL_GROUPS;
+  }
+
+  try {
+    const client = await provider.connectAgent(c.state.sandboxId, {
+      waitForHealth: {
+        timeoutMs: 15_000,
+      },
+    });
+    const listed = await client.listAgents({ config: true });
+    const groups = workspaceModelGroupsFromSandboxAgents(Array.isArray(listed?.agents) ? listed.agents : []);
+    return groups.length > 0 ? groups : DEFAULT_WORKSPACE_MODEL_GROUPS;
+  } catch {
+    return DEFAULT_WORKSPACE_MODEL_GROUPS;
+  }
 }
 
 const baseActions = baseTaskSandbox.config.actions as Record<string, (c: any, ...args: any[]) => Promise<any>>;
@@ -316,6 +349,19 @@ export const taskSandbox = actor({
       return sanitizeActorResult(await session.prompt([{ type: "text", text }]));
     },
 
+    async listProcesses(c: any): Promise<any> {
+      try {
+        return await baseActions.listProcesses(c);
+      } catch (error) {
+        // Sandbox may be gone (E2B timeout, destroyed, etc.) — degrade to empty
+        logActorWarning("taskSandbox", "listProcesses failed, sandbox may be expired", {
+          sandboxId: c.state.sandboxId,
+          error: resolveErrorMessage(error),
+        });
+        return { processes: [] };
+      }
+    },
+
     async createProcess(c: any, request: any): Promise<any> {
       const created = await baseActions.createProcess(c, request);
       await broadcastProcesses(c, baseActions);
@@ -358,6 +404,10 @@ export const taskSandbox = actor({
       } catch {
         return { endpoint: "mock://terminal-unavailable" };
       }
+    },
+
+    async listWorkspaceModelGroups(c: any): Promise<WorkspaceModelGroup[]> {
+      return await listWorkspaceModelGroupsForSandbox(c);
     },
 
     async providerState(c: any): Promise<{ sandboxProviderId: "e2b" | "local"; sandboxId: string; state: string; at: number }> {

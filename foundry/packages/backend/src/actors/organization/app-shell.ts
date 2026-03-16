@@ -1,4 +1,4 @@
-import { and, asc, count as sqlCount, desc, eq, gt, gte, inArray, isNotNull, isNull, like, lt, lte, ne, notInArray, or } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import type {
   FoundryAppSnapshot,
@@ -8,109 +8,35 @@ import type {
   FoundryOrganizationMember,
   FoundryUser,
   UpdateFoundryOrganizationProfileInput,
+  WorkspaceModelId,
 } from "@sandbox-agent/foundry-shared";
+import { DEFAULT_WORKSPACE_MODEL_ID } from "@sandbox-agent/foundry-shared";
 import { getActorRuntimeContext } from "../context.js";
 import { getOrCreateGithubData, getOrCreateOrganization, selfOrganization } from "../handles.js";
 import { GitHubAppError } from "../../services/app-github.js";
 import { getBetterAuthService } from "../../services/better-auth.js";
 import { repoIdFromRemote, repoLabelFromRemote } from "../../services/repo.js";
 import { logger } from "../../logging.js";
-import {
-  authAccountIndex,
-  authEmailIndex,
-  authSessionIndex,
-  authVerification,
-  invoices,
-  organizationMembers,
-  organizationProfile,
-  repos,
-  seatAssignments,
-  stripeLookup,
-} from "./db/schema.js";
-
-export const APP_SHELL_ORGANIZATION_ID = "app";
-
-// ── Better Auth adapter where-clause helpers ──
-// These convert the adapter's `{ field, value, operator }` clause arrays into
-// Drizzle predicates for organization-level auth index / verification tables.
-
-function organizationAuthColumn(table: any, field: string): any {
-  const column = table[field];
-  if (!column) {
-    throw new Error(`Unknown auth table field: ${field}`);
-  }
-  return column;
-}
-
-function normalizeAuthValue(value: unknown): unknown {
-  if (value instanceof Date) {
-    return value.getTime();
-  }
-  if (Array.isArray(value)) {
-    return value.map((entry) => normalizeAuthValue(entry));
-  }
-  return value;
-}
-
-function organizationAuthClause(table: any, clause: { field: string; value: unknown; operator?: string }): any {
-  const column = organizationAuthColumn(table, clause.field);
-  const value = normalizeAuthValue(clause.value);
-  switch (clause.operator) {
-    case "ne":
-      return value === null ? isNotNull(column) : ne(column, value as any);
-    case "lt":
-      return lt(column, value as any);
-    case "lte":
-      return lte(column, value as any);
-    case "gt":
-      return gt(column, value as any);
-    case "gte":
-      return gte(column, value as any);
-    case "in":
-      return inArray(column, Array.isArray(value) ? (value as any[]) : [value as any]);
-    case "not_in":
-      return notInArray(column, Array.isArray(value) ? (value as any[]) : [value as any]);
-    case "contains":
-      return like(column, `%${String(value ?? "")}%`);
-    case "starts_with":
-      return like(column, `${String(value ?? "")}%`);
-    case "ends_with":
-      return like(column, `%${String(value ?? "")}`);
-    case "eq":
-    default:
-      return value === null ? isNull(column) : eq(column, value as any);
-  }
-}
-
-function organizationAuthWhere(table: any, clauses: any[] | undefined): any {
-  if (!clauses || clauses.length === 0) {
-    return undefined;
-  }
-  let expr = organizationAuthClause(table, clauses[0]);
-  for (const clause of clauses.slice(1)) {
-    const next = organizationAuthClause(table, clause);
-    expr = clause.connector === "OR" ? or(expr, next) : and(expr, next);
-  }
-  return expr;
-}
+import { invoices, organizationMembers, organizationProfile, seatAssignments, stripeLookup } from "./db/schema.js";
+import { APP_SHELL_ORGANIZATION_ID } from "./constants.js";
 
 const githubWebhookLogger = logger.child({
   scope: "github-webhook",
 });
 
-const PROFILE_ROW_ID = "profile";
+const PROFILE_ROW_ID = 1;
 
 function roundDurationMs(start: number): number {
   return Math.round((performance.now() - start) * 100) / 100;
 }
 
-function assertAppOrganization(c: any): void {
+export function assertAppOrganization(c: any): void {
   if (c.state.organizationId !== APP_SHELL_ORGANIZATION_ID) {
     throw new Error(`App shell action requires organization ${APP_SHELL_ORGANIZATION_ID}, got ${c.state.organizationId}`);
   }
 }
 
-function assertOrganizationShell(c: any): void {
+export function assertOrganizationShell(c: any): void {
   if (c.state.organizationId === APP_SHELL_ORGANIZATION_ID) {
     throw new Error("Organization action cannot run on the reserved app organization");
   }
@@ -130,10 +56,6 @@ function personalOrganizationId(login: string): string {
 
 function organizationOrganizationId(kind: FoundryOrganization["kind"], login: string): string {
   return kind === "personal" ? personalOrganizationId(login) : slugify(login);
-}
-
-function hasRepoScope(scopes: string[]): boolean {
-  return scopes.some((scope) => scope === "repo" || scope.startsWith("repo:"));
 }
 
 function parseEligibleOrganizationIds(value: string): string[] {
@@ -217,7 +139,9 @@ function stripeWebhookSubscription(event: any) {
   };
 }
 
-async function getOrganizationState(organization: any) {
+// sendOrganizationCommand removed — org actions called directly
+
+export async function getOrganizationState(organization: any) {
   return await organization.getOrganizationShellState({});
 }
 
@@ -290,7 +214,7 @@ async function listSnapshotOrganizations(c: any, sessionId: string, organization
   };
 }
 
-async function buildAppSnapshot(c: any, sessionId: string, allowOrganizationRepair = true): Promise<FoundryAppSnapshot> {
+export async function buildAppSnapshot(c: any, sessionId: string, allowOrganizationRepair = true): Promise<FoundryAppSnapshot> {
   assertAppOrganization(c);
   const startedAt = performance.now();
   const auth = getBetterAuthService();
@@ -359,6 +283,7 @@ async function buildAppSnapshot(c: any, sessionId: string, allowOrganizationRepa
         githubLogin: profile?.githubLogin ?? "",
         roleLabel: profile?.roleLabel ?? "GitHub user",
         eligibleOrganizationIds,
+        defaultModel: profile?.defaultModel ?? DEFAULT_WORKSPACE_MODEL_ID,
       }
     : null;
 
@@ -404,7 +329,7 @@ async function buildAppSnapshot(c: any, sessionId: string, allowOrganizationRepa
   return snapshot;
 }
 
-async function requireSignedInSession(c: any, sessionId: string) {
+export async function requireSignedInSession(c: any, sessionId: string) {
   const auth = getBetterAuthService();
   const authState = await auth.getAuthState(sessionId);
   const user = authState?.user ?? null;
@@ -431,7 +356,7 @@ async function requireSignedInSession(c: any, sessionId: string) {
   };
 }
 
-function requireEligibleOrganization(session: any, organizationId: string): void {
+export function requireEligibleOrganization(session: any, organizationId: string): void {
   const eligibleOrganizationIds = parseEligibleOrganizationIds(session.eligibleOrganizationIdsJson);
   if (!eligibleOrganizationIds.includes(organizationId)) {
     throw new Error(`Organization ${organizationId} is not available in this app session`);
@@ -557,7 +482,7 @@ async function syncGithubOrganizationsInternal(c: any, input: { sessionId: strin
     const organizationId = organizationOrganizationId(account.kind, account.githubLogin);
     const installation = installations.find((candidate) => candidate.accountLogin === account.githubLogin) ?? null;
     const organization = await getOrCreateOrganization(c, organizationId);
-    await organization.syncOrganizationShellFromGithub({
+    await organization.commandSyncOrganizationShellFromGithub({
       userId: githubUserId,
       userName: viewer.name || viewer.login,
       userEmail: viewer.email ?? `${viewer.login}@users.noreply.github.com`,
@@ -641,17 +566,22 @@ async function listOrganizationInvoices(c: any): Promise<FoundryBillingState["in
 
 async function listOrganizationRepoCatalog(c: any): Promise<string[]> {
   assertOrganizationShell(c);
-  const rows = await c.db.select({ remoteUrl: repos.remoteUrl }).from(repos).orderBy(desc(repos.updatedAt)).all();
-  return rows.map((row) => repoLabelFromRemote(row.remoteUrl)).sort((left, right) => left.localeCompare(right));
+  try {
+    const githubData = await getOrCreateGithubData(c, c.state.organizationId);
+    const rows = await githubData.listRepositories({});
+    return rows.map((row: any) => repoLabelFromRemote(row.cloneUrl)).sort((a: string, b: string) => a.localeCompare(b));
+  } catch {
+    return [];
+  }
 }
 
-async function buildOrganizationState(c: any) {
+export async function buildOrganizationState(c: any) {
   const startedAt = performance.now();
   const row = await requireOrganizationProfileRow(c);
   return await buildOrganizationStateFromRow(c, row, startedAt);
 }
 
-async function buildOrganizationStateIfInitialized(c: any) {
+export async function buildOrganizationStateIfInitialized(c: any) {
   const startedAt = performance.now();
   const row = await readOrganizationProfileRow(c);
   if (!row) {
@@ -685,7 +615,6 @@ async function buildOrganizationStateFromRow(c: any, row: any, startedAt: number
         slug: row.slug,
         primaryDomain: row.primaryDomain,
         seatAccrualMode: "first_prompt",
-        defaultModel: row.defaultModel,
         autoImportRepos: row.autoImportRepos === 1,
       },
       github: {
@@ -697,6 +626,10 @@ async function buildOrganizationStateFromRow(c: any, row: any, startedAt: number
         lastSyncAt: row.githubLastSyncAt ?? null,
         lastWebhookAt: row.githubLastWebhookAt ?? null,
         lastWebhookEvent: row.githubLastWebhookEvent ?? "",
+        syncGeneration: row.githubSyncGeneration ?? 0,
+        syncPhase: row.githubSyncPhase ?? null,
+        processedRepositoryCount: row.githubProcessedRepositoryCount ?? 0,
+        totalRepositoryCount: row.githubTotalRepositoryCount ?? 0,
       },
       billing: {
         planId: row.billingPlanId,
@@ -744,396 +677,13 @@ async function applySubscriptionState(
   },
   fallbackPlanId: FoundryBillingPlanId,
 ): Promise<void> {
-  await organization.applyOrganizationStripeSubscription({
+  await organization.commandApplyStripeSubscription({
     subscription,
     fallbackPlanId,
   });
 }
 
 export const organizationAppActions = {
-  async authFindSessionIndex(c: any, input: { sessionId?: string; sessionToken?: string }) {
-    assertAppOrganization(c);
-
-    const clauses = [
-      ...(input.sessionId ? [{ field: "sessionId", value: input.sessionId }] : []),
-      ...(input.sessionToken ? [{ field: "sessionToken", value: input.sessionToken }] : []),
-    ];
-    if (clauses.length === 0) {
-      return null;
-    }
-    const predicate = organizationAuthWhere(authSessionIndex, clauses);
-    return await c.db.select().from(authSessionIndex).where(predicate!).get();
-  },
-
-  async authUpsertSessionIndex(c: any, input: { sessionId: string; sessionToken: string; userId: string }) {
-    assertAppOrganization(c);
-
-    const now = Date.now();
-    await c.db
-      .insert(authSessionIndex)
-      .values({
-        sessionId: input.sessionId,
-        sessionToken: input.sessionToken,
-        userId: input.userId,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: authSessionIndex.sessionId,
-        set: {
-          sessionToken: input.sessionToken,
-          userId: input.userId,
-          updatedAt: now,
-        },
-      })
-      .run();
-    return await c.db.select().from(authSessionIndex).where(eq(authSessionIndex.sessionId, input.sessionId)).get();
-  },
-
-  async authDeleteSessionIndex(c: any, input: { sessionId?: string; sessionToken?: string }) {
-    assertAppOrganization(c);
-
-    const clauses = [
-      ...(input.sessionId ? [{ field: "sessionId", value: input.sessionId }] : []),
-      ...(input.sessionToken ? [{ field: "sessionToken", value: input.sessionToken }] : []),
-    ];
-    if (clauses.length === 0) {
-      return;
-    }
-    const predicate = organizationAuthWhere(authSessionIndex, clauses);
-    await c.db.delete(authSessionIndex).where(predicate!).run();
-  },
-
-  async authFindEmailIndex(c: any, input: { email: string }) {
-    assertAppOrganization(c);
-
-    return await c.db.select().from(authEmailIndex).where(eq(authEmailIndex.email, input.email)).get();
-  },
-
-  async authUpsertEmailIndex(c: any, input: { email: string; userId: string }) {
-    assertAppOrganization(c);
-
-    const now = Date.now();
-    await c.db
-      .insert(authEmailIndex)
-      .values({
-        email: input.email,
-        userId: input.userId,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: authEmailIndex.email,
-        set: {
-          userId: input.userId,
-          updatedAt: now,
-        },
-      })
-      .run();
-    return await c.db.select().from(authEmailIndex).where(eq(authEmailIndex.email, input.email)).get();
-  },
-
-  async authDeleteEmailIndex(c: any, input: { email: string }) {
-    assertAppOrganization(c);
-
-    await c.db.delete(authEmailIndex).where(eq(authEmailIndex.email, input.email)).run();
-  },
-
-  async authFindAccountIndex(c: any, input: { id?: string; providerId?: string; accountId?: string }) {
-    assertAppOrganization(c);
-
-    if (input.id) {
-      return await c.db.select().from(authAccountIndex).where(eq(authAccountIndex.id, input.id)).get();
-    }
-    if (!input.providerId || !input.accountId) {
-      return null;
-    }
-    return await c.db
-      .select()
-      .from(authAccountIndex)
-      .where(and(eq(authAccountIndex.providerId, input.providerId), eq(authAccountIndex.accountId, input.accountId)))
-      .get();
-  },
-
-  async authUpsertAccountIndex(c: any, input: { id: string; providerId: string; accountId: string; userId: string }) {
-    assertAppOrganization(c);
-
-    const now = Date.now();
-    await c.db
-      .insert(authAccountIndex)
-      .values({
-        id: input.id,
-        providerId: input.providerId,
-        accountId: input.accountId,
-        userId: input.userId,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: authAccountIndex.id,
-        set: {
-          providerId: input.providerId,
-          accountId: input.accountId,
-          userId: input.userId,
-          updatedAt: now,
-        },
-      })
-      .run();
-    return await c.db.select().from(authAccountIndex).where(eq(authAccountIndex.id, input.id)).get();
-  },
-
-  async authDeleteAccountIndex(c: any, input: { id?: string; providerId?: string; accountId?: string }) {
-    assertAppOrganization(c);
-
-    if (input.id) {
-      await c.db.delete(authAccountIndex).where(eq(authAccountIndex.id, input.id)).run();
-      return;
-    }
-    if (input.providerId && input.accountId) {
-      await c.db
-        .delete(authAccountIndex)
-        .where(and(eq(authAccountIndex.providerId, input.providerId), eq(authAccountIndex.accountId, input.accountId)))
-        .run();
-    }
-  },
-
-  async authCreateVerification(c: any, input: { data: Record<string, unknown> }) {
-    assertAppOrganization(c);
-
-    await c.db
-      .insert(authVerification)
-      .values(input.data as any)
-      .run();
-    return await c.db
-      .select()
-      .from(authVerification)
-      .where(eq(authVerification.id, input.data.id as string))
-      .get();
-  },
-
-  async authFindOneVerification(c: any, input: { where: any[] }) {
-    assertAppOrganization(c);
-
-    const predicate = organizationAuthWhere(authVerification, input.where);
-    return predicate ? await c.db.select().from(authVerification).where(predicate).get() : null;
-  },
-
-  async authFindManyVerification(c: any, input: { where?: any[]; limit?: number; sortBy?: any; offset?: number }) {
-    assertAppOrganization(c);
-
-    const predicate = organizationAuthWhere(authVerification, input.where);
-    let query = c.db.select().from(authVerification);
-    if (predicate) {
-      query = query.where(predicate);
-    }
-    if (input.sortBy?.field) {
-      const column = organizationAuthColumn(authVerification, input.sortBy.field);
-      query = query.orderBy(input.sortBy.direction === "asc" ? asc(column) : desc(column));
-    }
-    if (typeof input.limit === "number") {
-      query = query.limit(input.limit);
-    }
-    if (typeof input.offset === "number") {
-      query = query.offset(input.offset);
-    }
-    return await query.all();
-  },
-
-  async authUpdateVerification(c: any, input: { where: any[]; update: Record<string, unknown> }) {
-    assertAppOrganization(c);
-
-    const predicate = organizationAuthWhere(authVerification, input.where);
-    if (!predicate) {
-      return null;
-    }
-    await c.db
-      .update(authVerification)
-      .set(input.update as any)
-      .where(predicate)
-      .run();
-    return await c.db.select().from(authVerification).where(predicate).get();
-  },
-
-  async authUpdateManyVerification(c: any, input: { where: any[]; update: Record<string, unknown> }) {
-    assertAppOrganization(c);
-
-    const predicate = organizationAuthWhere(authVerification, input.where);
-    if (!predicate) {
-      return 0;
-    }
-    await c.db
-      .update(authVerification)
-      .set(input.update as any)
-      .where(predicate)
-      .run();
-    const row = await c.db.select({ value: sqlCount() }).from(authVerification).where(predicate).get();
-    return row?.value ?? 0;
-  },
-
-  async authDeleteVerification(c: any, input: { where: any[] }) {
-    assertAppOrganization(c);
-
-    const predicate = organizationAuthWhere(authVerification, input.where);
-    if (!predicate) {
-      return;
-    }
-    await c.db.delete(authVerification).where(predicate).run();
-  },
-
-  async authDeleteManyVerification(c: any, input: { where: any[] }) {
-    assertAppOrganization(c);
-
-    const predicate = organizationAuthWhere(authVerification, input.where);
-    if (!predicate) {
-      return 0;
-    }
-    const rows = await c.db.select().from(authVerification).where(predicate).all();
-    await c.db.delete(authVerification).where(predicate).run();
-    return rows.length;
-  },
-
-  async authCountVerification(c: any, input: { where?: any[] }) {
-    assertAppOrganization(c);
-
-    const predicate = organizationAuthWhere(authVerification, input.where);
-    const row = predicate
-      ? await c.db.select({ value: sqlCount() }).from(authVerification).where(predicate).get()
-      : await c.db.select({ value: sqlCount() }).from(authVerification).get();
-    return row?.value ?? 0;
-  },
-
-  async getAppSnapshot(c: any, input: { sessionId: string }): Promise<FoundryAppSnapshot> {
-    return await buildAppSnapshot(c, input.sessionId);
-  },
-
-  async resolveAppGithubToken(
-    c: any,
-    input: { organizationId: string; requireRepoScope?: boolean },
-  ): Promise<{ accessToken: string; scopes: string[] } | null> {
-    assertAppOrganization(c);
-    const auth = getBetterAuthService();
-    const rows = await c.db.select().from(authSessionIndex).orderBy(desc(authSessionIndex.updatedAt)).all();
-
-    for (const row of rows) {
-      const authState = await auth.getAuthState(row.sessionId);
-      if (authState?.sessionState?.activeOrganizationId !== input.organizationId) {
-        continue;
-      }
-
-      const token = await auth.getAccessTokenForSession(row.sessionId);
-      if (!token?.accessToken) {
-        continue;
-      }
-
-      const scopes = token.scopes;
-      if (input.requireRepoScope !== false && scopes.length > 0 && !hasRepoScope(scopes)) {
-        continue;
-      }
-
-      return {
-        accessToken: token.accessToken,
-        scopes,
-      };
-    }
-
-    return null;
-  },
-
-  async skipAppStarterRepo(c: any, input: { sessionId: string }): Promise<FoundryAppSnapshot> {
-    assertAppOrganization(c);
-    const session = await requireSignedInSession(c, input.sessionId);
-    await getBetterAuthService().upsertUserProfile(session.authUserId, {
-      starterRepoStatus: "skipped",
-      starterRepoSkippedAt: Date.now(),
-      starterRepoStarredAt: null,
-    });
-    return await buildAppSnapshot(c, input.sessionId);
-  },
-
-  async starAppStarterRepo(c: any, input: { sessionId: string; organizationId: string }): Promise<FoundryAppSnapshot> {
-    assertAppOrganization(c);
-    const session = await requireSignedInSession(c, input.sessionId);
-    requireEligibleOrganization(session, input.organizationId);
-    const organization = await getOrCreateOrganization(c, input.organizationId);
-    await organization.starSandboxAgentRepo({
-      organizationId: input.organizationId,
-    });
-    await getBetterAuthService().upsertUserProfile(session.authUserId, {
-      starterRepoStatus: "starred",
-      starterRepoStarredAt: Date.now(),
-      starterRepoSkippedAt: null,
-    });
-    return await buildAppSnapshot(c, input.sessionId);
-  },
-
-  async selectAppOrganization(c: any, input: { sessionId: string; organizationId: string }): Promise<FoundryAppSnapshot> {
-    assertAppOrganization(c);
-    const session = await requireSignedInSession(c, input.sessionId);
-    requireEligibleOrganization(session, input.organizationId);
-    await getBetterAuthService().setActiveOrganization(input.sessionId, input.organizationId);
-
-    // Ensure the GitHub data actor exists. If it's newly created, its own
-    // workflow will detect the pending sync status and run the initial
-    // full sync automatically — no orchestration needed here.
-    await getOrCreateGithubData(c, input.organizationId);
-
-    return await buildAppSnapshot(c, input.sessionId);
-  },
-
-  async updateAppOrganizationProfile(
-    c: any,
-    input: { sessionId: string; organizationId: string } & UpdateFoundryOrganizationProfileInput,
-  ): Promise<FoundryAppSnapshot> {
-    assertAppOrganization(c);
-    const session = await requireSignedInSession(c, input.sessionId);
-    requireEligibleOrganization(session, input.organizationId);
-    const organization = await getOrCreateOrganization(c, input.organizationId);
-    await organization.updateOrganizationShellProfile({
-      displayName: input.displayName,
-      slug: input.slug,
-      primaryDomain: input.primaryDomain,
-    });
-    return await buildAppSnapshot(c, input.sessionId);
-  },
-
-  async triggerAppRepoImport(c: any, input: { sessionId: string; organizationId: string }): Promise<FoundryAppSnapshot> {
-    assertAppOrganization(c);
-    const session = await requireSignedInSession(c, input.sessionId);
-    requireEligibleOrganization(session, input.organizationId);
-
-    const githubData = await getOrCreateGithubData(c, input.organizationId);
-    const summary = await githubData.getSummary({});
-    if (summary.syncStatus === "syncing") {
-      return await buildAppSnapshot(c, input.sessionId);
-    }
-
-    // Mark sync started on the organization, then send directly to the
-    // GitHub data actor's own workflow queue.
-    const organizationHandle = await getOrCreateOrganization(c, input.organizationId);
-    await organizationHandle.markOrganizationSyncStarted({
-      label: "Importing repository catalog...",
-    });
-
-    await githubData.send("githubData.command.syncRepos", { label: "Importing repository catalog..." }, { wait: false });
-
-    return await buildAppSnapshot(c, input.sessionId);
-  },
-
-  async beginAppGithubInstall(c: any, input: { sessionId: string; organizationId: string }): Promise<{ url: string }> {
-    assertAppOrganization(c);
-    const session = await requireSignedInSession(c, input.sessionId);
-    requireEligibleOrganization(session, input.organizationId);
-    const { appShell } = getActorRuntimeContext();
-    const organizationHandle = await getOrCreateOrganization(c, input.organizationId);
-    const organizationState = await getOrganizationState(organizationHandle);
-    if (organizationState.snapshot.kind !== "organization") {
-      return {
-        url: `${appShell.appUrl}/organizations/${input.organizationId}`,
-      };
-    }
-    return {
-      url: await appShell.github.buildInstallationUrl(organizationState.githubLogin, randomUUID()),
-    };
-  },
-
   async createAppCheckoutSession(c: any, input: { sessionId: string; organizationId: string; planId: FoundryBillingPlanId }): Promise<{ url: string }> {
     assertAppOrganization(c);
     const session = await requireSignedInSession(c, input.sessionId);
@@ -1143,7 +693,9 @@ export const organizationAppActions = {
     const organizationState = await getOrganizationState(organizationHandle);
 
     if (input.planId === "free") {
-      await organizationHandle.applyOrganizationFreePlan({ clearSubscription: false });
+      await organizationHandle.commandApplyFreePlan({
+        clearSubscription: false,
+      });
       return {
         url: `${appShell.appUrl}/organizations/${input.organizationId}/billing`,
       };
@@ -1162,7 +714,9 @@ export const organizationAppActions = {
           email: session.currentUserEmail,
         })
       ).id;
-      await organizationHandle.applyOrganizationStripeCustomer({ customerId });
+      await organizationHandle.commandApplyStripeCustomer({
+        customerId,
+      });
       await upsertStripeLookupEntries(c, input.organizationId, customerId, null);
     }
 
@@ -1190,7 +744,9 @@ export const organizationAppActions = {
     const completion = await appShell.stripe.retrieveCheckoutCompletion(input.checkoutSessionId);
 
     if (completion.customerId) {
-      await organizationHandle.applyOrganizationStripeCustomer({ customerId: completion.customerId });
+      await organizationHandle.commandApplyStripeCustomer({
+        customerId: completion.customerId,
+      });
     }
     await upsertStripeLookupEntries(c, input.organizationId, completion.customerId, completion.subscriptionId);
 
@@ -1200,7 +756,7 @@ export const organizationAppActions = {
     }
 
     if (completion.paymentMethodLabel) {
-      await organizationHandle.setOrganizationBillingPaymentMethod({
+      await organizationHandle.commandSetPaymentMethod({
         label: completion.paymentMethodLabel,
       });
     }
@@ -1240,7 +796,9 @@ export const organizationAppActions = {
       await applySubscriptionState(organizationHandle, subscription, organizationState.billingPlanId);
       await upsertStripeLookupEntries(c, input.organizationId, subscription.customerId ?? organizationState.stripeCustomerId, subscription.id);
     } else {
-      await organizationHandle.setOrganizationBillingStatus({ status: "scheduled_cancel" });
+      await organizationHandle.commandSetBillingStatus({
+        status: "scheduled_cancel",
+      });
     }
 
     return await buildAppSnapshot(c, input.sessionId);
@@ -1259,7 +817,9 @@ export const organizationAppActions = {
       await applySubscriptionState(organizationHandle, subscription, organizationState.billingPlanId);
       await upsertStripeLookupEntries(c, input.organizationId, subscription.customerId ?? organizationState.stripeCustomerId, subscription.id);
     } else {
-      await organizationHandle.setOrganizationBillingStatus({ status: "active" });
+      await organizationHandle.commandSetBillingStatus({
+        status: "active",
+      });
     }
 
     return await buildAppSnapshot(c, input.sessionId);
@@ -1270,7 +830,7 @@ export const organizationAppActions = {
     const session = await requireSignedInSession(c, input.sessionId);
     requireEligibleOrganization(session, input.organizationId);
     const organization = await getOrCreateOrganization(c, input.organizationId);
-    await organization.recordOrganizationSeatUsage({
+    await organization.commandRecordSeatUsage({
       email: session.currentUserEmail,
     });
     return await buildAppSnapshot(c, input.sessionId);
@@ -1293,7 +853,9 @@ export const organizationAppActions = {
       if (organizationId) {
         const organization = await getOrCreateOrganization(c, organizationId);
         if (typeof object.customer === "string") {
-          await organization.applyOrganizationStripeCustomer({ customerId: object.customer });
+          await organization.commandApplyStripeCustomer({
+            customerId: object.customer,
+          });
         }
         await upsertStripeLookupEntries(
           c,
@@ -1326,7 +888,9 @@ export const organizationAppActions = {
       const organizationId = await findOrganizationIdForStripeEvent(c, subscription.customerId, subscription.id);
       if (organizationId) {
         const organization = await getOrCreateOrganization(c, organizationId);
-        await organization.applyOrganizationFreePlan({ clearSubscription: true });
+        await organization.commandApplyFreePlan({
+          clearSubscription: true,
+        });
       }
       return { ok: true };
     }
@@ -1338,7 +902,7 @@ export const organizationAppActions = {
         const organization = await getOrCreateOrganization(c, organizationId);
         const rawAmount = typeof invoice.amount_paid === "number" ? invoice.amount_paid : invoice.amount_due;
         const amountUsd = Math.round((typeof rawAmount === "number" ? rawAmount : 0) / 100);
-        await organization.upsertOrganizationInvoice({
+        await organization.commandUpsertInvoice({
           id: String(invoice.id),
           label: typeof invoice.number === "string" ? `Invoice ${invoice.number}` : "Stripe invoice",
           issuedAt: formatUnixDate(typeof invoice.created === "number" ? invoice.created : Math.floor(Date.now() / 1000)),
@@ -1374,7 +938,7 @@ export const organizationAppActions = {
     const organizationId = organizationOrganizationId(kind, accountLogin);
     const receivedAt = Date.now();
     const organization = await getOrCreateOrganization(c, organizationId);
-    await organization.recordGithubWebhookReceipt({
+    await organization.commandRecordGithubWebhookReceipt({
       organizationId: organizationId,
       event,
       action: body.action ?? null,
@@ -1400,14 +964,16 @@ export const organizationAppActions = {
           label: "GitHub App installation removed",
         });
       } else if (body.action === "created") {
-        await githubData.fullSync({
-          connectedAccount: accountLogin,
-          installationStatus: "connected",
-          installationId: body.installation?.id ?? null,
-          githubLogin: accountLogin,
-          kind,
-          label: "Syncing GitHub data from installation webhook...",
-        });
+        void githubData
+          .syncRepos({
+            connectedAccount: accountLogin,
+            installationStatus: "connected",
+            installationId: body.installation?.id ?? null,
+            githubLogin: accountLogin,
+            kind,
+            label: "Syncing GitHub data from installation webhook...",
+          })
+          .catch(() => {});
       } else if (body.action === "suspend") {
         await githubData.clearState({
           connectedAccount: accountLogin,
@@ -1416,14 +982,16 @@ export const organizationAppActions = {
           label: "GitHub App installation suspended",
         });
       } else if (body.action === "unsuspend") {
-        await githubData.fullSync({
-          connectedAccount: accountLogin,
-          installationStatus: "connected",
-          installationId: body.installation?.id ?? null,
-          githubLogin: accountLogin,
-          kind,
-          label: "Resyncing GitHub data after unsuspend...",
-        });
+        void githubData
+          .syncRepos({
+            connectedAccount: accountLogin,
+            installationStatus: "connected",
+            installationId: body.installation?.id ?? null,
+            githubLogin: accountLogin,
+            kind,
+            label: "Resyncing GitHub data after unsuspend...",
+          })
+          .catch(() => {});
       }
       return { ok: true };
     }
@@ -1440,14 +1008,16 @@ export const organizationAppActions = {
         },
         "repository_membership_changed",
       );
-      await githubData.fullSync({
-        connectedAccount: accountLogin,
-        installationStatus: "connected",
-        installationId: body.installation?.id ?? null,
-        githubLogin: accountLogin,
-        kind,
-        label: "Resyncing GitHub data after repository access change...",
-      });
+      void githubData
+        .syncRepos({
+          connectedAccount: accountLogin,
+          installationStatus: "connected",
+          installationId: body.installation?.id ?? null,
+          githubLogin: accountLogin,
+          kind,
+          label: "Resyncing GitHub data after repository access change...",
+        })
+        .catch(() => {});
       return { ok: true };
     }
 
@@ -1486,6 +1056,7 @@ export const organizationAppActions = {
             },
             pullRequest: {
               number: body.pull_request.number,
+              status: body.pull_request.draft ? "draft" : "ready",
               title: body.pull_request.title ?? "",
               body: body.pull_request.body ?? null,
               state: body.pull_request.state ?? "open",
@@ -1520,422 +1091,321 @@ export const organizationAppActions = {
     );
     return { ok: true };
   },
+};
 
-  async syncOrganizationShellFromGithub(
-    c: any,
-    input: {
-      userId: string;
-      userName: string;
-      userEmail: string;
-      githubUserLogin: string;
-      githubAccountId: string;
-      githubLogin: string;
-      githubAccountType: string;
-      kind: FoundryOrganization["kind"];
-      displayName: string;
-      installationId: number | null;
-      appConfigured: boolean;
-    },
-  ): Promise<{ organizationId: string }> {
-    assertOrganizationShell(c);
-    const now = Date.now();
-    const existing = await readOrganizationProfileRow(c);
-    const slug = existing?.slug ?? slugify(input.githubLogin);
-    const organizationId = organizationOrganizationId(input.kind, input.githubLogin);
-    if (organizationId !== c.state.organizationId) {
-      throw new Error(`Organization actor mismatch: actor=${c.state.organizationId} github=${organizationId}`);
-    }
+export async function syncOrganizationShellFromGithubMutation(
+  c: any,
+  input: {
+    userId: string;
+    userName: string;
+    userEmail: string;
+    githubUserLogin: string;
+    githubAccountId: string;
+    githubLogin: string;
+    githubAccountType: string;
+    kind: FoundryOrganization["kind"];
+    displayName: string;
+    installationId: number | null;
+    appConfigured: boolean;
+  },
+): Promise<{ organizationId: string }> {
+  assertOrganizationShell(c);
+  const now = Date.now();
+  const existing = await readOrganizationProfileRow(c);
+  const slug = existing?.slug ?? slugify(input.githubLogin);
+  const organizationId = organizationOrganizationId(input.kind, input.githubLogin);
+  if (organizationId !== c.state.organizationId) {
+    throw new Error(`Organization actor mismatch: actor=${c.state.organizationId} github=${organizationId}`);
+  }
 
-    const installationStatus =
-      input.kind === "personal" ? "connected" : input.installationId ? "connected" : input.appConfigured ? "install_required" : "reconnect_required";
-    const syncStatus = existing?.githubSyncStatus ?? legacyRepoImportStatusToGithubSyncStatus(existing?.repoImportStatus);
-    const lastSyncLabel =
-      syncStatus === "synced"
-        ? existing.githubLastSyncLabel
-        : installationStatus === "connected"
-          ? "Waiting for first import"
-          : installationStatus === "install_required"
-            ? "GitHub App installation required"
-            : "GitHub App configuration incomplete";
-    const hasStripeBillingState = Boolean(existing?.stripeCustomerId || existing?.stripeSubscriptionId || existing?.stripePriceId);
-    const defaultBillingPlanId = input.kind === "personal" || !hasStripeBillingState ? "free" : (existing?.billingPlanId ?? "team");
-    const defaultSeatsIncluded = input.kind === "personal" || !hasStripeBillingState ? 1 : (existing?.billingSeatsIncluded ?? 5);
-    const defaultPaymentMethodLabel =
-      input.kind === "personal"
-        ? "No card required"
-        : hasStripeBillingState
-          ? (existing?.billingPaymentMethodLabel ?? "Payment method on file")
-          : "No payment method on file";
+  const installationStatus =
+    input.kind === "personal" ? "connected" : input.installationId ? "connected" : input.appConfigured ? "install_required" : "reconnect_required";
+  const syncStatus = existing?.githubSyncStatus ?? legacyRepoImportStatusToGithubSyncStatus(existing?.repoImportStatus);
+  const lastSyncLabel =
+    syncStatus === "synced"
+      ? existing.githubLastSyncLabel
+      : installationStatus === "connected"
+        ? "Waiting for first import"
+        : installationStatus === "install_required"
+          ? "GitHub App installation required"
+          : "GitHub App configuration incomplete";
+  const hasStripeBillingState = Boolean(existing?.stripeCustomerId || existing?.stripeSubscriptionId || existing?.stripePriceId);
+  const defaultBillingPlanId = input.kind === "personal" || !hasStripeBillingState ? "free" : (existing?.billingPlanId ?? "team");
+  const defaultSeatsIncluded = input.kind === "personal" || !hasStripeBillingState ? 1 : (existing?.billingSeatsIncluded ?? 5);
+  const defaultPaymentMethodLabel =
+    input.kind === "personal"
+      ? "No card required"
+      : hasStripeBillingState
+        ? (existing?.billingPaymentMethodLabel ?? "Payment method on file")
+        : "No payment method on file";
 
-    await c.db
-      .insert(organizationProfile)
-      .values({
-        id: PROFILE_ROW_ID,
+  await c.db
+    .insert(organizationProfile)
+    .values({
+      id: PROFILE_ROW_ID,
+      kind: input.kind,
+      githubAccountId: input.githubAccountId,
+      githubLogin: input.githubLogin,
+      githubAccountType: input.githubAccountType,
+      displayName: input.displayName,
+      slug,
+      defaultModel: existing?.defaultModel ?? DEFAULT_WORKSPACE_MODEL_ID,
+      primaryDomain: existing?.primaryDomain ?? (input.kind === "personal" ? "personal" : `${slug}.github`),
+      autoImportRepos: existing?.autoImportRepos ?? 1,
+      repoImportStatus: existing?.repoImportStatus ?? "not_started",
+      githubConnectedAccount: input.githubLogin,
+      githubInstallationStatus: installationStatus,
+      githubSyncStatus: syncStatus,
+      githubInstallationId: input.installationId,
+      githubLastSyncLabel: lastSyncLabel,
+      githubLastSyncAt: existing?.githubLastSyncAt ?? null,
+      githubSyncGeneration: existing?.githubSyncGeneration ?? 0,
+      githubSyncPhase: existing?.githubSyncPhase ?? null,
+      githubProcessedRepositoryCount: existing?.githubProcessedRepositoryCount ?? 0,
+      githubTotalRepositoryCount: existing?.githubTotalRepositoryCount ?? 0,
+      stripeCustomerId: existing?.stripeCustomerId ?? null,
+      stripeSubscriptionId: existing?.stripeSubscriptionId ?? null,
+      stripePriceId: existing?.stripePriceId ?? null,
+      billingPlanId: defaultBillingPlanId,
+      billingStatus: existing?.billingStatus ?? "active",
+      billingSeatsIncluded: defaultSeatsIncluded,
+      billingTrialEndsAt: existing?.billingTrialEndsAt ?? null,
+      billingRenewalAt: existing?.billingRenewalAt ?? null,
+      billingPaymentMethodLabel: defaultPaymentMethodLabel,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: organizationProfile.id,
+      set: {
         kind: input.kind,
         githubAccountId: input.githubAccountId,
         githubLogin: input.githubLogin,
         githubAccountType: input.githubAccountType,
         displayName: input.displayName,
-        slug,
-        primaryDomain: existing?.primaryDomain ?? (input.kind === "personal" ? "personal" : `${slug}.github`),
-        defaultModel: existing?.defaultModel ?? "claude-sonnet-4",
-        autoImportRepos: existing?.autoImportRepos ?? 1,
-        repoImportStatus: existing?.repoImportStatus ?? "not_started",
         githubConnectedAccount: input.githubLogin,
         githubInstallationStatus: installationStatus,
         githubSyncStatus: syncStatus,
         githubInstallationId: input.installationId,
         githubLastSyncLabel: lastSyncLabel,
         githubLastSyncAt: existing?.githubLastSyncAt ?? null,
-        stripeCustomerId: existing?.stripeCustomerId ?? null,
-        stripeSubscriptionId: existing?.stripeSubscriptionId ?? null,
-        stripePriceId: existing?.stripePriceId ?? null,
+        githubSyncGeneration: existing?.githubSyncGeneration ?? 0,
+        githubSyncPhase: existing?.githubSyncPhase ?? null,
+        githubProcessedRepositoryCount: existing?.githubProcessedRepositoryCount ?? 0,
+        githubTotalRepositoryCount: existing?.githubTotalRepositoryCount ?? 0,
         billingPlanId: defaultBillingPlanId,
-        billingStatus: existing?.billingStatus ?? "active",
         billingSeatsIncluded: defaultSeatsIncluded,
-        billingTrialEndsAt: existing?.billingTrialEndsAt ?? null,
-        billingRenewalAt: existing?.billingRenewalAt ?? null,
         billingPaymentMethodLabel: defaultPaymentMethodLabel,
-        createdAt: existing?.createdAt ?? now,
         updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: organizationProfile.id,
-        set: {
-          kind: input.kind,
-          githubAccountId: input.githubAccountId,
-          githubLogin: input.githubLogin,
-          githubAccountType: input.githubAccountType,
-          displayName: input.displayName,
-          githubConnectedAccount: input.githubLogin,
-          githubInstallationStatus: installationStatus,
-          githubSyncStatus: syncStatus,
-          githubInstallationId: input.installationId,
-          githubLastSyncLabel: lastSyncLabel,
-          githubLastSyncAt: existing?.githubLastSyncAt ?? null,
-          billingPlanId: defaultBillingPlanId,
-          billingSeatsIncluded: defaultSeatsIncluded,
-          billingPaymentMethodLabel: defaultPaymentMethodLabel,
-          updatedAt: now,
-        },
-      })
-      .run();
+      },
+    })
+    .run();
 
-    await c.db
-      .insert(organizationMembers)
-      .values({
-        id: input.userId,
+  await c.db
+    .insert(organizationMembers)
+    .values({
+      id: input.userId,
+      name: input.userName,
+      email: input.userEmail,
+      role: input.kind === "personal" ? "owner" : "admin",
+      state: "active",
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: organizationMembers.id,
+      set: {
         name: input.userName,
         email: input.userEmail,
         role: input.kind === "personal" ? "owner" : "admin",
         state: "active",
         updatedAt: now,
+      },
+    })
+    .run();
+
+  // Auto-trigger github-data sync when the org has a connected installation
+  // but hasn't synced yet. This handles the common case where a personal
+  // account or an org with an existing GitHub App installation signs in for
+  // the first time on a fresh DB — the installation webhook already fired
+  // before the org actor existed, so we kick off the sync here instead.
+  const needsInitialSync = installationStatus === "connected" && syncStatus === "pending";
+  if (needsInitialSync) {
+    const githubData = await getOrCreateGithubData(c, organizationId);
+    void githubData
+      .syncRepos({
+        connectedAccount: input.githubLogin,
+        installationStatus: "connected",
+        installationId: input.installationId,
+        githubLogin: input.githubLogin,
+        kind: input.kind,
+        label: "Initial repository sync...",
       })
-      .onConflictDoUpdate({
-        target: organizationMembers.id,
-        set: {
-          name: input.userName,
-          email: input.userEmail,
-          role: input.kind === "personal" ? "owner" : "admin",
-          state: "active",
-          updatedAt: now,
-        },
-      })
-      .run();
+      .catch(() => {});
+  }
 
-    return { organizationId };
-  },
+  return { organizationId };
+}
 
-  async getOrganizationShellState(c: any): Promise<any> {
-    assertOrganizationShell(c);
-    return await buildOrganizationState(c);
-  },
-
-  async getOrganizationShellStateIfInitialized(c: any): Promise<any | null> {
-    assertOrganizationShell(c);
-    return await buildOrganizationStateIfInitialized(c);
-  },
-
-  async updateOrganizationShellProfile(c: any, input: Pick<UpdateFoundryOrganizationProfileInput, "displayName" | "slug" | "primaryDomain">): Promise<void> {
-    assertOrganizationShell(c);
-    const existing = await requireOrganizationProfileRow(c);
-    await c.db
-      .update(organizationProfile)
-      .set({
-        displayName: input.displayName.trim() || existing.displayName,
-        slug: input.slug.trim() || existing.slug,
-        primaryDomain: input.primaryDomain.trim() || existing.primaryDomain,
-        updatedAt: Date.now(),
-      })
-      .where(eq(organizationProfile.id, PROFILE_ROW_ID))
-      .run();
-  },
-
-  async markOrganizationSyncStarted(c: any, input: { label: string }): Promise<void> {
-    assertOrganizationShell(c);
-    await c.db
-      .update(organizationProfile)
-      .set({
-        githubSyncStatus: "syncing",
-        githubLastSyncLabel: input.label,
-        updatedAt: Date.now(),
-      })
-      .where(eq(organizationProfile.id, PROFILE_ROW_ID))
-      .run();
-  },
-
-  async applyOrganizationSyncCompleted(
-    c: any,
-    input: {
-      repositories: Array<{ fullName: string; cloneUrl: string; private: boolean }>;
-      installationStatus: FoundryOrganization["github"]["installationStatus"];
-      lastSyncLabel: string;
-    },
-  ): Promise<void> {
-    assertOrganizationShell(c);
-    const now = Date.now();
-    for (const repository of input.repositories) {
-      const remoteUrl = repository.cloneUrl;
-      await c.db
-        .insert(repos)
-        .values({
-          repoId: repoIdFromRemote(remoteUrl),
-          remoteUrl,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .onConflictDoUpdate({
-          target: repos.repoId,
-          set: {
-            remoteUrl,
-            updatedAt: now,
-          },
-        })
-        .run();
-    }
-    await c.db
-      .update(organizationProfile)
-      .set({
-        githubInstallationStatus: input.installationStatus,
-        githubSyncStatus: "synced",
-        githubLastSyncLabel: input.lastSyncLabel,
-        githubLastSyncAt: now,
-        updatedAt: now,
-      })
-      .where(eq(organizationProfile.id, PROFILE_ROW_ID))
-      .run();
-  },
-
-  async markOrganizationSyncFailed(c: any, input: { message: string; installationStatus: FoundryOrganization["github"]["installationStatus"] }): Promise<void> {
-    assertOrganizationShell(c);
-    await c.db
-      .update(organizationProfile)
-      .set({
-        githubInstallationStatus: input.installationStatus,
-        githubSyncStatus: "error",
-        githubLastSyncLabel: input.message,
-        updatedAt: Date.now(),
-      })
-      .where(eq(organizationProfile.id, PROFILE_ROW_ID))
-      .run();
-  },
-
-  async applyOrganizationStripeCustomer(c: any, input: { customerId: string }): Promise<void> {
-    assertOrganizationShell(c);
-    await c.db
-      .update(organizationProfile)
-      .set({
-        stripeCustomerId: input.customerId,
-        updatedAt: Date.now(),
-      })
-      .where(eq(organizationProfile.id, PROFILE_ROW_ID))
-      .run();
-  },
-
-  async applyOrganizationStripeSubscription(
-    c: any,
-    input: {
-      subscription: {
-        id: string;
-        customerId: string;
-        priceId: string | null;
-        status: string;
-        cancelAtPeriodEnd: boolean;
-        currentPeriodEnd: number | null;
-        trialEnd: number | null;
-        defaultPaymentMethodLabel: string;
-      };
-      fallbackPlanId: FoundryBillingPlanId;
-    },
-  ): Promise<void> {
-    assertOrganizationShell(c);
-    const { appShell } = getActorRuntimeContext();
-    const planId = appShell.stripe.planIdForPriceId(input.subscription.priceId ?? "") ?? input.fallbackPlanId;
-    await c.db
-      .update(organizationProfile)
-      .set({
-        stripeCustomerId: input.subscription.customerId || null,
-        stripeSubscriptionId: input.subscription.id || null,
-        stripePriceId: input.subscription.priceId,
-        billingPlanId: planId,
-        billingStatus: stripeStatusToBillingStatus(input.subscription.status, input.subscription.cancelAtPeriodEnd),
-        billingSeatsIncluded: seatsIncludedForPlan(planId),
-        billingTrialEndsAt: input.subscription.trialEnd ? new Date(input.subscription.trialEnd * 1000).toISOString() : null,
-        billingRenewalAt: input.subscription.currentPeriodEnd ? new Date(input.subscription.currentPeriodEnd * 1000).toISOString() : null,
-        billingPaymentMethodLabel: input.subscription.defaultPaymentMethodLabel || "Payment method on file",
-        updatedAt: Date.now(),
-      })
-      .where(eq(organizationProfile.id, PROFILE_ROW_ID))
-      .run();
-  },
-
-  async applyOrganizationFreePlan(c: any, input: { clearSubscription: boolean }): Promise<void> {
-    assertOrganizationShell(c);
-    const patch: Record<string, unknown> = {
-      billingPlanId: "free",
-      billingStatus: "active",
-      billingSeatsIncluded: 1,
-      billingTrialEndsAt: null,
-      billingRenewalAt: null,
-      billingPaymentMethodLabel: "No card required",
+export async function updateOrganizationShellProfileMutation(
+  c: any,
+  input: Pick<UpdateFoundryOrganizationProfileInput, "displayName" | "slug" | "primaryDomain">,
+): Promise<void> {
+  assertOrganizationShell(c);
+  const existing = await requireOrganizationProfileRow(c);
+  await c.db
+    .update(organizationProfile)
+    .set({
+      displayName: input.displayName.trim() || existing.displayName,
+      slug: input.slug.trim() || existing.slug,
+      primaryDomain: input.primaryDomain.trim() || existing.primaryDomain,
       updatedAt: Date.now(),
+    })
+    .where(eq(organizationProfile.id, PROFILE_ROW_ID))
+    .run();
+}
+
+export async function markOrganizationSyncStartedMutation(c: any, input: { label: string }): Promise<void> {
+  assertOrganizationShell(c);
+  await c.db
+    .update(organizationProfile)
+    .set({
+      githubSyncStatus: "syncing",
+      githubLastSyncLabel: input.label,
+      githubSyncPhase: "discovering_repositories",
+      githubProcessedRepositoryCount: 0,
+      githubTotalRepositoryCount: 0,
+      updatedAt: Date.now(),
+    })
+    .where(eq(organizationProfile.id, PROFILE_ROW_ID))
+    .run();
+}
+
+export async function applyOrganizationStripeCustomerMutation(c: any, input: { customerId: string }): Promise<void> {
+  assertOrganizationShell(c);
+  await c.db
+    .update(organizationProfile)
+    .set({
+      stripeCustomerId: input.customerId,
+      updatedAt: Date.now(),
+    })
+    .where(eq(organizationProfile.id, PROFILE_ROW_ID))
+    .run();
+}
+
+export async function applyOrganizationStripeSubscriptionMutation(
+  c: any,
+  input: {
+    subscription: {
+      id: string;
+      customerId: string;
+      priceId: string | null;
+      status: string;
+      cancelAtPeriodEnd: boolean;
+      currentPeriodEnd: number | null;
+      trialEnd: number | null;
+      defaultPaymentMethodLabel: string;
     };
-    if (input.clearSubscription) {
-      patch.stripeSubscriptionId = null;
-      patch.stripePriceId = null;
-    }
-    await c.db.update(organizationProfile).set(patch).where(eq(organizationProfile.id, PROFILE_ROW_ID)).run();
+    fallbackPlanId: FoundryBillingPlanId;
   },
+): Promise<void> {
+  assertOrganizationShell(c);
+  const { appShell } = getActorRuntimeContext();
+  const planId = appShell.stripe.planIdForPriceId(input.subscription.priceId ?? "") ?? input.fallbackPlanId;
+  await c.db
+    .update(organizationProfile)
+    .set({
+      stripeCustomerId: input.subscription.customerId || null,
+      stripeSubscriptionId: input.subscription.id || null,
+      stripePriceId: input.subscription.priceId,
+      billingPlanId: planId,
+      billingStatus: stripeStatusToBillingStatus(input.subscription.status, input.subscription.cancelAtPeriodEnd),
+      billingSeatsIncluded: seatsIncludedForPlan(planId),
+      billingTrialEndsAt: input.subscription.trialEnd ? new Date(input.subscription.trialEnd * 1000).toISOString() : null,
+      billingRenewalAt: input.subscription.currentPeriodEnd ? new Date(input.subscription.currentPeriodEnd * 1000).toISOString() : null,
+      billingPaymentMethodLabel: input.subscription.defaultPaymentMethodLabel || "Payment method on file",
+      updatedAt: Date.now(),
+    })
+    .where(eq(organizationProfile.id, PROFILE_ROW_ID))
+    .run();
+}
 
-  async setOrganizationBillingPaymentMethod(c: any, input: { label: string }): Promise<void> {
-    assertOrganizationShell(c);
-    await c.db
-      .update(organizationProfile)
-      .set({
-        billingPaymentMethodLabel: input.label,
-        updatedAt: Date.now(),
-      })
-      .where(eq(organizationProfile.id, PROFILE_ROW_ID))
-      .run();
-  },
+export async function applyOrganizationFreePlanMutation(c: any, input: { clearSubscription: boolean }): Promise<void> {
+  assertOrganizationShell(c);
+  const patch: Record<string, unknown> = {
+    billingPlanId: "free",
+    billingStatus: "active",
+    billingSeatsIncluded: 1,
+    billingTrialEndsAt: null,
+    billingRenewalAt: null,
+    billingPaymentMethodLabel: "No card required",
+    updatedAt: Date.now(),
+  };
+  if (input.clearSubscription) {
+    patch.stripeSubscriptionId = null;
+    patch.stripePriceId = null;
+  }
+  await c.db.update(organizationProfile).set(patch).where(eq(organizationProfile.id, PROFILE_ROW_ID)).run();
+}
 
-  async setOrganizationBillingStatus(c: any, input: { status: FoundryBillingState["status"] }): Promise<void> {
-    assertOrganizationShell(c);
-    await c.db
-      .update(organizationProfile)
-      .set({
-        billingStatus: input.status,
-        updatedAt: Date.now(),
-      })
-      .where(eq(organizationProfile.id, PROFILE_ROW_ID))
-      .run();
-  },
+export async function setOrganizationBillingPaymentMethodMutation(c: any, input: { label: string }): Promise<void> {
+  assertOrganizationShell(c);
+  await c.db
+    .update(organizationProfile)
+    .set({
+      billingPaymentMethodLabel: input.label,
+      updatedAt: Date.now(),
+    })
+    .where(eq(organizationProfile.id, PROFILE_ROW_ID))
+    .run();
+}
 
-  async upsertOrganizationInvoice(c: any, input: { id: string; label: string; issuedAt: string; amountUsd: number; status: "paid" | "open" }): Promise<void> {
-    assertOrganizationShell(c);
-    await c.db
-      .insert(invoices)
-      .values({
-        id: input.id,
+export async function setOrganizationBillingStatusMutation(c: any, input: { status: FoundryBillingState["status"] }): Promise<void> {
+  assertOrganizationShell(c);
+  await c.db
+    .update(organizationProfile)
+    .set({
+      billingStatus: input.status,
+      updatedAt: Date.now(),
+    })
+    .where(eq(organizationProfile.id, PROFILE_ROW_ID))
+    .run();
+}
+
+export async function upsertOrganizationInvoiceMutation(
+  c: any,
+  input: { id: string; label: string; issuedAt: string; amountUsd: number; status: "paid" | "open" },
+): Promise<void> {
+  assertOrganizationShell(c);
+  await c.db
+    .insert(invoices)
+    .values({
+      id: input.id,
+      label: input.label,
+      issuedAt: input.issuedAt,
+      amountUsd: input.amountUsd,
+      status: input.status,
+      createdAt: Date.now(),
+    })
+    .onConflictDoUpdate({
+      target: invoices.id,
+      set: {
         label: input.label,
         issuedAt: input.issuedAt,
         amountUsd: input.amountUsd,
         status: input.status,
-        createdAt: Date.now(),
-      })
-      .onConflictDoUpdate({
-        target: invoices.id,
-        set: {
-          label: input.label,
-          issuedAt: input.issuedAt,
-          amountUsd: input.amountUsd,
-          status: input.status,
-        },
-      })
-      .run();
-  },
+      },
+    })
+    .run();
+}
 
-  async recordOrganizationSeatUsage(c: any, input: { email: string }): Promise<void> {
-    assertOrganizationShell(c);
-    await c.db
-      .insert(seatAssignments)
-      .values({
-        email: input.email,
-        createdAt: Date.now(),
-      })
-      .onConflictDoNothing()
-      .run();
-  },
-
-  async applyGithubInstallationCreated(c: any, input: { installationId: number }): Promise<void> {
-    assertOrganizationShell(c);
-    await c.db
-      .update(organizationProfile)
-      .set({
-        githubInstallationId: input.installationId,
-        githubInstallationStatus: "connected",
-        updatedAt: Date.now(),
-      })
-      .where(eq(organizationProfile.id, PROFILE_ROW_ID))
-      .run();
-  },
-
-  async applyGithubInstallationRemoved(c: any, _input: {}): Promise<void> {
-    assertOrganizationShell(c);
-    await c.db
-      .update(organizationProfile)
-      .set({
-        githubInstallationId: null,
-        githubInstallationStatus: "install_required",
-        githubSyncStatus: "pending",
-        githubLastSyncLabel: "GitHub App installation removed",
-        updatedAt: Date.now(),
-      })
-      .where(eq(organizationProfile.id, PROFILE_ROW_ID))
-      .run();
-  },
-
-  async applyGithubRepositoryChanges(c: any, input: { added: Array<{ fullName: string; private: boolean }>; removed: string[] }): Promise<void> {
-    assertOrganizationShell(c);
-    const now = Date.now();
-
-    for (const repo of input.added) {
-      const remoteUrl = `https://github.com/${repo.fullName}.git`;
-      const repoId = repoIdFromRemote(remoteUrl);
-      await c.db
-        .insert(repos)
-        .values({
-          repoId,
-          remoteUrl,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .onConflictDoUpdate({
-          target: repos.repoId,
-          set: {
-            remoteUrl,
-            updatedAt: now,
-          },
-        })
-        .run();
-    }
-
-    for (const fullName of input.removed) {
-      const remoteUrl = `https://github.com/${fullName}.git`;
-      const repoId = repoIdFromRemote(remoteUrl);
-      await c.db.delete(repos).where(eq(repos.repoId, repoId)).run();
-    }
-
-    const repoCount = (await c.db.select().from(repos).all()).length;
-    await c.db
-      .update(organizationProfile)
-      .set({
-        githubSyncStatus: "synced",
-        githubLastSyncLabel: `${repoCount} repositories synced`,
-        githubLastSyncAt: now,
-        updatedAt: now,
-      })
-      .where(eq(organizationProfile.id, PROFILE_ROW_ID))
-      .run();
-  },
-};
+export async function recordOrganizationSeatUsageMutation(c: any, input: { email: string }): Promise<void> {
+  assertOrganizationShell(c);
+  await c.db
+    .insert(seatAssignments)
+    .values({
+      email: input.email,
+      createdAt: Date.now(),
+    })
+    .onConflictDoNothing()
+    .run();
+}

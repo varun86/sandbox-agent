@@ -12,20 +12,8 @@ const journal = {
     },
     {
       idx: 1,
-      when: 1773638400000,
-      tag: "0001_auth_index_tables",
-      breakpoints: true,
-    },
-    {
-      idx: 2,
-      when: 1773720000000,
-      tag: "0002_task_summaries",
-      breakpoints: true,
-    },
-    {
-      idx: 3,
-      when: 1773810001000,
-      tag: "0003_drop_provider_profiles",
+      when: 1773840000000,
+      tag: "0001_add_auth_and_task_tables",
       breakpoints: true,
     },
   ],
@@ -92,6 +80,10 @@ CREATE TABLE \`organization_profile\` (
 	\`github_last_sync_at\` integer,
 	\`github_last_webhook_at\` integer,
 	\`github_last_webhook_event\` text,
+	\`github_sync_generation\` integer NOT NULL,
+	\`github_sync_phase\` text,
+	\`github_processed_repository_count\` integer NOT NULL,
+	\`github_total_repository_count\` integer NOT NULL,
 	\`stripe_customer_id\` text,
 	\`stripe_subscription_id\` text,
 	\`stripe_price_id\` text,
@@ -122,13 +114,8 @@ CREATE TABLE \`stripe_lookup\` (
 	\`organization_id\` text NOT NULL,
 	\`updated_at\` integer NOT NULL
 );
---> statement-breakpoint
-CREATE TABLE \`task_lookup\` (
-	\`task_id\` text PRIMARY KEY NOT NULL,
-	\`repo_id\` text NOT NULL
-);
 `,
-    m0001: `CREATE TABLE IF NOT EXISTS \`auth_session_index\` (
+    m0001: `CREATE TABLE \`auth_session_index\` (
 	\`session_id\` text PRIMARY KEY NOT NULL,
 	\`session_token\` text NOT NULL,
 	\`user_id\` text NOT NULL,
@@ -136,13 +123,13 @@ CREATE TABLE \`task_lookup\` (
 	\`updated_at\` integer NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS \`auth_email_index\` (
+CREATE TABLE \`auth_email_index\` (
 	\`email\` text PRIMARY KEY NOT NULL,
 	\`user_id\` text NOT NULL,
 	\`updated_at\` integer NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS \`auth_account_index\` (
+CREATE TABLE \`auth_account_index\` (
 	\`id\` text PRIMARY KEY NOT NULL,
 	\`provider_id\` text NOT NULL,
 	\`account_id\` text NOT NULL,
@@ -150,7 +137,7 @@ CREATE TABLE IF NOT EXISTS \`auth_account_index\` (
 	\`updated_at\` integer NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE IF NOT EXISTS \`auth_verification\` (
+CREATE TABLE \`auth_verification\` (
 	\`id\` text PRIMARY KEY NOT NULL,
 	\`identifier\` text NOT NULL,
 	\`value\` text NOT NULL,
@@ -158,8 +145,16 @@ CREATE TABLE IF NOT EXISTS \`auth_verification\` (
 	\`created_at\` integer NOT NULL,
 	\`updated_at\` integer NOT NULL
 );
-`,
-    m0002: `CREATE TABLE IF NOT EXISTS \`task_summaries\` (
+--> statement-breakpoint
+CREATE TABLE \`task_index\` (
+	\`task_id\` text PRIMARY KEY NOT NULL,
+	\`repo_id\` text NOT NULL,
+	\`branch_name\` text,
+	\`created_at\` integer NOT NULL,
+	\`updated_at\` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE \`task_summaries\` (
 	\`task_id\` text PRIMARY KEY NOT NULL,
 	\`repo_id\` text NOT NULL,
 	\`title\` text NOT NULL,
@@ -170,8 +165,6 @@ CREATE TABLE IF NOT EXISTS \`auth_verification\` (
 	\`pull_request_json\` text,
 	\`sessions_summary_json\` text DEFAULT '[]' NOT NULL
 );
-`,
-    m0003: `DROP TABLE IF EXISTS \`provider_profiles\`;
 `,
   } as const,
 };

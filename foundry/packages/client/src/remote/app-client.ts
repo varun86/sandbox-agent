@@ -1,4 +1,4 @@
-import type { FoundryAppSnapshot, FoundryBillingPlanId, UpdateFoundryOrganizationProfileInput } from "@sandbox-agent/foundry-shared";
+import type { FoundryAppSnapshot, FoundryBillingPlanId, UpdateFoundryOrganizationProfileInput, WorkspaceModelId } from "@sandbox-agent/foundry-shared";
 import type { BackendClient } from "../backend-client.js";
 import type { FoundryAppClient } from "../app-client.js";
 
@@ -69,6 +69,11 @@ class RemoteFoundryAppStore implements FoundryAppClient {
 
   async selectOrganization(organizationId: string): Promise<void> {
     this.snapshot = await this.backend.selectAppOrganization(organizationId);
+    this.notify();
+  }
+
+  async setDefaultModel(model: WorkspaceModelId): Promise<void> {
+    this.snapshot = await this.backend.setAppDefaultModel(model);
     this.notify();
   }
 

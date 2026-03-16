@@ -8,4 +8,4 @@ RUN npm install -g pnpm@10.28.2
 
 WORKDIR /app
 
-CMD ["bash", "-lc", "pnpm install --force --frozen-lockfile --filter @sandbox-agent/foundry-frontend... && cd foundry/packages/frontend && exec pnpm vite --host 0.0.0.0 --port 4173"]
+CMD ["bash", "-lc", "pnpm install --frozen-lockfile --filter @sandbox-agent/foundry-frontend... && cd foundry/packages/frontend && exec pnpm vite --host 0.0.0.0 --port 4173"]

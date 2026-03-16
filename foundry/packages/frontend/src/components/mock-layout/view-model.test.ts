@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { WorkbenchSession } from "@sandbox-agent/foundry-shared";
+import type { WorkspaceSession } from "@sandbox-agent/foundry-shared";
 import { buildDisplayMessages } from "./view-model";
 
-function makeSession(transcript: WorkbenchSession["transcript"]): WorkbenchSession {
+function makeSession(transcript: WorkspaceSession["transcript"]): WorkspaceSession {
   return {
     id: "session-1",
     sessionId: "session-1",

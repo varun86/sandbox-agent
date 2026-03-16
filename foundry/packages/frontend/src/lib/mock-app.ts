@@ -7,7 +7,13 @@ import {
   eligibleFoundryOrganizations,
   type FoundryAppClient,
 } from "@sandbox-agent/foundry-client";
-import type { FoundryAppSnapshot, FoundryBillingPlanId, FoundryOrganization, UpdateFoundryOrganizationProfileInput } from "@sandbox-agent/foundry-shared";
+import type {
+  FoundryAppSnapshot,
+  FoundryBillingPlanId,
+  FoundryOrganization,
+  UpdateFoundryOrganizationProfileInput,
+  WorkspaceModelId,
+} from "@sandbox-agent/foundry-shared";
 import { backendClient } from "./backend";
 import { subscriptionManager } from "./subscription";
 import { frontendClientMode } from "./env";
@@ -47,6 +53,7 @@ const remoteAppClient: FoundryAppClient = {
     await backendClient.signInWithGithub();
   },
   async signOut(): Promise<void> {
+    window.localStorage.removeItem(REMOTE_APP_SESSION_STORAGE_KEY);
     await backendClient.signOutApp();
   },
   async skipStarterRepo(): Promise<void> {
@@ -57,6 +64,9 @@ const remoteAppClient: FoundryAppClient = {
   },
   async selectOrganization(organizationId: string): Promise<void> {
     await backendClient.selectAppOrganization(organizationId);
+  },
+  async setDefaultModel(defaultModel: WorkspaceModelId): Promise<void> {
+    await backendClient.setAppDefaultModel(defaultModel);
   },
   async updateOrganizationProfile(input: UpdateFoundryOrganizationProfileInput): Promise<void> {
     await backendClient.updateAppOrganizationProfile(input);
@@ -91,6 +101,14 @@ export function useMockAppSnapshot(): FoundryAppSnapshot {
     const app = useSubscription(subscriptionManager, "app", {});
     if (app.status !== "loading") {
       firstSnapshotDelivered = true;
+      // Persist session sentinel so isAppSnapshotBootstrapping can show a loading
+      // screen instead of flashing /signin on the next page load / HMR reload.
+      const snapshot = app.data ?? EMPTY_APP_SNAPSHOT;
+      if (snapshot.auth.status === "signed_in") {
+        window.localStorage.setItem(REMOTE_APP_SESSION_STORAGE_KEY, "1");
+      } else {
+        window.localStorage.removeItem(REMOTE_APP_SESSION_STORAGE_KEY);
+      }
     }
     return app.data ?? EMPTY_APP_SNAPSHOT;
   }

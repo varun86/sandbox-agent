@@ -7,28 +7,29 @@ import type {
   CreateTaskInput,
   AppEvent,
   SessionEvent,
+  SandboxProcessSnapshot,
   SandboxProcessesEvent,
   TaskRecord,
   TaskSummary,
-  TaskWorkbenchChangeModelInput,
-  TaskWorkbenchCreateTaskInput,
-  TaskWorkbenchCreateTaskResponse,
-  TaskWorkbenchDiffInput,
-  TaskWorkbenchRenameInput,
-  TaskWorkbenchRenameSessionInput,
-  TaskWorkbenchSelectInput,
-  TaskWorkbenchSetSessionUnreadInput,
-  TaskWorkbenchSendMessageInput,
-  TaskWorkbenchSnapshot,
-  TaskWorkbenchSessionInput,
-  TaskWorkbenchUpdateDraftInput,
+  TaskWorkspaceChangeModelInput,
+  TaskWorkspaceCreateTaskInput,
+  TaskWorkspaceCreateTaskResponse,
+  TaskWorkspaceDiffInput,
+  TaskWorkspaceRenameInput,
+  TaskWorkspaceRenameSessionInput,
+  TaskWorkspaceSelectInput,
+  TaskWorkspaceSetSessionUnreadInput,
+  TaskWorkspaceSendMessageInput,
+  TaskWorkspaceSnapshot,
+  TaskWorkspaceSessionInput,
+  TaskWorkspaceUpdateDraftInput,
   TaskEvent,
-  WorkbenchTaskDetail,
-  WorkbenchTaskSummary,
-  WorkbenchSessionDetail,
+  WorkspaceTaskDetail,
+  WorkspaceTaskSummary,
+  WorkspaceSessionDetail,
   OrganizationEvent,
   OrganizationSummarySnapshot,
-  HistoryEvent,
+  AuditLogEvent as HistoryEvent,
   HistoryQueryInput,
   SandboxProviderId,
   RepoOverview,
@@ -37,8 +38,10 @@ import type {
   StarSandboxAgentRepoResult,
   SwitchResult,
   UpdateFoundryOrganizationProfileInput,
+  WorkspaceModelGroup,
+  WorkspaceModelId,
 } from "@sandbox-agent/foundry-shared";
-import type { ProcessCreateRequest, ProcessInfo, ProcessLogFollowQuery, ProcessLogsResponse, ProcessSignalQuery } from "sandbox-agent";
+import type { ProcessCreateRequest, ProcessLogFollowQuery, ProcessLogsResponse, ProcessSignalQuery } from "sandbox-agent";
 import { createMockBackendClient } from "./mock/backend-client.js";
 import { taskKey, taskSandboxKey, organizationKey } from "./keys.js";
 
@@ -64,12 +67,16 @@ export interface SandboxSessionEventRecord {
   payload: unknown;
 }
 
-export type SandboxProcessRecord = ProcessInfo;
+export type SandboxProcessRecord = SandboxProcessSnapshot;
 
 export interface ActorConn {
   on(event: string, listener: (payload: any) => void): () => void;
   onError(listener: (error: unknown) => void): () => void;
   dispose(): Promise<void>;
+}
+
+interface AuthSessionScopedInput {
+  authSessionId?: string;
 }
 
 interface OrganizationHandle {
@@ -78,39 +85,34 @@ interface OrganizationHandle {
   createTask(input: CreateTaskInput): Promise<TaskRecord>;
   listTasks(input: { organizationId: string; repoId?: string }): Promise<TaskSummary[]>;
   getRepoOverview(input: { organizationId: string; repoId: string }): Promise<RepoOverview>;
-  history(input: HistoryQueryInput): Promise<HistoryEvent[]>;
-  switchTask(taskId: string): Promise<SwitchResult>;
-  getTask(input: { organizationId: string; taskId: string }): Promise<TaskRecord>;
-  attachTask(input: { organizationId: string; taskId: string; reason?: string }): Promise<{ target: string; sessionId: string | null }>;
-  pushTask(input: { organizationId: string; taskId: string; reason?: string }): Promise<void>;
-  syncTask(input: { organizationId: string; taskId: string; reason?: string }): Promise<void>;
-  mergeTask(input: { organizationId: string; taskId: string; reason?: string }): Promise<void>;
-  archiveTask(input: { organizationId: string; taskId: string; reason?: string }): Promise<void>;
-  killTask(input: { organizationId: string; taskId: string; reason?: string }): Promise<void>;
+  auditLog(input: HistoryQueryInput): Promise<HistoryEvent[]>;
+  switchTask(input: { repoId: string; taskId: string }): Promise<SwitchResult>;
+  getTask(input: { organizationId: string; repoId: string; taskId: string }): Promise<TaskRecord>;
+  attachTask(input: { organizationId: string; repoId: string; taskId: string; reason?: string }): Promise<{ target: string; sessionId: string | null }>;
+  pushTask(input: { organizationId: string; repoId: string; taskId: string; reason?: string }): Promise<void>;
+  syncTask(input: { organizationId: string; repoId: string; taskId: string; reason?: string }): Promise<void>;
+  mergeTask(input: { organizationId: string; repoId: string; taskId: string; reason?: string }): Promise<void>;
+  archiveTask(input: { organizationId: string; repoId: string; taskId: string; reason?: string }): Promise<void>;
+  killTask(input: { organizationId: string; repoId: string; taskId: string; reason?: string }): Promise<void>;
   useOrganization(input: { organizationId: string }): Promise<{ organizationId: string }>;
   starSandboxAgentRepo(input: StarSandboxAgentRepoInput): Promise<StarSandboxAgentRepoResult>;
   getOrganizationSummary(input: { organizationId: string }): Promise<OrganizationSummarySnapshot>;
-  applyTaskSummaryUpdate(input: { taskSummary: WorkbenchTaskSummary }): Promise<void>;
-  removeTaskSummary(input: { taskId: string }): Promise<void>;
-  reconcileWorkbenchState(input: { organizationId: string }): Promise<OrganizationSummarySnapshot>;
-  createWorkbenchTask(input: TaskWorkbenchCreateTaskInput): Promise<TaskWorkbenchCreateTaskResponse>;
-  markWorkbenchUnread(input: TaskWorkbenchSelectInput): Promise<void>;
-  renameWorkbenchTask(input: TaskWorkbenchRenameInput): Promise<void>;
-  renameWorkbenchBranch(input: TaskWorkbenchRenameInput): Promise<void>;
-  createWorkbenchSession(input: TaskWorkbenchSelectInput & { model?: string }): Promise<{ sessionId: string }>;
-  renameWorkbenchSession(input: TaskWorkbenchRenameSessionInput): Promise<void>;
-  setWorkbenchSessionUnread(input: TaskWorkbenchSetSessionUnreadInput): Promise<void>;
-  updateWorkbenchDraft(input: TaskWorkbenchUpdateDraftInput): Promise<void>;
-  changeWorkbenchModel(input: TaskWorkbenchChangeModelInput): Promise<void>;
-  sendWorkbenchMessage(input: TaskWorkbenchSendMessageInput): Promise<void>;
-  stopWorkbenchSession(input: TaskWorkbenchSessionInput): Promise<void>;
-  closeWorkbenchSession(input: TaskWorkbenchSessionInput): Promise<void>;
-  publishWorkbenchPr(input: TaskWorkbenchSelectInput): Promise<void>;
-  revertWorkbenchFile(input: TaskWorkbenchDiffInput): Promise<void>;
-  reloadGithubOrganization(): Promise<void>;
-  reloadGithubPullRequests(): Promise<void>;
-  reloadGithubRepository(input: { repoId: string }): Promise<void>;
-  reloadGithubPullRequest(input: { repoId: string; prNumber: number }): Promise<void>;
+  createWorkspaceTask(input: TaskWorkspaceCreateTaskInput & AuthSessionScopedInput): Promise<TaskWorkspaceCreateTaskResponse>;
+  markWorkspaceUnread(input: TaskWorkspaceSelectInput & AuthSessionScopedInput): Promise<void>;
+  renameWorkspaceTask(input: TaskWorkspaceRenameInput & AuthSessionScopedInput): Promise<void>;
+  createWorkspaceSession(input: TaskWorkspaceSelectInput & { model?: string } & AuthSessionScopedInput): Promise<{ sessionId: string }>;
+  renameWorkspaceSession(input: TaskWorkspaceRenameSessionInput & AuthSessionScopedInput): Promise<void>;
+  selectWorkspaceSession(input: TaskWorkspaceSessionInput & AuthSessionScopedInput): Promise<void>;
+  setWorkspaceSessionUnread(input: TaskWorkspaceSetSessionUnreadInput & AuthSessionScopedInput): Promise<void>;
+  updateWorkspaceDraft(input: TaskWorkspaceUpdateDraftInput & AuthSessionScopedInput): Promise<void>;
+  changeWorkspaceModel(input: TaskWorkspaceChangeModelInput & AuthSessionScopedInput): Promise<void>;
+  sendWorkspaceMessage(input: TaskWorkspaceSendMessageInput & AuthSessionScopedInput): Promise<void>;
+  stopWorkspaceSession(input: TaskWorkspaceSessionInput & AuthSessionScopedInput): Promise<void>;
+  closeWorkspaceSession(input: TaskWorkspaceSessionInput & AuthSessionScopedInput): Promise<void>;
+  publishWorkspacePr(input: TaskWorkspaceSelectInput & AuthSessionScopedInput): Promise<void>;
+  revertWorkspaceFile(input: TaskWorkspaceDiffInput & AuthSessionScopedInput): Promise<void>;
+  adminReloadGithubOrganization(): Promise<void>;
+  adminReloadGithubRepository(input: { repoId: string }): Promise<void>;
 }
 
 interface AppOrganizationHandle {
@@ -119,6 +121,7 @@ interface AppOrganizationHandle {
   skipAppStarterRepo(input: { sessionId: string }): Promise<FoundryAppSnapshot>;
   starAppStarterRepo(input: { sessionId: string; organizationId: string }): Promise<FoundryAppSnapshot>;
   selectAppOrganization(input: { sessionId: string; organizationId: string }): Promise<FoundryAppSnapshot>;
+  setAppDefaultModel(input: { sessionId: string; defaultModel: WorkspaceModelId }): Promise<FoundryAppSnapshot>;
   updateAppOrganizationProfile(input: UpdateFoundryOrganizationProfileInput & { sessionId: string }): Promise<FoundryAppSnapshot>;
   triggerAppRepoImport(input: { sessionId: string; organizationId: string }): Promise<FoundryAppSnapshot>;
   beginAppGithubInstall(input: { sessionId: string; organizationId: string }): Promise<{ url: string }>;
@@ -130,9 +133,9 @@ interface AppOrganizationHandle {
 }
 
 interface TaskHandle {
-  getTaskSummary(): Promise<WorkbenchTaskSummary>;
-  getTaskDetail(): Promise<WorkbenchTaskDetail>;
-  getSessionDetail(input: { sessionId: string }): Promise<WorkbenchSessionDetail>;
+  getTaskSummary(): Promise<WorkspaceTaskSummary>;
+  getTaskDetail(input?: AuthSessionScopedInput): Promise<WorkspaceTaskDetail>;
+  getSessionDetail(input: { sessionId: string } & AuthSessionScopedInput): Promise<WorkspaceSessionDetail>;
   connect(): ActorConn;
 }
 
@@ -157,6 +160,7 @@ interface TaskSandboxHandle {
   rawSendSessionMethod(sessionId: string, method: string, params: Record<string, unknown>): Promise<unknown>;
   destroySession(sessionId: string): Promise<void>;
   sandboxAgentConnection(): Promise<{ endpoint: string; token?: string }>;
+  listWorkspaceModelGroups(): Promise<WorkspaceModelGroup[]>;
   providerState(): Promise<{ sandboxProviderId: SandboxProviderId; sandboxId: string; state: string; at: number }>;
 }
 
@@ -179,6 +183,7 @@ export interface BackendClientOptions {
   endpoint: string;
   defaultOrganizationId?: string;
   mode?: "remote" | "mock";
+  encoding?: "json" | "cbor" | "bare";
 }
 
 export interface BackendClient {
@@ -192,6 +197,7 @@ export interface BackendClient {
   skipAppStarterRepo(): Promise<FoundryAppSnapshot>;
   starAppStarterRepo(organizationId: string): Promise<FoundryAppSnapshot>;
   selectAppOrganization(organizationId: string): Promise<FoundryAppSnapshot>;
+  setAppDefaultModel(defaultModel: WorkspaceModelId): Promise<FoundryAppSnapshot>;
   updateAppOrganizationProfile(input: UpdateFoundryOrganizationProfileInput): Promise<FoundryAppSnapshot>;
   triggerAppRepoImport(organizationId: string): Promise<FoundryAppSnapshot>;
   reconnectAppGithub(organizationId: string): Promise<void>;
@@ -204,11 +210,11 @@ export interface BackendClient {
   createTask(input: CreateTaskInput): Promise<TaskRecord>;
   listTasks(organizationId: string, repoId?: string): Promise<TaskSummary[]>;
   getRepoOverview(organizationId: string, repoId: string): Promise<RepoOverview>;
-  getTask(organizationId: string, taskId: string): Promise<TaskRecord>;
+  getTask(organizationId: string, repoId: string, taskId: string): Promise<TaskRecord>;
   listHistory(input: HistoryQueryInput): Promise<HistoryEvent[]>;
-  switchTask(organizationId: string, taskId: string): Promise<SwitchResult>;
-  attachTask(organizationId: string, taskId: string): Promise<{ target: string; sessionId: string | null }>;
-  runAction(organizationId: string, taskId: string, action: TaskAction): Promise<void>;
+  switchTask(organizationId: string, repoId: string, taskId: string): Promise<SwitchResult>;
+  attachTask(organizationId: string, repoId: string, taskId: string): Promise<{ target: string; sessionId: string | null }>;
+  runAction(organizationId: string, repoId: string, taskId: string, action: TaskAction): Promise<void>;
   createSandboxSession(input: {
     organizationId: string;
     sandboxProviderId: SandboxProviderId;
@@ -279,29 +285,28 @@ export interface BackendClient {
     sandboxId: string,
   ): Promise<{ sandboxProviderId: SandboxProviderId; sandboxId: string; state: string; at: number }>;
   getSandboxAgentConnection(organizationId: string, sandboxProviderId: SandboxProviderId, sandboxId: string): Promise<{ endpoint: string; token?: string }>;
+  getSandboxWorkspaceModelGroups(organizationId: string, sandboxProviderId: SandboxProviderId, sandboxId: string): Promise<WorkspaceModelGroup[]>;
   getOrganizationSummary(organizationId: string): Promise<OrganizationSummarySnapshot>;
-  getTaskDetail(organizationId: string, repoId: string, taskId: string): Promise<WorkbenchTaskDetail>;
-  getSessionDetail(organizationId: string, repoId: string, taskId: string, sessionId: string): Promise<WorkbenchSessionDetail>;
-  getWorkbench(organizationId: string): Promise<TaskWorkbenchSnapshot>;
-  subscribeWorkbench(organizationId: string, listener: () => void): () => void;
-  createWorkbenchTask(organizationId: string, input: TaskWorkbenchCreateTaskInput): Promise<TaskWorkbenchCreateTaskResponse>;
-  markWorkbenchUnread(organizationId: string, input: TaskWorkbenchSelectInput): Promise<void>;
-  renameWorkbenchTask(organizationId: string, input: TaskWorkbenchRenameInput): Promise<void>;
-  renameWorkbenchBranch(organizationId: string, input: TaskWorkbenchRenameInput): Promise<void>;
-  createWorkbenchSession(organizationId: string, input: TaskWorkbenchSelectInput & { model?: string }): Promise<{ sessionId: string }>;
-  renameWorkbenchSession(organizationId: string, input: TaskWorkbenchRenameSessionInput): Promise<void>;
-  setWorkbenchSessionUnread(organizationId: string, input: TaskWorkbenchSetSessionUnreadInput): Promise<void>;
-  updateWorkbenchDraft(organizationId: string, input: TaskWorkbenchUpdateDraftInput): Promise<void>;
-  changeWorkbenchModel(organizationId: string, input: TaskWorkbenchChangeModelInput): Promise<void>;
-  sendWorkbenchMessage(organizationId: string, input: TaskWorkbenchSendMessageInput): Promise<void>;
-  stopWorkbenchSession(organizationId: string, input: TaskWorkbenchSessionInput): Promise<void>;
-  closeWorkbenchSession(organizationId: string, input: TaskWorkbenchSessionInput): Promise<void>;
-  publishWorkbenchPr(organizationId: string, input: TaskWorkbenchSelectInput): Promise<void>;
-  revertWorkbenchFile(organizationId: string, input: TaskWorkbenchDiffInput): Promise<void>;
-  reloadGithubOrganization(organizationId: string): Promise<void>;
-  reloadGithubPullRequests(organizationId: string): Promise<void>;
-  reloadGithubRepository(organizationId: string, repoId: string): Promise<void>;
-  reloadGithubPullRequest(organizationId: string, repoId: string, prNumber: number): Promise<void>;
+  getTaskDetail(organizationId: string, repoId: string, taskId: string): Promise<WorkspaceTaskDetail>;
+  getSessionDetail(organizationId: string, repoId: string, taskId: string, sessionId: string): Promise<WorkspaceSessionDetail>;
+  getWorkspace(organizationId: string): Promise<TaskWorkspaceSnapshot>;
+  subscribeWorkspace(organizationId: string, listener: () => void): () => void;
+  createWorkspaceTask(organizationId: string, input: TaskWorkspaceCreateTaskInput): Promise<TaskWorkspaceCreateTaskResponse>;
+  markWorkspaceUnread(organizationId: string, input: TaskWorkspaceSelectInput): Promise<void>;
+  renameWorkspaceTask(organizationId: string, input: TaskWorkspaceRenameInput): Promise<void>;
+  createWorkspaceSession(organizationId: string, input: TaskWorkspaceSelectInput & { model?: string }): Promise<{ sessionId: string }>;
+  renameWorkspaceSession(organizationId: string, input: TaskWorkspaceRenameSessionInput): Promise<void>;
+  selectWorkspaceSession(organizationId: string, input: TaskWorkspaceSessionInput): Promise<void>;
+  setWorkspaceSessionUnread(organizationId: string, input: TaskWorkspaceSetSessionUnreadInput): Promise<void>;
+  updateWorkspaceDraft(organizationId: string, input: TaskWorkspaceUpdateDraftInput): Promise<void>;
+  changeWorkspaceModel(organizationId: string, input: TaskWorkspaceChangeModelInput): Promise<void>;
+  sendWorkspaceMessage(organizationId: string, input: TaskWorkspaceSendMessageInput): Promise<void>;
+  stopWorkspaceSession(organizationId: string, input: TaskWorkspaceSessionInput): Promise<void>;
+  closeWorkspaceSession(organizationId: string, input: TaskWorkspaceSessionInput): Promise<void>;
+  publishWorkspacePr(organizationId: string, input: TaskWorkspaceSelectInput): Promise<void>;
+  revertWorkspaceFile(organizationId: string, input: TaskWorkspaceDiffInput): Promise<void>;
+  adminReloadGithubOrganization(organizationId: string): Promise<void>;
+  adminReloadGithubRepository(organizationId: string, repoId: string): Promise<void>;
   health(): Promise<{ ok: true }>;
   useOrganization(organizationId: string): Promise<{ organizationId: string }>;
   starSandboxAgentRepo(organizationId: string): Promise<StarSandboxAgentRepoResult>;
@@ -409,8 +414,8 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
   const endpoints = deriveBackendEndpoints(options.endpoint);
   const rivetApiEndpoint = endpoints.rivetEndpoint;
   const appApiEndpoint = endpoints.appEndpoint;
-  const client = createClient({ endpoint: rivetApiEndpoint }) as unknown as RivetClient;
-  const workbenchSubscriptions = new Map<
+  const client = createClient({ endpoint: rivetApiEndpoint, encoding: options.encoding }) as unknown as RivetClient;
+  const workspaceSubscriptions = new Map<
     string,
     {
       listeners: Set<() => void>;
@@ -461,6 +466,16 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
     return typeof sessionId === "string" && sessionId.length > 0 ? sessionId : null;
   };
 
+  const getAuthSessionInput = async (): Promise<AuthSessionScopedInput | undefined> => {
+    const authSessionId = await getSessionId();
+    return authSessionId ? { authSessionId } : undefined;
+  };
+
+  const withAuthSessionInput = async <TInput extends object>(input: TInput): Promise<TInput & AuthSessionScopedInput> => {
+    const authSessionInput = await getAuthSessionInput();
+    return authSessionInput ? { ...input, ...authSessionInput } : input;
+  };
+
   const organization = async (organizationId: string): Promise<OrganizationHandle> =>
     client.organization.getOrCreate(organizationKey(organizationId), {
       createWithInput: organizationId,
@@ -471,7 +486,15 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
       createWithInput: "app",
     }) as unknown as AppOrganizationHandle;
 
-  const task = async (organizationId: string, repoId: string, taskId: string): Promise<TaskHandle> => client.task.get(taskKey(organizationId, repoId, taskId));
+  // getOrCreate is intentional here — this is the ONLY lazy creation point for
+  // virtual tasks (PR-driven entries that exist in the org's local tables but
+  // have no task actor yet). The task actor self-initializes from org data in
+  // getCurrentRecord(). Backend code must NEVER use getOrCreateTask except in
+  // createTaskMutation. See backend/CLAUDE.md "Lazy Task Actor Creation".
+  const task = async (organizationId: string, repoId: string, taskId: string): Promise<TaskHandle> =>
+    client.task.getOrCreate(taskKey(organizationId, repoId, taskId), {
+      createWithInput: { organizationId, repoId, taskId },
+    });
 
   const sandboxByKey = async (organizationId: string, _providerId: SandboxProviderId, sandboxId: string): Promise<TaskSandboxHandle> => {
     return (client as any).taskSandbox.get(taskSandboxKey(organizationId, sandboxId));
@@ -493,17 +516,15 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
 
     for (const row of candidates) {
       try {
-        const detail = await ws.getTask({ organizationId, taskId: row.taskId });
+        const detail = await ws.getTask({ organizationId, repoId: row.repoId, taskId: row.taskId });
         if (detail.sandboxProviderId !== sandboxProviderId) {
           continue;
         }
-        const sandbox = detail.sandboxes.find(
+        const sandboxes = detail.sandboxes as Array<(typeof detail.sandboxes)[number] & { sandboxActorId?: string }>;
+        const sandbox = sandboxes.find(
           (sb) =>
-            sb.sandboxId === sandboxId &&
-            sb.sandboxProviderId === sandboxProviderId &&
-            typeof (sb as any).sandboxActorId === "string" &&
-            (sb as any).sandboxActorId.length > 0,
-        ) as { sandboxActorId?: string } | undefined;
+            sb.sandboxId === sandboxId && sb.sandboxProviderId === sandboxProviderId && typeof sb.sandboxActorId === "string" && sb.sandboxActorId.length > 0,
+        );
         if (sandbox?.sandboxActorId) {
           return (client as any).taskSandbox.getForId(sandbox.sandboxActorId);
         }
@@ -563,67 +584,81 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
     }
   };
 
-  const getWorkbenchCompat = async (organizationId: string): Promise<TaskWorkbenchSnapshot> => {
+  const getTaskDetailWithAuth = async (organizationId: string, repoId: string, taskIdValue: string): Promise<WorkspaceTaskDetail> => {
+    return (await task(organizationId, repoId, taskIdValue)).getTaskDetail(await getAuthSessionInput());
+  };
+
+  const getSessionDetailWithAuth = async (organizationId: string, repoId: string, taskIdValue: string, sessionId: string): Promise<WorkspaceSessionDetail> => {
+    return (await task(organizationId, repoId, taskIdValue)).getSessionDetail(await withAuthSessionInput({ sessionId }));
+  };
+
+  const getWorkspaceCompat = async (organizationId: string): Promise<TaskWorkspaceSnapshot> => {
+    const authSessionInput = await getAuthSessionInput();
     const summary = await (await organization(organizationId)).getOrganizationSummary({ organizationId });
-    const tasks = (
-      await Promise.all(
-        summary.taskSummaries.map(async (taskSummary) => {
-          let detail;
-          try {
-            detail = await (await task(organizationId, taskSummary.repoId, taskSummary.id)).getTaskDetail();
-          } catch (error) {
-            if (isActorNotFoundError(error)) {
-              return null;
-            }
-            throw error;
+    const resolvedTasks = await Promise.all(
+      summary.taskSummaries.map(async (taskSummary) => {
+        let detail;
+        try {
+          const taskHandle = await task(organizationId, taskSummary.repoId, taskSummary.id);
+          detail = await taskHandle.getTaskDetail(authSessionInput);
+        } catch (error) {
+          if (isActorNotFoundError(error)) {
+            return null;
           }
-          const sessionDetails = await Promise.all(
-            detail.sessionsSummary.map(async (session) => {
-              try {
-                const full = await (await task(organizationId, detail.repoId, detail.id)).getSessionDetail({ sessionId: session.id });
-                return [session.id, full] as const;
-              } catch (error) {
-                if (isActorNotFoundError(error)) {
-                  return null;
-                }
-                throw error;
+          throw error;
+        }
+        const sessionDetails = await Promise.all(
+          detail.sessionsSummary.map(async (session) => {
+            try {
+              const full = await (await task(organizationId, detail.repoId, detail.id)).getSessionDetail({
+                sessionId: session.id,
+                ...(authSessionInput ?? {}),
+              });
+              return [session.id, full] as const;
+            } catch (error) {
+              if (isActorNotFoundError(error)) {
+                return null;
               }
-            }),
-          );
-          const sessionDetailsById = new Map(sessionDetails.filter((entry): entry is readonly [string, WorkbenchSessionDetail] => entry !== null));
-          return {
-            id: detail.id,
-            repoId: detail.repoId,
-            title: detail.title,
-            status: detail.status,
-            repoName: detail.repoName,
-            updatedAtMs: detail.updatedAtMs,
-            branch: detail.branch,
-            pullRequest: detail.pullRequest,
-            sessions: detail.sessionsSummary.map((session) => {
-              const full = sessionDetailsById.get(session.id);
-              return {
-                id: session.id,
-                sessionId: session.sessionId,
-                sessionName: session.sessionName,
-                agent: session.agent,
-                model: session.model,
-                status: session.status,
-                thinkingSinceMs: session.thinkingSinceMs,
-                unread: session.unread,
-                created: session.created,
-                draft: full?.draft ?? { text: "", attachments: [], updatedAtMs: null },
-                transcript: full?.transcript ?? [],
-              };
-            }),
-            fileChanges: detail.fileChanges,
-            diffs: detail.diffs,
-            fileTree: detail.fileTree,
-            minutesUsed: detail.minutesUsed,
-          };
-        }),
-      )
-    ).filter((task): task is TaskWorkbenchSnapshot["tasks"][number] => task !== null);
+              throw error;
+            }
+          }),
+        );
+        const sessionDetailsById = new Map(sessionDetails.filter((entry): entry is readonly [string, WorkspaceSessionDetail] => entry !== null));
+        return {
+          id: detail.id,
+          repoId: detail.repoId,
+          title: detail.title,
+          status: detail.status,
+          repoName: detail.repoName,
+          updatedAtMs: detail.updatedAtMs,
+          branch: detail.branch,
+          pullRequest: detail.pullRequest,
+          activeSessionId: detail.activeSessionId ?? null,
+          sessions: detail.sessionsSummary.map((session) => {
+            const full = sessionDetailsById.get(session.id);
+            return {
+              id: session.id,
+              sessionId: session.sessionId,
+              sessionName: session.sessionName,
+              agent: session.agent,
+              model: session.model,
+              status: session.status,
+              thinkingSinceMs: session.thinkingSinceMs,
+              unread: session.unread,
+              created: session.created,
+              draft: full?.draft ?? { text: "", attachments: [], updatedAtMs: null },
+              transcript: full?.transcript ?? [],
+            };
+          }),
+          fileChanges: detail.fileChanges,
+          diffs: detail.diffs,
+          fileTree: detail.fileTree,
+          minutesUsed: detail.minutesUsed,
+          activeSandboxId: detail.activeSandboxId ?? null,
+        };
+      }),
+    );
+    const tasks = resolvedTasks.filter((task): task is Exclude<(typeof resolvedTasks)[number], null> => task !== null);
 
     const repositories = summary.repos
       .map((repo) => ({
@@ -642,14 +677,14 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
     };
   };
 
-  const subscribeWorkbench = (organizationId: string, listener: () => void): (() => void) => {
-    let entry = workbenchSubscriptions.get(organizationId);
+  const subscribeWorkspace = (organizationId: string, listener: () => void): (() => void) => {
+    let entry = workspaceSubscriptions.get(organizationId);
     if (!entry) {
       entry = {
         listeners: new Set(),
         disposeConnPromise: null,
       };
-      workbenchSubscriptions.set(organizationId, entry);
+      workspaceSubscriptions.set(organizationId, entry);
     }
 
     entry.listeners.add(listener);
@@ -658,8 +693,8 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
       entry.disposeConnPromise = (async () => {
         const handle = await organization(organizationId);
         const conn = (handle as any).connect();
-        const unsubscribeEvent = conn.on("workbenchUpdated", () => {
-          const current = workbenchSubscriptions.get(organizationId);
+        const unsubscribeEvent = conn.on("organizationUpdated", () => {
+          const current = workspaceSubscriptions.get(organizationId);
           if (!current) {
             return;
           }
@@ -677,7 +712,7 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
     }
 
     return () => {
-      const current = workbenchSubscriptions.get(organizationId);
+      const current = workspaceSubscriptions.get(organizationId);
       if (!current) {
         return;
       }
@@ -686,7 +721,7 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
         return;
       }
 
-      workbenchSubscriptions.delete(organizationId);
+      workspaceSubscriptions.delete(organizationId);
       void current.disposeConnPromise?.then(async (disposeConn) => {
         await disposeConn?.();
       });
@@ -849,6 +884,14 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
       return await (await appOrganization()).selectAppOrganization({ sessionId, organizationId });
     },
 
+    async setAppDefaultModel(defaultModel: WorkspaceModelId): Promise<FoundryAppSnapshot> {
+      const sessionId = await getSessionId();
+      if (!sessionId) {
+        throw new Error("No active auth session");
+      }
+      return await (await appOrganization()).setAppDefaultModel({ sessionId, defaultModel });
+    },
+
     async updateAppOrganizationProfile(input: UpdateFoundryOrganizationProfileInput): Promise<FoundryAppSnapshot> {
       const sessionId = await getSessionId();
       if (!sessionId) {
@@ -948,33 +991,36 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
       return (await organization(organizationId)).getRepoOverview({ organizationId, repoId });
     },
 
-    async getTask(organizationId: string, taskId: string): Promise<TaskRecord> {
+    async getTask(organizationId: string, repoId: string, taskId: string): Promise<TaskRecord> {
       return (await organization(organizationId)).getTask({
         organizationId,
+        repoId,
         taskId,
       });
     },
 
     async listHistory(input: HistoryQueryInput): Promise<HistoryEvent[]> {
-      return (await organization(input.organizationId)).history(input);
+      return (await organization(input.organizationId)).auditLog(input);
     },
 
-    async switchTask(organizationId: string, taskId: string): Promise<SwitchResult> {
-      return (await organization(organizationId)).switchTask(taskId);
+    async switchTask(organizationId: string, repoId: string, taskId: string): Promise<SwitchResult> {
+      return (await organization(organizationId)).switchTask({ repoId, taskId });
     },
 
-    async attachTask(organizationId: string, taskId: string): Promise<{ target: string; sessionId: string | null }> {
+    async attachTask(organizationId: string, repoId: string, taskId: string): Promise<{ target: string; sessionId: string | null }> {
       return (await organization(organizationId)).attachTask({
         organizationId,
+        repoId,
         taskId,
         reason: "cli.attach",
       });
     },
 
-    async runAction(organizationId: string, taskId: string, action: TaskAction): Promise<void> {
+    async runAction(organizationId: string, repoId: string, taskId: string, action: TaskAction): Promise<void> {
       if (action === "push") {
         await (await organization(organizationId)).pushTask({
           organizationId,
+          repoId,
           taskId,
           reason: "cli.push",
         });
@@ -983,6 +1029,7 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
       if (action === "sync") {
         await (await organization(organizationId)).syncTask({
           organizationId,
+          repoId,
           taskId,
           reason: "cli.sync",
         });
@@ -991,6 +1038,7 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
       if (action === "merge") {
         await (await organization(organizationId)).mergeTask({
           organizationId,
+          repoId,
           taskId,
           reason: "cli.merge",
         });
@@ -999,6 +1047,7 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
       if (action === "archive") {
         await (await organization(organizationId)).archiveTask({
           organizationId,
+          repoId,
           taskId,
           reason: "cli.archive",
         });
@@ -1006,6 +1055,7 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
       }
       await (await organization(organizationId)).killTask({
         organizationId,
+        repoId,
         taskId,
         reason: "cli.kill",
       });
@@ -1156,96 +1206,92 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
       return await withSandboxHandle(organizationId, sandboxProviderId, sandboxId, async (handle) => handle.sandboxAgentConnection());
     },
 
+    async getSandboxWorkspaceModelGroups(organizationId: string, sandboxProviderId: SandboxProviderId, sandboxId: string): Promise<WorkspaceModelGroup[]> {
+      return await withSandboxHandle(organizationId, sandboxProviderId, sandboxId, async (handle) => handle.listWorkspaceModelGroups());
+    },
+
     async getOrganizationSummary(organizationId: string): Promise<OrganizationSummarySnapshot> {
       return (await organization(organizationId)).getOrganizationSummary({ organizationId });
     },
 
-    async getTaskDetail(organizationId: string, repoId: string, taskIdValue: string): Promise<WorkbenchTaskDetail> {
-      return (await task(organizationId, repoId, taskIdValue)).getTaskDetail();
+    async getTaskDetail(organizationId: string, repoId: string, taskIdValue: string): Promise<WorkspaceTaskDetail> {
+      return await getTaskDetailWithAuth(organizationId, repoId, taskIdValue);
     },
 
-    async getSessionDetail(organizationId: string, repoId: string, taskIdValue: string, sessionId: string): Promise<WorkbenchSessionDetail> {
-      return (await task(organizationId, repoId, taskIdValue)).getSessionDetail({ sessionId });
+    async getSessionDetail(organizationId: string, repoId: string, taskIdValue: string, sessionId: string): Promise<WorkspaceSessionDetail> {
+      return await getSessionDetailWithAuth(organizationId, repoId, taskIdValue, sessionId);
     },
 
-    async getWorkbench(organizationId: string): Promise<TaskWorkbenchSnapshot> {
-      return await getWorkbenchCompat(organizationId);
+    async getWorkspace(organizationId: string): Promise<TaskWorkspaceSnapshot> {
+      return await getWorkspaceCompat(organizationId);
     },
 
-    subscribeWorkbench(organizationId: string, listener: () => void): () => void {
-      return subscribeWorkbench(organizationId, listener);
+    subscribeWorkspace(organizationId: string, listener: () => void): () => void {
+      return subscribeWorkspace(organizationId, listener);
     },
 
-    async createWorkbenchTask(organizationId: string, input: TaskWorkbenchCreateTaskInput): Promise<TaskWorkbenchCreateTaskResponse> {
-      return (await organization(organizationId)).createWorkbenchTask(input);
+    async createWorkspaceTask(organizationId: string, input: TaskWorkspaceCreateTaskInput): Promise<TaskWorkspaceCreateTaskResponse> {
+      return (await organization(organizationId)).createWorkspaceTask(await withAuthSessionInput(input));
     },
 
-    async markWorkbenchUnread(organizationId: string, input: TaskWorkbenchSelectInput): Promise<void> {
-      await (await organization(organizationId)).markWorkbenchUnread(input);
+    async markWorkspaceUnread(organizationId: string, input: TaskWorkspaceSelectInput): Promise<void> {
+      await (await organization(organizationId)).markWorkspaceUnread(await withAuthSessionInput(input));
     },
 
-    async renameWorkbenchTask(organizationId: string, input: TaskWorkbenchRenameInput): Promise<void> {
-      await (await organization(organizationId)).renameWorkbenchTask(input);
+    async renameWorkspaceTask(organizationId: string, input: TaskWorkspaceRenameInput): Promise<void> {
+      await (await organization(organizationId)).renameWorkspaceTask(await withAuthSessionInput(input));
     },
 
-    async renameWorkbenchBranch(organizationId: string, input: TaskWorkbenchRenameInput): Promise<void> {
-      await (await organization(organizationId)).renameWorkbenchBranch(input);
+    async createWorkspaceSession(organizationId: string, input: TaskWorkspaceSelectInput & { model?: string }): Promise<{ sessionId: string }> {
+      return await (await organization(organizationId)).createWorkspaceSession(await withAuthSessionInput(input));
     },
 
-    async createWorkbenchSession(organizationId: string, input: TaskWorkbenchSelectInput & { model?: string }): Promise<{ sessionId: string }> {
-      return await (await organization(organizationId)).createWorkbenchSession(input);
+    async renameWorkspaceSession(organizationId: string, input: TaskWorkspaceRenameSessionInput): Promise<void> {
+      await (await organization(organizationId)).renameWorkspaceSession(await withAuthSessionInput(input));
     },
 
-    async renameWorkbenchSession(organizationId: string, input: TaskWorkbenchRenameSessionInput): Promise<void> {
-      await (await organization(organizationId)).renameWorkbenchSession(input);
+    async selectWorkspaceSession(organizationId: string, input: TaskWorkspaceSessionInput): Promise<void> {
+      await (await organization(organizationId)).selectWorkspaceSession(await withAuthSessionInput(input));
     },
 
-    async setWorkbenchSessionUnread(organizationId: string, input: TaskWorkbenchSetSessionUnreadInput): Promise<void> {
-      await (await organization(organizationId)).setWorkbenchSessionUnread(input);
+    async setWorkspaceSessionUnread(organizationId: string, input: TaskWorkspaceSetSessionUnreadInput): Promise<void> {
+      await (await organization(organizationId)).setWorkspaceSessionUnread(await withAuthSessionInput(input));
     },
 
-    async updateWorkbenchDraft(organizationId: string, input: TaskWorkbenchUpdateDraftInput): Promise<void> {
-      await (await organization(organizationId)).updateWorkbenchDraft(input);
+    async updateWorkspaceDraft(organizationId: string, input: TaskWorkspaceUpdateDraftInput): Promise<void> {
+      await (await organization(organizationId)).updateWorkspaceDraft(await withAuthSessionInput(input));
     },
 
-    async changeWorkbenchModel(organizationId: string, input: TaskWorkbenchChangeModelInput): Promise<void> {
-      await (await organization(organizationId)).changeWorkbenchModel(input);
+    async changeWorkspaceModel(organizationId: string, input: TaskWorkspaceChangeModelInput): Promise<void> {
+      await (await organization(organizationId)).changeWorkspaceModel(await withAuthSessionInput(input));
     },
 
-    async sendWorkbenchMessage(organizationId: string, input: TaskWorkbenchSendMessageInput): Promise<void> {
-      await (await organization(organizationId)).sendWorkbenchMessage(input);
+    async sendWorkspaceMessage(organizationId: string, input: TaskWorkspaceSendMessageInput): Promise<void> {
+      await (await organization(organizationId)).sendWorkspaceMessage(await withAuthSessionInput(input));
     },
 
-    async stopWorkbenchSession(organizationId: string, input: TaskWorkbenchSessionInput): Promise<void> {
-      await (await organization(organizationId)).stopWorkbenchSession(input);
+    async stopWorkspaceSession(organizationId: string, input: TaskWorkspaceSessionInput): Promise<void> {
+      await (await organization(organizationId)).stopWorkspaceSession(await withAuthSessionInput(input));
     },
 
-    async closeWorkbenchSession(organizationId: string, input: TaskWorkbenchSessionInput): Promise<void> {
-      await (await organization(organizationId)).closeWorkbenchSession(input);
+    async closeWorkspaceSession(organizationId: string, input: TaskWorkspaceSessionInput): Promise<void> {
+      await (await organization(organizationId)).closeWorkspaceSession(await withAuthSessionInput(input));
     },
 
-    async publishWorkbenchPr(organizationId: string, input: TaskWorkbenchSelectInput): Promise<void> {
-      await (await organization(organizationId)).publishWorkbenchPr(input);
+    async publishWorkspacePr(organizationId: string, input: TaskWorkspaceSelectInput): Promise<void> {
+      await (await organization(organizationId)).publishWorkspacePr(await withAuthSessionInput(input));
     },
 
-    async revertWorkbenchFile(organizationId: string, input: TaskWorkbenchDiffInput): Promise<void> {
-      await (await organization(organizationId)).revertWorkbenchFile(input);
+    async revertWorkspaceFile(organizationId: string, input: TaskWorkspaceDiffInput): Promise<void> {
+      await (await organization(organizationId)).revertWorkspaceFile(await withAuthSessionInput(input));
     },
 
-    async reloadGithubOrganization(organizationId: string): Promise<void> {
-      await (await organization(organizationId)).reloadGithubOrganization();
+    async adminReloadGithubOrganization(organizationId: string): Promise<void> {
+      await (await organization(organizationId)).adminReloadGithubOrganization();
     },
 
-    async reloadGithubPullRequests(organizationId: string): Promise<void> {
-      await (await organization(organizationId)).reloadGithubPullRequests();
-    },
-
-    async reloadGithubRepository(organizationId: string, repoId: string): Promise<void> {
-      await (await organization(organizationId)).reloadGithubRepository({ repoId });
-    },
-
-    async reloadGithubPullRequest(organizationId: string, repoId: string, prNumber: number): Promise<void> {
-      await (await organization(organizationId)).reloadGithubPullRequest({ repoId, prNumber });
+    async adminReloadGithubRepository(organizationId: string, repoId: string): Promise<void> {
+      await (await organization(organizationId)).adminReloadGithubRepository({ repoId });
     },
 
     async health(): Promise<{ ok: true }> {

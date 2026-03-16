@@ -2,8 +2,8 @@
 import { eq } from "drizzle-orm";
 import { getTaskSandbox } from "../../handles.js";
 import { logActorWarning, resolveErrorMessage } from "../../logging.js";
-import { task as taskTable, taskRuntime } from "../db/schema.js";
-import { TASK_ROW_ID, appendHistory, getCurrentRecord, setTaskState } from "./common.js";
+import { task as taskTable } from "../db/schema.js";
+import { TASK_ROW_ID, appendAuditLog, getCurrentRecord, setTaskState } from "./common.js";
 import { pushActiveBranchActivity } from "./push.js";
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
@@ -25,6 +25,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
 export async function handleAttachActivity(loopCtx: any, msg: any): Promise<void> {
   const record = await getCurrentRecord(loopCtx);
   let target = record.sandboxes.find((sandbox: any) => sandbox.sandboxId === record.activeSandboxId)?.switchTarget ?? "";
+  const sessionId = msg.body?.sessionId ?? null;
 
   if (record.activeSandboxId) {
     try {
@@ -38,14 +39,14 @@ export async function handleAttachActivity(loopCtx: any, msg: any): Promise<void
     }
   }
 
-  await appendHistory(loopCtx, "task.attach", {
+  await appendAuditLog(loopCtx, "task.attach", {
     target,
-    sessionId: record.activeSessionId,
+    sessionId,
   });
 
   await msg.complete({
     target,
-    sessionId: record.activeSessionId,
+    sessionId,
   });
 }
 
@@ -64,20 +65,17 @@ export async function handlePushActivity(loopCtx: any, msg: any): Promise<void> 
   await msg.complete({ ok: true });
 }
 
-export async function handleSimpleCommandActivity(loopCtx: any, msg: any, statusMessage: string, historyKind: string): Promise<void> {
-  const db = loopCtx.db;
-  await db.update(taskRuntime).set({ statusMessage, updatedAt: Date.now() }).where(eq(taskRuntime.id, TASK_ROW_ID)).run();
-
-  await appendHistory(loopCtx, historyKind, { reason: msg.body?.reason ?? null });
+export async function handleSimpleCommandActivity(loopCtx: any, msg: any, historyKind: string): Promise<void> {
+  await appendAuditLog(loopCtx, historyKind, { reason: msg.body?.reason ?? null });
   await msg.complete({ ok: true });
 }
 
 export async function handleArchiveActivity(loopCtx: any, msg: any): Promise<void> {
-  await setTaskState(loopCtx, "archive_stop_status_sync", "stopping status sync");
+  await setTaskState(loopCtx, "archive_stop_status_sync");
   const record = await getCurrentRecord(loopCtx);
 
   if (record.activeSandboxId) {
-    await setTaskState(loopCtx, "archive_release_sandbox", "releasing sandbox");
+    await setTaskState(loopCtx, "archive_release_sandbox");
     void withTimeout(getTaskSandbox(loopCtx, loopCtx.state.organizationId, record.activeSandboxId).destroy(), 45_000, "sandbox destroy").catch((error) => {
       logActorWarning("task.commands", "failed to release sandbox during archive", {
         organizationId: loopCtx.state.organizationId,
@@ -90,17 +88,15 @@ export async function handleArchiveActivity(loopCtx: any, msg: any): Promise<voi
   }
 
   const db = loopCtx.db;
-  await setTaskState(loopCtx, "archive_finalize", "finalizing archive");
+  await setTaskState(loopCtx, "archive_finalize");
   await db.update(taskTable).set({ status: "archived", updatedAt: Date.now() }).where(eq(taskTable.id, TASK_ROW_ID)).run();
 
-  await db.update(taskRuntime).set({ activeSessionId: null, statusMessage: "archived", updatedAt: Date.now() }).where(eq(taskRuntime.id, TASK_ROW_ID)).run();
-
-  await appendHistory(loopCtx, "task.archive", { reason: msg.body?.reason ?? null });
+  await appendAuditLog(loopCtx, "task.archive", { reason: msg.body?.reason ?? null });
   await msg.complete({ ok: true });
 }
 
 export async function killDestroySandboxActivity(loopCtx: any): Promise<void> {
-  await setTaskState(loopCtx, "kill_destroy_sandbox", "destroying sandbox");
+  await setTaskState(loopCtx, "kill_destroy_sandbox");
   const record = await getCurrentRecord(loopCtx);
   if (!record.activeSandboxId) {
     return;
@@ -110,13 +106,11 @@ export async function killDestroySandboxActivity(loopCtx: any): Promise<void> {
 }
 
 export async function killWriteDbActivity(loopCtx: any, msg: any): Promise<void> {
-  await setTaskState(loopCtx, "kill_finalize", "finalizing kill");
+  await setTaskState(loopCtx, "kill_finalize");
   const db = loopCtx.db;
   await db.update(taskTable).set({ status: "killed", updatedAt: Date.now() }).where(eq(taskTable.id, TASK_ROW_ID)).run();
 
-  await db.update(taskRuntime).set({ statusMessage: "killed", updatedAt: Date.now() }).where(eq(taskRuntime.id, TASK_ROW_ID)).run();
-
-  await appendHistory(loopCtx, "task.kill", { reason: msg.body?.reason ?? null });
+  await appendAuditLog(loopCtx, "task.kill", { reason: msg.body?.reason ?? null });
   await msg.complete({ ok: true });
 }
 

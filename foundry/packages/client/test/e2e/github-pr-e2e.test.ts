@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { TaskRecord, HistoryEvent } from "@sandbox-agent/foundry-shared";
+import type { AuditLogEvent as HistoryEvent, TaskRecord } from "@sandbox-agent/foundry-shared";
 import { createBackendClient } from "../../src/backend-client.js";
 import { requireImportedRepo } from "./helpers.js";
 
@@ -80,9 +80,10 @@ function parseHistoryPayload(event: HistoryEvent): Record<string, unknown> {
   }
 }
 
-async function debugDump(client: ReturnType<typeof createBackendClient>, organizationId: string, taskId: string): Promise<string> {
+async function debugDump(client: ReturnType<typeof createBackendClient>, organizationId: string, repoId: string, taskId: string): Promise<string> {
   try {
-    const task = await client.getTask(organizationId, taskId);
+    const task = await client.getTask(organizationId, repoId, taskId);
+    const detail = await client.getTaskDetail(organizationId, repoId, taskId).catch(() => null);
     const history = await client.listHistory({ organizationId, taskId, limit: 80 }).catch(() => []);
     const historySummary = history
       .slice(0, 20)
@@ -90,10 +91,11 @@ async function debugDump(client: ReturnType<typeof createBackendClient>, organiz
       .join("\n");
 
     let sessionEventsSummary = "";
-    if (task.activeSandboxId && task.activeSessionId) {
+    const activeSessionId = detail?.activeSessionId ?? null;
+    if (task.activeSandboxId && activeSessionId) {
       const events = await client
         .listSandboxSessionEvents(organizationId, task.sandboxProviderId, task.activeSandboxId, {
-          sessionId: task.activeSessionId,
+          sessionId: activeSessionId,
           limit: 50,
         })
         .then((r) => r.items)
@@ -109,13 +111,11 @@ async function debugDump(client: ReturnType<typeof createBackendClient>, organiz
       JSON.stringify(
         {
           status: task.status,
-          statusMessage: task.statusMessage,
           title: task.title,
           branchName: task.branchName,
           activeSandboxId: task.activeSandboxId,
-          activeSessionId: task.activeSessionId,
-          prUrl: task.prUrl,
-          prSubmitted: task.prSubmitted,
+          activeSessionId,
+          pullRequestUrl: detail?.pullRequest?.url ?? null,
         },
         null,
         2,
@@ -189,7 +189,7 @@ describe("e2e: backend -> sandbox-agent -> git -> PR", () => {
         // Cold local sandbox startup can exceed a few minutes on first run.
         8 * 60_000,
         1_000,
-        async () => client.getTask(organizationId, created.taskId),
+        async () => client.getTask(organizationId, repo.repoId, created.taskId),
         (h) => Boolean(h.title && h.branchName && h.activeSandboxId),
         (h) => {
           if (h.status !== lastStatus) {
@@ -200,18 +200,18 @@ describe("e2e: backend -> sandbox-agent -> git -> PR", () => {
           }
         },
       ).catch(async (err) => {
-        const dump = await debugDump(client, organizationId, created.taskId);
+        const dump = await debugDump(client, organizationId, repo.repoId, created.taskId);
         throw new Error(`${err instanceof Error ? err.message : String(err)}\n${dump}`);
       });
 
       branchName = namedAndProvisioned.branchName!;
       sandboxId = namedAndProvisioned.activeSandboxId!;
 
-      const withSession = await poll<TaskRecord>(
+      const withSession = await poll<Awaited<ReturnType<typeof client.getTaskDetail>>>(
         "task to create active session",
         3 * 60_000,
         1_500,
-        async () => client.getTask(organizationId, created.taskId),
+        async () => client.getTaskDetail(organizationId, repo.repoId, created.taskId),
         (h) => Boolean(h.activeSessionId),
         (h) => {
           if (h.status === "error") {
@@ -219,7 +219,7 @@ describe("e2e: backend -> sandbox-agent -> git -> PR", () => {
           }
         },
       ).catch(async (err) => {
-        const dump = await debugDump(client, organizationId, created.taskId);
+        const dump = await debugDump(client, organizationId, repo.repoId, created.taskId);
         throw new Error(`${err instanceof Error ? err.message : String(err)}\n${dump}`);
       });
 
@@ -231,14 +231,14 @@ describe("e2e: backend -> sandbox-agent -> git -> PR", () => {
         2_000,
         async () =>
           (
-            await client.listSandboxSessionEvents(organizationId, withSession.sandboxProviderId, sandboxId!, {
+            await client.listSandboxSessionEvents(organizationId, namedAndProvisioned.sandboxProviderId, sandboxId!, {
               sessionId: sessionId!,
               limit: 40,
             })
           ).items,
         (events) => events.length > 0,
       ).catch(async (err) => {
-        const dump = await debugDump(client, organizationId, created.taskId);
+        const dump = await debugDump(client, organizationId, repo.repoId, created.taskId);
         throw new Error(`${err instanceof Error ? err.message : String(err)}\n${dump}`);
       });
 
@@ -246,7 +246,7 @@ describe("e2e: backend -> sandbox-agent -> git -> PR", () => {
         "task to reach idle state",
         8 * 60_000,
         2_000,
-        async () => client.getTask(organizationId, created.taskId),
+        async () => client.getTask(organizationId, repo.repoId, created.taskId),
         (h) => h.status === "idle",
         (h) => {
           if (h.status === "error") {
@@ -254,7 +254,7 @@ describe("e2e: backend -> sandbox-agent -> git -> PR", () => {
           }
         },
       ).catch(async (err) => {
-        const dump = await debugDump(client, organizationId, created.taskId);
+        const dump = await debugDump(client, organizationId, repo.repoId, created.taskId);
         throw new Error(`${err instanceof Error ? err.message : String(err)}\n${dump}`);
       });
 
@@ -266,7 +266,7 @@ describe("e2e: backend -> sandbox-agent -> git -> PR", () => {
         (events) => events.some((e) => e.kind === "task.pr_created"),
       )
         .catch(async (err) => {
-          const dump = await debugDump(client, organizationId, created.taskId);
+          const dump = await debugDump(client, organizationId, repo.repoId, created.taskId);
           throw new Error(`${err instanceof Error ? err.message : String(err)}\n${dump}`);
         })
         .then((events) => events.find((e) => e.kind === "task.pr_created")!);
@@ -287,16 +287,16 @@ describe("e2e: backend -> sandbox-agent -> git -> PR", () => {
       expect(prFiles.some((f) => f.filename === expectedFile)).toBe(true);
 
       // Close the task and assert the sandbox is released (stopped).
-      await client.runAction(organizationId, created.taskId, "archive");
+      await client.runAction(organizationId, repo.repoId, created.taskId, "archive");
 
-      await poll<TaskRecord>(
+      await poll<Awaited<ReturnType<typeof client.getTaskDetail>>>(
         "task to become archived (session released)",
         60_000,
         1_000,
-        async () => client.getTask(organizationId, created.taskId),
+        async () => client.getTaskDetail(organizationId, repo.repoId, created.taskId),
         (h) => h.status === "archived" && h.activeSessionId === null,
       ).catch(async (err) => {
-        const dump = await debugDump(client, organizationId, created.taskId);
+        const dump = await debugDump(client, organizationId, repo.repoId, created.taskId);
         throw new Error(`${err instanceof Error ? err.message : String(err)}\n${dump}`);
       });
 
@@ -311,7 +311,7 @@ describe("e2e: backend -> sandbox-agent -> git -> PR", () => {
             return st.includes("destroyed") || st.includes("stopped") || st.includes("suspended") || st.includes("paused");
           },
         ).catch(async (err) => {
-          const dump = await debugDump(client, organizationId, created.taskId);
+          const dump = await debugDump(client, organizationId, repo.repoId, created.taskId);
           const state = await client.sandboxProviderState(organizationId, "local", sandboxId!).catch(() => null);
           throw new Error(`${err instanceof Error ? err.message : String(err)}\n` + `sandbox state: ${state ? state.state : "unknown"}\n` + `${dump}`);
         });

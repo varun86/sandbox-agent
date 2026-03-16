@@ -12,9 +12,8 @@ const sample: TaskRecord = {
   task: "Do test",
   sandboxProviderId: "local",
   status: "running",
-  statusMessage: null,
   activeSandboxId: "sandbox-1",
-  activeSessionId: "session-1",
+  pullRequest: null,
   sandboxes: [
     {
       sandboxId: "sandbox-1",
@@ -26,17 +25,6 @@ const sample: TaskRecord = {
       updatedAt: 1,
     },
   ],
-  agentType: null,
-  prSubmitted: false,
-  diffStat: null,
-  prUrl: null,
-  prAuthor: null,
-  ciStatus: null,
-  reviewStatus: null,
-  reviewer: null,
-  conflictsWithMain: null,
-  hasUnpushed: null,
-  parentBranch: null,
   createdAt: 1,
   updatedAt: 1,
 };

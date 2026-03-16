@@ -1,15 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { historyKey, organizationKey, repositoryKey, taskKey, taskSandboxKey } from "../src/keys.js";
+import { auditLogKey, organizationKey, taskKey, taskSandboxKey } from "../src/keys.js";
 
 describe("actor keys", () => {
   it("prefixes every key with organization namespace", () => {
-    const keys = [
-      organizationKey("default"),
-      repositoryKey("default", "repo"),
-      taskKey("default", "repo", "task"),
-      taskSandboxKey("default", "sbx"),
-      historyKey("default", "repo"),
-    ];
+    const keys = [organizationKey("default"), taskKey("default", "repo", "task"), taskSandboxKey("default", "sbx"), auditLogKey("default")];
 
     for (const key of keys) {
       expect(key[0]).toBe("org");

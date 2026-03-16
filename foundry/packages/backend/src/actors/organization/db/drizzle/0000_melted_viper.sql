@@ -56,6 +56,10 @@ CREATE TABLE `organization_profile` (
 	`github_last_sync_at` integer,
 	`github_last_webhook_at` integer,
 	`github_last_webhook_event` text,
+	`github_sync_generation` integer NOT NULL,
+	`github_sync_phase` text,
+	`github_processed_repository_count` integer NOT NULL,
+	`github_total_repository_count` integer NOT NULL,
 	`stripe_customer_id` text,
 	`stripe_subscription_id` text,
 	`stripe_price_id` text,
@@ -85,9 +89,4 @@ CREATE TABLE `stripe_lookup` (
 	`lookup_key` text PRIMARY KEY NOT NULL,
 	`organization_id` text NOT NULL,
 	`updated_at` integer NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE `task_lookup` (
-	`task_id` text PRIMARY KEY NOT NULL,
-	`repo_id` text NOT NULL
 );

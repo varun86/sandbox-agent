@@ -10,7 +10,7 @@ import { createDefaultDriver } from "./driver.js";
 import { createClient } from "rivetkit/client";
 import { initBetterAuthService } from "./services/better-auth.js";
 import { createDefaultAppShellServices } from "./services/app-shell-runtime.js";
-import { APP_SHELL_ORGANIZATION_ID } from "./actors/organization/app-shell.js";
+import { APP_SHELL_ORGANIZATION_ID } from "./actors/organization/constants.js";
 import { logger } from "./logging.js";
 
 export interface BackendStartOptions {
@@ -48,6 +48,19 @@ function isRivetRequest(request: Request): boolean {
 }
 
 export async function startBackend(options: BackendStartOptions = {}): Promise<void> {
+  // Prevent the sandbox-agent SDK's unhandled SQLite constraint errors from
+  // crashing the entire process. The SDK has a bug where duplicate event
+  // inserts (sandbox_agent_events UNIQUE constraint) throw from an internal
+  // async path with no catch. Log and continue.
+  process.on("uncaughtException", (error) => {
+    logger.error({ error: error?.message ?? String(error), stack: error?.stack }, "uncaughtException (kept alive)");
+  });
+  process.on("unhandledRejection", (reason) => {
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    const stack = reason instanceof Error ? reason.stack : undefined;
+    logger.error({ error: msg, stack }, "unhandledRejection (kept alive)");
+  });
+
   // sandbox-agent agent plugins vary on which env var they read for OpenAI/Codex auth.
   // Normalize to keep local dev + docker-compose simple.
   if (!process.env.CODEX_API_KEY && process.env.OPENAI_API_KEY) {

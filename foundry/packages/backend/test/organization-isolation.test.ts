@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { setupTest } from "rivetkit/test";
 import { organizationKey } from "../src/actors/keys.js";
 import { registry } from "../src/actors/index.js";
+import { organizationWorkflowQueueName } from "../src/actors/organization/queues.js";
 import { repoIdFromRemote } from "../src/services/repo.js";
 import { createTestDriver } from "./helpers/test-driver.js";
 import { createTestRuntimeContext } from "./helpers/test-context.js";
@@ -51,8 +52,8 @@ describe("organization isolation", () => {
 
     const { repoPath } = createRepo();
     const repoId = repoIdFromRemote(repoPath);
-    await wsA.applyGithubRepositoryProjection({ repoId, remoteUrl: repoPath });
-    await wsB.applyGithubRepositoryProjection({ repoId, remoteUrl: repoPath });
+    await wsA.send(organizationWorkflowQueueName("organization.command.github.repository_projection.apply"), { repoId, remoteUrl: repoPath }, { wait: true });
+    await wsB.send(organizationWorkflowQueueName("organization.command.github.repository_projection.apply"), { repoId, remoteUrl: repoPath }, { wait: true });
 
     await wsA.createTask({
       organizationId: "alpha",

@@ -54,10 +54,23 @@ export const CreateTaskInputSchema = z.object({
   explicitTitle: z.string().trim().min(1).optional(),
   explicitBranchName: z.string().trim().min(1).optional(),
   sandboxProviderId: SandboxProviderIdSchema.optional(),
-  agentType: AgentTypeSchema.optional(),
   onBranch: z.string().trim().min(1).optional(),
 });
 export type CreateTaskInput = z.infer<typeof CreateTaskInputSchema>;
+
+export const WorkspacePullRequestSummarySchema = z.object({
+  number: z.number().int(),
+  status: z.enum(["draft", "ready"]),
+  title: z.string().min(1),
+  state: z.string().min(1),
+  url: z.string().min(1),
+  headRefName: z.string().min(1),
+  baseRefName: z.string().min(1),
+  repoFullName: z.string().min(1),
+  authorLogin: z.string().nullable(),
+  isDraft: z.boolean(),
+  updatedAtMs: z.number().int(),
+});
 
 export const TaskRecordSchema = z.object({
   organizationId: OrganizationIdSchema,
@@ -69,9 +82,8 @@ export const TaskRecordSchema = z.object({
   task: z.string().min(1),
   sandboxProviderId: SandboxProviderIdSchema,
   status: TaskStatusSchema,
-  statusMessage: z.string().nullable(),
   activeSandboxId: z.string().nullable(),
-  activeSessionId: z.string().nullable(),
+  pullRequest: WorkspacePullRequestSummarySchema.nullable(),
   sandboxes: z.array(
     z.object({
       sandboxId: z.string().min(1),
@@ -83,17 +95,6 @@ export const TaskRecordSchema = z.object({
       updatedAt: z.number().int(),
     }),
   ),
-  agentType: z.string().nullable(),
-  prSubmitted: z.boolean(),
-  diffStat: z.string().nullable(),
-  prUrl: z.string().nullable(),
-  prAuthor: z.string().nullable(),
-  ciStatus: z.string().nullable(),
-  reviewStatus: z.string().nullable(),
-  reviewer: z.string().nullable(),
-  conflictsWithMain: z.string().nullable(),
-  hasUnpushed: z.string().nullable(),
-  parentBranch: z.string().nullable(),
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
 });
@@ -107,11 +108,13 @@ export const TaskSummarySchema = z.object({
   title: z.string().min(1).nullable(),
   status: TaskStatusSchema,
   updatedAt: z.number().int(),
+  pullRequest: WorkspacePullRequestSummarySchema.nullable(),
 });
 export type TaskSummary = z.infer<typeof TaskSummarySchema>;
 
 export const TaskActionInputSchema = z.object({
   organizationId: OrganizationIdSchema,
+  repoId: RepoIdSchema,
   taskId: z.string().min(1),
 });
 export type TaskActionInput = z.infer<typeof TaskActionInputSchema>;
@@ -136,12 +139,8 @@ export const RepoBranchRecordSchema = z.object({
   taskId: z.string().nullable(),
   taskTitle: z.string().nullable(),
   taskStatus: TaskStatusSchema.nullable(),
-  prNumber: z.number().int().nullable(),
-  prState: z.string().nullable(),
-  prUrl: z.string().nullable(),
+  pullRequest: WorkspacePullRequestSummarySchema.nullable(),
   ciStatus: z.string().nullable(),
-  reviewStatus: z.string().nullable(),
-  reviewer: z.string().nullable(),
   updatedAt: z.number().int(),
 });
 export type RepoBranchRecord = z.infer<typeof RepoBranchRecordSchema>;
@@ -174,13 +173,14 @@ export type StarSandboxAgentRepoResult = z.infer<typeof StarSandboxAgentRepoResu
 
 export const HistoryQueryInputSchema = z.object({
   organizationId: OrganizationIdSchema,
+  repoId: z.string().min(1).optional(),
   limit: z.number().int().positive().max(500).optional(),
   branch: z.string().min(1).optional(),
   taskId: z.string().min(1).optional(),
 });
 export type HistoryQueryInput = z.infer<typeof HistoryQueryInputSchema>;
 
-export const HistoryEventSchema = z.object({
+export const AuditLogEventSchema = z.object({
   id: z.number().int(),
   organizationId: OrganizationIdSchema,
   repoId: z.string().nullable(),
@@ -190,7 +190,7 @@ export const HistoryEventSchema = z.object({
   payloadJson: z.string().min(1),
   createdAt: z.number().int(),
 });
-export type HistoryEvent = z.infer<typeof HistoryEventSchema>;
+export type AuditLogEvent = z.infer<typeof AuditLogEventSchema>;
 
 export const PruneInputSchema = z.object({
   organizationId: OrganizationIdSchema,
@@ -201,6 +201,7 @@ export type PruneInput = z.infer<typeof PruneInputSchema>;
 
 export const KillInputSchema = z.object({
   organizationId: OrganizationIdSchema,
+  repoId: RepoIdSchema,
   taskId: z.string().min(1),
   deleteBranch: z.boolean(),
   abandon: z.boolean(),

@@ -65,7 +65,7 @@ export function filterTasks(rows: TaskRecord[], query: string): TaskRecord[] {
   }
 
   return rows.filter((row) => {
-    const fields = [row.branchName ?? "", row.title ?? "", row.taskId, row.task, row.prAuthor ?? "", row.reviewer ?? ""];
+    const fields = [row.branchName ?? "", row.title ?? "", row.taskId, row.task];
     return fields.some((field) => fuzzyMatch(field, q));
   });
 }

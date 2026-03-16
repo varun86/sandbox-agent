@@ -37,14 +37,3 @@ export function groupTasksByRepo(tasks: TaskRecord[]): RepoGroup[] {
       return a.repoRemote.localeCompare(b.repoRemote);
     });
 }
-
-export function formatDiffStat(diffStat: string | null | undefined): string {
-  const normalized = diffStat?.trim();
-  if (!normalized) {
-    return "-";
-  }
-  if (normalized === "+0/-0" || normalized === "+0 -0" || normalized === "0 files changed") {
-    return "No changes";
-  }
-  return normalized;
-}

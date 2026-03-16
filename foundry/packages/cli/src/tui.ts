@@ -1,4 +1,4 @@
-import type { AppConfig, TaskRecord } from "@sandbox-agent/foundry-shared";
+import type { AppConfig, TaskRecord, WorkspaceTaskDetail } from "@sandbox-agent/foundry-shared";
 import { spawnSync } from "node:child_process";
 import { createBackendClientFromConfig, filterTasks, formatRelativeAge, groupTaskStatus } from "@sandbox-agent/foundry-client";
 import { CLI_BUILD_ID } from "./build-id.js";
@@ -51,14 +51,28 @@ interface DisplayRow {
   age: string;
 }
 
+type TuiTaskRow = TaskRecord & Pick<WorkspaceTaskDetail, "pullRequest"> & { activeSessionId?: string | null };
+
 interface RenderOptions {
   width?: number;
   height?: number;
 }
 
-async function listDetailedTasks(client: ReturnType<typeof createBackendClientFromConfig>, organizationId: string): Promise<TaskRecord[]> {
+async function listDetailedTasks(client: ReturnType<typeof createBackendClientFromConfig>, organizationId: string): Promise<TuiTaskRow[]> {
   const rows = await client.listTasks(organizationId);
-  return await Promise.all(rows.map(async (row) => await client.getTask(organizationId, row.taskId)));
+  return await Promise.all(
+    rows.map(async (row) => {
+      const [task, detail] = await Promise.all([
+        client.getTask(organizationId, row.repoId, row.taskId),
+        client.getTaskDetail(organizationId, row.repoId, row.taskId).catch(() => null),
+      ]);
+      return {
+        ...task,
+        pullRequest: detail?.pullRequest ?? null,
+        activeSessionId: detail?.activeSessionId ?? null,
+      };
+    }),
+  );
 }
 
 function pad(input: string, width: number): string {
@@ -143,29 +157,17 @@ function agentSymbol(status: TaskRecord["status"]): string {
   return "-";
 }
 
-function toDisplayRow(row: TaskRecord): DisplayRow {
-  const conflictPrefix = row.conflictsWithMain === "true" ? "\u26A0 " : "";
-
-  const prLabel = row.prUrl ? `#${row.prUrl.match(/\/pull\/(\d+)/)?.[1] ?? "?"}` : row.prSubmitted ? "sub" : "-";
-
-  const ciLabel = row.ciStatus ?? "-";
-  const reviewLabel = row.reviewStatus
-    ? row.reviewStatus === "approved"
-      ? "ok"
-      : row.reviewStatus === "changes_requested"
-        ? "chg"
-        : row.reviewStatus === "pending"
-          ? "..."
-          : row.reviewStatus
-    : "-";
+function toDisplayRow(row: TuiTaskRow): DisplayRow {
+  const prLabel = row.pullRequest ? `#${row.pullRequest.number}` : "-";
+  const reviewLabel = row.pullRequest ? (row.pullRequest.isDraft ? "draft" : row.pullRequest.state.toLowerCase()) : "-";
 
   return {
-    name: `${conflictPrefix}${row.title || row.branchName}`,
-    diff: row.diffStat ?? "-",
+    name: row.title || row.branchName || row.taskId,
+    diff: "-",
     agent: agentSymbol(row.status),
     pr: prLabel,
-    author: row.prAuthor ?? "-",
-    ci: ciLabel,
+    author: row.pullRequest?.authorLogin ?? "-",
+    ci: "-",
     review: reviewLabel,
     age: formatRelativeAge(row.updatedAt),
   };
@@ -186,7 +188,7 @@ function helpLines(width: number): string[] {
 }
 
 export function formatRows(
-  rows: TaskRecord[],
+  rows: TuiTaskRow[],
   selected: number,
   organizationId: string,
   status: string,
@@ -336,8 +338,8 @@ export async function runTui(config: AppConfig, organizationId: string): Promise
   renderer.root.add(text);
   renderer.start();
 
-  let allRows: TaskRecord[] = [];
-  let filteredRows: TaskRecord[] = [];
+  let allRows: TuiTaskRow[] = [];
+  let filteredRows: TuiTaskRow[] = [];
   let selected = 0;
   let searchQuery = "";
   let showHelp = false;
@@ -393,7 +395,7 @@ export async function runTui(config: AppConfig, organizationId: string): Promise
     render();
   };
 
-  const selectedRow = (): TaskRecord | null => {
+  const selectedRow = (): TuiTaskRow | null => {
     if (filteredRows.length === 0) {
       return null;
     }
@@ -522,7 +524,7 @@ export async function runTui(config: AppConfig, organizationId: string): Promise
       render();
       void (async () => {
         try {
-          const result = await client.switchTask(organizationId, row.taskId);
+          const result = await client.switchTask(organizationId, row.repoId, row.taskId);
           close(`cd ${result.switchTarget}`);
         } catch (err) {
           busy = false;
@@ -543,7 +545,7 @@ export async function runTui(config: AppConfig, organizationId: string): Promise
       render();
       void (async () => {
         try {
-          const result = await client.attachTask(organizationId, row.taskId);
+          const result = await client.attachTask(organizationId, row.repoId, row.taskId);
           close(`target=${result.target} session=${result.sessionId ?? "none"}`);
         } catch (err) {
           busy = false;
@@ -559,7 +561,11 @@ export async function runTui(config: AppConfig, organizationId: string): Promise
       if (!row) {
         return;
       }
-      void runActionWithRefresh(`archiving ${row.taskId}`, async () => client.runAction(organizationId, row.taskId, "archive"), `archived ${row.taskId}`);
+      void runActionWithRefresh(
+        `archiving ${row.taskId}`,
+        async () => client.runAction(organizationId, row.repoId, row.taskId, "archive"),
+        `archived ${row.taskId}`,
+      );
       return;
     }
 
@@ -568,7 +574,11 @@ export async function runTui(config: AppConfig, organizationId: string): Promise
       if (!row) {
         return;
       }
-      void runActionWithRefresh(`syncing ${row.taskId}`, async () => client.runAction(organizationId, row.taskId, "sync"), `synced ${row.taskId}`);
+      void runActionWithRefresh(
+        `syncing ${row.taskId}`,
+        async () => client.runAction(organizationId, row.repoId, row.taskId, "sync"),
+        `synced ${row.taskId}`,
+      );
       return;
     }
 
@@ -580,8 +590,8 @@ export async function runTui(config: AppConfig, organizationId: string): Promise
       void runActionWithRefresh(
         `merging ${row.taskId}`,
         async () => {
-          await client.runAction(organizationId, row.taskId, "merge");
-          await client.runAction(organizationId, row.taskId, "archive");
+          await client.runAction(organizationId, row.repoId, row.taskId, "merge");
+          await client.runAction(organizationId, row.repoId, row.taskId, "archive");
         },
         `merged+archived ${row.taskId}`,
       );
@@ -590,14 +600,15 @@ export async function runTui(config: AppConfig, organizationId: string): Promise
 
     if (ctrl && name === "o") {
       const row = selectedRow();
-      if (!row?.prUrl) {
+      const prUrl = row?.pullRequest?.url ?? null;
+      if (!prUrl) {
         status = "no PR URL available for this task";
         render();
         return;
       }
       const openCmd = process.platform === "darwin" ? "open" : "xdg-open";
-      spawnSync(openCmd, [row.prUrl], { stdio: "ignore" });
-      status = `opened ${row.prUrl}`;
+      spawnSync(openCmd, [prUrl], { stdio: "ignore" });
+      status = `opened ${prUrl}`;
       render();
       return;
     }

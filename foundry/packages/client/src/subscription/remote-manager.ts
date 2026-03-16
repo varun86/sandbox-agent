@@ -81,6 +81,7 @@ class TopicEntry<TData, TParams, TEvent> {
   private unsubscribeError: (() => void) | null = null;
   private teardownTimer: ReturnType<typeof setTimeout> | null = null;
   private startPromise: Promise<void> | null = null;
+  private eventPromise: Promise<void> = Promise.resolve();
   private started = false;
 
   constructor(
@@ -157,12 +158,7 @@ class TopicEntry<TData, TParams, TEvent> {
     try {
       this.conn = await this.definition.connect(this.backend, this.params);
       this.unsubscribeEvent = this.conn.on(this.definition.event, (event: TEvent) => {
-        if (this.data === undefined) {
-          return;
-        }
-        this.data = this.definition.applyEvent(this.data, event);
-        this.lastRefreshAt = Date.now();
-        this.notify();
+        void this.applyEvent(event);
       });
       this.unsubscribeError = this.conn.onError((error: unknown) => {
         this.status = "error";
@@ -180,6 +176,33 @@ class TopicEntry<TData, TParams, TEvent> {
       this.started = false;
       this.notify();
     }
+  }
+
+  private applyEvent(event: TEvent): Promise<void> {
+    this.eventPromise = this.eventPromise
+      .then(async () => {
+        if (!this.started || this.data === undefined) {
+          return;
+        }
+
+        const nextData = await this.definition.applyEvent(this.backend, this.params, this.data, event);
+        if (!this.started) {
+          return;
+        }
+
+        this.data = nextData;
+        this.status = "connected";
+        this.error = null;
+        this.lastRefreshAt = Date.now();
+        this.notify();
+      })
+      .catch((error) => {
+        this.status = "error";
+        this.error = error instanceof Error ? error : new Error(String(error));
+        this.notify();
+      });
+
+    return this.eventPromise;
   }
 
   private notify(): void {

@@ -1,4 +1,4 @@
-import { pino, type Logger, type LoggerOptions } from "pino";
+import { pino, type LogFn, type Logger, type LoggerOptions } from "pino";
 
 export interface FoundryLoggerOptions {
   service: string;
@@ -160,7 +160,7 @@ export function createFoundryLogger(options: FoundryLoggerOptions): Logger {
     loggerOptions.timestamp = pino.stdTimeFunctions.isoTime;
     if (options.format === "logfmt") {
       loggerOptions.hooks = {
-        logMethod(this: Logger, args, _method, level) {
+        logMethod(this: Logger, args: Parameters<LogFn>, _method: LogFn, level: number) {
           const levelLabel = this.levels.labels[level] ?? "info";
           const record = buildLogRecord(levelLabel, this.bindings(), args);
           writeLogfmtLine(formatLogfmtLine(record));

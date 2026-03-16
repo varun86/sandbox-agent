@@ -1,4 +1,8 @@
-import type { WorkbenchModelId } from "@sandbox-agent/foundry-shared";
+import { DEFAULT_WORKSPACE_MODEL_GROUPS, DEFAULT_WORKSPACE_MODEL_ID, type WorkspaceModelId } from "@sandbox-agent/foundry-shared";
+
+const claudeModels = DEFAULT_WORKSPACE_MODEL_GROUPS.find((group) => group.agentKind === "Claude")?.models ?? [];
+const CLAUDE_SECONDARY_MODEL_ID = claudeModels[1]?.id ?? claudeModels[0]?.id ?? DEFAULT_WORKSPACE_MODEL_ID;
+const CLAUDE_TERTIARY_MODEL_ID = claudeModels[2]?.id ?? CLAUDE_SECONDARY_MODEL_ID;
 import { injectMockLatency } from "./mock/latency.js";
 import rivetDevFixture from "../../../scripts/data/rivet-dev.json" with { type: "json" };
 
@@ -16,6 +20,7 @@ export interface MockFoundryUser {
   githubLogin: string;
   roleLabel: string;
   eligibleOrganizationIds: string[];
+  defaultModel: WorkspaceModelId;
 }
 
 export interface MockFoundryOrganizationMember {
@@ -61,7 +66,6 @@ export interface MockFoundryOrganizationSettings {
   slug: string;
   primaryDomain: string;
   seatAccrualMode: "first_prompt";
-  defaultModel: WorkbenchModelId;
   autoImportRepos: boolean;
 }
 
@@ -111,6 +115,7 @@ export interface MockFoundryAppClient {
   skipStarterRepo(): Promise<void>;
   starStarterRepo(organizationId: string): Promise<void>;
   selectOrganization(organizationId: string): Promise<void>;
+  setDefaultModel(model: WorkspaceModelId): Promise<void>;
   updateOrganizationProfile(input: UpdateMockOrganizationProfileInput): Promise<void>;
   triggerGithubSync(organizationId: string): Promise<void>;
   completeHostedCheckout(organizationId: string, planId: MockBillingPlanId): Promise<void>;
@@ -180,7 +185,6 @@ function buildRivetOrganization(): MockFoundryOrganization {
       slug: "rivet",
       primaryDomain: "rivet.dev",
       seatAccrualMode: "first_prompt",
-      defaultModel: "gpt-5.3-codex",
       autoImportRepos: true,
     },
     github: {
@@ -233,6 +237,7 @@ function buildDefaultSnapshot(): MockFoundryAppSnapshot {
         githubLogin: "nathan",
         roleLabel: "Founder",
         eligibleOrganizationIds: ["personal-nathan", "acme", "rivet"],
+        defaultModel: DEFAULT_WORKSPACE_MODEL_ID,
       },
       {
         id: "user-maya",
@@ -241,6 +246,7 @@ function buildDefaultSnapshot(): MockFoundryAppSnapshot {
         githubLogin: "maya",
         roleLabel: "Staff Engineer",
         eligibleOrganizationIds: ["acme"],
+        defaultModel: CLAUDE_SECONDARY_MODEL_ID,
       },
       {
         id: "user-jamie",
@@ -249,6 +255,7 @@ function buildDefaultSnapshot(): MockFoundryAppSnapshot {
         githubLogin: "jamie",
         roleLabel: "Platform Lead",
         eligibleOrganizationIds: ["personal-jamie", "rivet"],
+        defaultModel: CLAUDE_TERTIARY_MODEL_ID,
       },
     ],
     organizations: [
@@ -261,7 +268,6 @@ function buildDefaultSnapshot(): MockFoundryAppSnapshot {
           slug: "nathan",
           primaryDomain: "personal",
           seatAccrualMode: "first_prompt",
-          defaultModel: "claude-sonnet-4",
           autoImportRepos: true,
         },
         github: {
@@ -297,7 +303,6 @@ function buildDefaultSnapshot(): MockFoundryAppSnapshot {
           slug: "acme",
           primaryDomain: "acme.dev",
           seatAccrualMode: "first_prompt",
-          defaultModel: "claude-sonnet-4",
           autoImportRepos: true,
         },
         github: {
@@ -342,7 +347,6 @@ function buildDefaultSnapshot(): MockFoundryAppSnapshot {
           slug: "jamie",
           primaryDomain: "personal",
           seatAccrualMode: "first_prompt",
-          defaultModel: "claude-opus-4",
           autoImportRepos: true,
         },
         github: {
@@ -536,6 +540,18 @@ class MockFoundryAppStore implements MockFoundryAppClient {
     if (org.github.syncStatus !== "synced") {
       await this.triggerGithubSync(organizationId);
     }
+  }
+
+  async setDefaultModel(model: WorkspaceModelId): Promise<void> {
+    await this.injectAsyncLatency();
+    const currentUserId = this.snapshot.auth.currentUserId;
+    if (!currentUserId) {
+      throw new Error("No signed-in mock user");
+    }
+    this.updateSnapshot((current) => ({
+      ...current,
+      users: current.users.map((user) => (user.id === currentUserId ? { ...user, defaultModel: model } : user)),
+    }));
   }
 
   async updateOrganizationProfile(input: UpdateMockOrganizationProfileInput): Promise<void> {

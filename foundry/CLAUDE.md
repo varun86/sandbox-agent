@@ -56,6 +56,8 @@ Use `pnpm` workspaces and Turborepo.
   - mock frontend changes: `just foundry-mock` or restart with `just foundry-mock-down && just foundry-mock`
   - local frontend-only work outside Docker: restart `pnpm --filter @sandbox-agent/foundry-frontend dev` or `just foundry-dev-mock` as appropriate
 - The backend does **not** hot reload. Bun's `--hot` flag causes the server to re-bind on a different port (e.g. 6421 instead of 6420), breaking all client connections while the container still exposes the original port. After backend code changes, restart the backend container: `just foundry-dev-down && just foundry-dev`.
+- The dev server has debug logging enabled by default (`RIVET_LOG_LEVEL=debug`, `FOUNDRY_LOG_LEVEL=debug`) via `compose.dev.yaml`. Error stacks and timestamps are also enabled.
+- The frontend client uses JSON encoding for RivetKit in development (`import.meta.env.DEV`) for easier debugging. Production uses the default encoding.
 
 ## Railway Logs
 
@@ -73,13 +75,14 @@ Use `pnpm` workspaces and Turborepo.
 - All backend interaction (actor calls, metadata/health checks, backend HTTP endpoint access) must go through the dedicated client library in `packages/client`.
 - Outside `packages/client`, do not call backend endpoints directly (for example `fetch(.../v1/rivet...)`), except in black-box E2E tests that intentionally exercise raw transport behavior.
 - GUI state should update in realtime (no manual refresh buttons). Prefer RivetKit push reactivity and actor-driven events; do not add polling/refetch for normal product flows.
-- Keep the mock workbench types and mock client in `packages/shared` + `packages/client` up to date with the frontend contract. The mock is the UI testing reference implementation while backend functionality catches up.
+- Keep the mock workspace types and mock client in `packages/shared` + `packages/client` up to date with the frontend contract. The mock is the UI testing reference implementation while backend functionality catches up.
 - Keep frontend route/state coverage current in code and tests; there is no separate page-inventory doc to maintain.
 - If Foundry uses a shared component from `@sandbox-agent/react`, make changes in `sdks/react` instead of copying or forking that component into Foundry.
 - When changing shared React components in `sdks/react` for Foundry, verify they still work in the Sandbox Agent Inspector before finishing.
-- When making UI changes, verify the live flow with `agent-browser`, take screenshots of the updated UI, and offer to open those screenshots in Preview when you finish.
+- When making UI changes, verify the live flow with the Chrome DevTools MCP or `agent-browser`, take screenshots of the updated UI, and offer to open those screenshots in Preview when you finish.
 - When asked for screenshots, capture all relevant affected screens and modal states, not just a single viewport. Include empty, populated, success, and blocked/error states when they are part of the changed flow.
 - If a screenshot catches a transition frame, blank modal, or otherwise misleading state, retake it before reporting it.
+- When verifying UI in the browser, attempt to sign in by navigating to `/signin` and clicking "Continue with GitHub". If the browser lands on the GitHub login page (github.com/login) and you don't have credentials, stop and ask the user to complete the sign-in. Do not assume the session is invalid just because you see the Foundry sign-in page — always attempt the OAuth flow first.
 
 ## Realtime Data Architecture
 
@@ -99,7 +102,7 @@ Do not use polling (`refetchInterval`), empty "go re-fetch" broadcast events, or
 - **Organization actor** materializes sidebar-level data in its own SQLite: repo catalog, task summaries (title, status, branch, PR, updatedAt), repo summaries (overview/branch state), and session summaries (id, name, status, unread, model — no transcript). Task actors push summary changes to the organization actor when they mutate. The organization actor broadcasts the updated entity to connected clients. `getOrganizationSummary` reads from local tables only — no fan-out to child actors.
 - **Task actor** materializes its own detail state (session summaries, sandbox info, diffs, file tree). `getTaskDetail` reads from the task actor's own SQLite. The task actor broadcasts updates directly to clients connected to it.
 - **Session data** lives on the task actor but is a separate subscription topic. The task topic includes `sessions_summary` (list without content). The `session` topic provides full transcript and draft state. Clients subscribe to the `session` topic for whichever session is active, and filter `sessionUpdated` events by session ID (ignoring events for other sessions on the same actor).
-- The expensive fan-out (querying every repository/task actor) only exists as a background reconciliation/rebuild path, never on the hot read path.
+- There is no fan-out on the read path. The organization actor owns all task summaries locally.
 
 ### Subscription manager
 
@@ -141,6 +144,15 @@ The client subscribes to `app` always, `organization` when entering an organizat
 - Do not add backend git clone paths, `git fetch`, `git for-each-ref`, or direct backend git CLI calls. If you need git data, either read stored GitHub metadata or run the command inside a sandbox.
 - The `BackendDriver` has no `GitDriver` or `StackDriver`. Only `GithubDriver` and `TmuxDriver` remain.
 
+## React Hook Dependency Safety
+
+- **Never use unstable references as `useEffect`/`useMemo`/`useCallback` dependencies.** React compares dependencies by reference, not value. Expressions like `?? []`, `?? {}`, `.map(...)`, `.filter(...)`, or object/array literals create new references every render, causing infinite re-render loops when used as dependencies.
+- If the upstream value may be `undefined`/`null` and you need a fallback, either:
+  - Use the raw upstream value as the dependency and apply the fallback inside the effect body: `useEffect(() => { doThing(value ?? []); }, [value]);`
+  - Derive a stable primitive key: `const key = JSON.stringify(value ?? []);` then depend on `key`
+  - Memoize: `const stable = useMemo(() => value ?? [], [value]);`
+- When reviewing code, treat any `?? []`, `?? {}`, or inline `.map()/.filter()` in a dependency array as a bug.
+
 ## UI System
 
 - Foundry's base UI system is `BaseUI` with `Styletron`, plus Foundry-specific theme/tokens on top. Treat that as the default UI foundation.
@@ -165,6 +177,7 @@ The client subscribes to `app` always, `organization` when entering an organizat
 - If the system reaches an unexpected state, raise an explicit error with actionable context.
 - Do not fail silently, swallow errors, or auto-ignore inconsistent data.
 - Prefer fail-fast behavior over hidden degradation when correctness is uncertain.
+- **Never use bare `catch {}` or `catch { }` blocks.** Every catch must at minimum log the error with `logActorWarning` or `console.warn`. Silent catches hide bugs and make debugging impossible. If a catch is intentionally degrading (e.g. returning empty data when a sandbox is expired), it must still log so operators can see what happened. Use `catch (error) { logActorWarning(..., { error: resolveErrorMessage(error) }); }` or equivalent.
 
 ## RivetKit Dependency Policy
 
@@ -205,8 +218,9 @@ For all Rivet/RivetKit implementation:
 - Do not add custom backend REST endpoints (no `/v1/*` shim layer).
 - We own the sandbox-agent project; treat sandbox-agent defects as first-party bugs and fix them instead of working around them.
 - Keep strict single-writer ownership: each table/row has exactly one actor writer.
-- Parent actors (`organization`, `repository`, `task`, `history`, `sandbox-instance`) use command-only loops with no timeout.
+- Parent actors (`organization`, `task`, `sandbox-instance`) use command-only loops with no timeout.
 - Periodic syncing lives in dedicated child actors with one timeout cadence each.
+- **Task actors must be created lazily** — never during sync or bulk operations. PR sync writes virtual entries to the org's local `taskIndex`/`taskSummaries` tables. The task actor is created on first user interaction via `getOrCreate`. See `packages/backend/CLAUDE.md` "Lazy Task Actor Creation" for details.
 - Do not build blocking flows that wait on external systems to become ready or complete. Prefer push-based progression driven by actor messages, events, webhooks, or queue/workflow state changes.
 - Use workflows/background commands for any repo sync, sandbox provisioning, agent install, branch restack/rebase, or other multi-step external work. Do not keep user-facing actions/requests open while that work runs.
 - `send` policy: always `await` the `send(...)` call itself so enqueue failures surface immediately, but default to `wait: false`.
@@ -227,8 +241,8 @@ Action handlers must return fast. The pattern:
 
 Examples:
 - `createTask` → `wait: true` (returns `{ taskId }`), then enqueue provisioning with `wait: false`. Client sees task appear immediately with pending status, observes `ready` via organization events.
-- `sendWorkbenchMessage` → validate session is `ready` (throw if not), enqueue with `wait: false`. Client observes session transition to `running` → `idle` via session events.
-- `createWorkbenchSession` → `wait: true` (returns `{ tabId }`), enqueue sandbox provisioning with `wait: false`. Client observes `pending_provision` → `ready` via task events.
+- `sendWorkspaceMessage` → validate session is `ready` (throw if not), enqueue with `wait: false`. Client observes session transition to `running` → `idle` via session events.
+- `createWorkspaceSession` → `wait: true` (returns `{ sessionId }`), enqueue sandbox provisioning with `wait: false`. Client observes `pending_provision` → `ready` via task events.
 
 Never use `wait: true` for operations that depend on external readiness, sandbox I/O, agent responses, git network operations, polling loops, or long-running queue drains. Never hold an action open while waiting for an external system to become ready — that is a polling/retry loop in disguise.
 
@@ -240,11 +254,11 @@ All `wait: true` sends must have an explicit `timeout`. Maximum timeout for any 
 
 ### Task creation: resolve metadata before creating the actor
 
-When creating a task, all deterministic metadata (title, branch name) must be resolved synchronously in the parent actor (repository) *before* the task actor is created. The task actor must never be created with null `branchName` or `title`.
+When creating a task, all deterministic metadata (title, branch name) must be resolved synchronously in the organization actor *before* the task actor is created. The task actor must never be created with null `branchName` or `title`.
 
 - Title is derived from the task description via `deriveFallbackTitle()` — pure string manipulation, no external I/O.
 - Branch name is derived from the title via `sanitizeBranchName()` + conflict checking against the repository's task index.
-- The repository actor already has the task index and GitHub-backed default branch metadata. Resolve the branch name there without local git fetches.
+- The organization actor owns the task index and reads GitHub-backed default branch metadata from the github-data actor. Resolve the branch name there without local git fetches.
 - Do not defer naming to a background provision workflow. Do not poll for names to become available.
 - The `onBranch` path (attaching to an existing branch) and the new-task path should both produce a fully-named task record on return.
 - Actor handle policy:
@@ -320,9 +334,9 @@ Each entry must include:
 - Friction/issue
 - Attempted fix/workaround and outcome
 
-## History Events
+## Audit Log Events
 
-Log notable workflow changes to `events` so `hf history` remains complete:
+Log notable workflow changes to `events` so the audit log remains complete:
 
 - create
 - attach
@@ -330,6 +344,8 @@ Log notable workflow changes to `events` so `hf history` remains complete:
 - archive/kill
 - status transitions
 - PR state transitions
+
+When adding new task/workspace commands, always add a corresponding audit log event.
 
 ## Validation After Changes
 

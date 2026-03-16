@@ -2,8 +2,10 @@
 import { eq } from "drizzle-orm";
 import type { TaskRecord, TaskStatus } from "@sandbox-agent/foundry-shared";
 import { task as taskTable, taskRuntime, taskSandboxes } from "../db/schema.js";
-import { historyKey } from "../../keys.js";
-import { broadcastTaskUpdate } from "../workbench.js";
+import { getOrCreateAuditLog, getOrCreateOrganization } from "../../handles.js";
+import { broadcastTaskUpdate } from "../workspace.js";
+import { getActorRuntimeContext } from "../../context.js";
+import { defaultSandboxProviderId } from "../../../sandbox-config.js";
 
 export const TASK_ROW_ID = 1;
 
@@ -56,50 +58,32 @@ export function buildAgentPrompt(task: string): string {
   return task.trim();
 }
 
-export async function setTaskState(ctx: any, status: TaskStatus, statusMessage?: string): Promise<void> {
+export async function setTaskState(ctx: any, status: TaskStatus): Promise<void> {
   const now = Date.now();
   const db = ctx.db;
   await db.update(taskTable).set({ status, updatedAt: now }).where(eq(taskTable.id, TASK_ROW_ID)).run();
 
-  if (statusMessage != null) {
-    await db
-      .insert(taskRuntime)
-      .values({
-        id: TASK_ROW_ID,
-        activeSandboxId: null,
-        activeSessionId: null,
-        activeSwitchTarget: null,
-        activeCwd: null,
-        statusMessage,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: taskRuntime.id,
-        set: {
-          statusMessage,
-          updatedAt: now,
-        },
-      })
-      .run();
-  }
-
   await broadcastTaskUpdate(ctx);
 }
 
+/**
+ * Read the task's current record from its local SQLite DB.
+ * If the task actor was lazily created (virtual task from PR sync) and has no
+ * DB rows yet, auto-initializes by reading branch/title from the org actor's
+ * getTaskIndexEntry. This is the self-initialization path for lazy task actors.
+ */
 export async function getCurrentRecord(ctx: any): Promise<TaskRecord> {
   const db = ctx.db;
-  const row = await db
+  const organization = await getOrCreateOrganization(ctx, ctx.state.organizationId);
+  let row = await db
     .select({
       branchName: taskTable.branchName,
       title: taskTable.title,
       task: taskTable.task,
       sandboxProviderId: taskTable.sandboxProviderId,
       status: taskTable.status,
-      statusMessage: taskRuntime.statusMessage,
+      pullRequestJson: taskTable.pullRequestJson,
       activeSandboxId: taskRuntime.activeSandboxId,
-      activeSessionId: taskRuntime.activeSessionId,
-      agentType: taskTable.agentType,
-      prSubmitted: taskTable.prSubmitted,
       createdAt: taskTable.createdAt,
       updatedAt: taskTable.updatedAt,
     })
@@ -109,7 +93,58 @@ export async function getCurrentRecord(ctx: any): Promise<TaskRecord> {
     .get();
 
   if (!row) {
-    throw new Error(`Task not found: ${ctx.state.taskId}`);
+    // Virtual task — auto-initialize from org actor's task index data
+    let branchName: string | null = null;
+    let title = "Untitled";
+    try {
+      const entry = await organization.getTaskIndexEntry({ taskId: ctx.state.taskId });
+      branchName = entry?.branchName ?? null;
+      title = entry?.title ?? title;
+    } catch {}
+
+    const { config } = getActorRuntimeContext();
+    const { initBootstrapDbActivity, initCompleteActivity } = await import("./init.js");
+    await initBootstrapDbActivity(ctx, {
+      sandboxProviderId: defaultSandboxProviderId(config),
+      branchName,
+      title,
+      task: title,
+    });
+    await initCompleteActivity(ctx, { sandboxProviderId: defaultSandboxProviderId(config) });
+
+    // Re-read the row after initialization
+    const initialized = await db
+      .select({
+        branchName: taskTable.branchName,
+        title: taskTable.title,
+        task: taskTable.task,
+        sandboxProviderId: taskTable.sandboxProviderId,
+        status: taskTable.status,
+        pullRequestJson: taskTable.pullRequestJson,
+        activeSandboxId: taskRuntime.activeSandboxId,
+        createdAt: taskTable.createdAt,
+        updatedAt: taskTable.updatedAt,
+      })
+      .from(taskTable)
+      .leftJoin(taskRuntime, eq(taskTable.id, taskRuntime.id))
+      .where(eq(taskTable.id, TASK_ROW_ID))
+      .get();
+
+    if (!initialized) {
+      throw new Error(`Task not found after initialization: ${ctx.state.taskId}`);
+    }
+
+    row = initialized;
+  }
+
+  const repositoryMetadata = await organization.getRepositoryMetadata({ repoId: ctx.state.repoId });
+  let pullRequest = null;
+  if (row.pullRequestJson) {
+    try {
+      pullRequest = JSON.parse(row.pullRequestJson);
+    } catch {
+      pullRequest = null;
+    }
   }
 
   const sandboxes = await db
@@ -128,16 +163,15 @@ export async function getCurrentRecord(ctx: any): Promise<TaskRecord> {
   return {
     organizationId: ctx.state.organizationId,
     repoId: ctx.state.repoId,
-    repoRemote: ctx.state.repoRemote,
+    repoRemote: repositoryMetadata.remoteUrl,
     taskId: ctx.state.taskId,
     branchName: row.branchName,
     title: row.title,
     task: row.task,
     sandboxProviderId: row.sandboxProviderId,
     status: row.status,
-    statusMessage: row.statusMessage ?? null,
     activeSandboxId: row.activeSandboxId ?? null,
-    activeSessionId: row.activeSessionId ?? null,
+    pullRequest,
     sandboxes: sandboxes.map((sb) => ({
       sandboxId: sb.sandboxId,
       sandboxProviderId: sb.sandboxProviderId,
@@ -147,31 +181,19 @@ export async function getCurrentRecord(ctx: any): Promise<TaskRecord> {
       createdAt: sb.createdAt,
       updatedAt: sb.updatedAt,
     })),
-    agentType: row.agentType ?? null,
-    prSubmitted: Boolean(row.prSubmitted),
-    diffStat: null,
-    hasUnpushed: null,
-    conflictsWithMain: null,
-    parentBranch: null,
-    prUrl: null,
-    prAuthor: null,
-    ciStatus: null,
-    reviewStatus: null,
-    reviewer: null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   } as TaskRecord;
 }
 
-export async function appendHistory(ctx: any, kind: string, payload: Record<string, unknown>): Promise<void> {
-  const client = ctx.client();
-  const history = await client.history.getOrCreate(historyKey(ctx.state.organizationId, ctx.state.repoId), {
-    createWithInput: { organizationId: ctx.state.organizationId, repoId: ctx.state.repoId },
-  });
-  await history.append({
+export async function appendAuditLog(ctx: any, kind: string, payload: Record<string, unknown>): Promise<void> {
+  const row = await ctx.db.select({ branchName: taskTable.branchName }).from(taskTable).where(eq(taskTable.id, TASK_ROW_ID)).get();
+  const auditLog = await getOrCreateAuditLog(ctx, ctx.state.organizationId);
+  void auditLog.append({
     kind,
+    repoId: ctx.state.repoId,
     taskId: ctx.state.taskId,
-    branchName: ctx.state.branchName,
+    branchName: row?.branchName ?? null,
     payload,
   });
 

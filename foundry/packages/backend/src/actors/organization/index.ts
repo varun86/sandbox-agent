@@ -1,11 +1,10 @@
-import { actor, queue } from "rivetkit";
-import { workflow } from "rivetkit/workflow";
+import { actor } from "rivetkit";
 import { organizationDb } from "./db/db.js";
-import { runOrganizationWorkflow, ORGANIZATION_QUEUE_NAMES, organizationActions } from "./actions.js";
+import { organizationActions } from "./actions.js";
+import { organizationCommandActions } from "./workflow.js";
 
 export const organization = actor({
   db: organizationDb,
-  queues: Object.fromEntries(ORGANIZATION_QUEUE_NAMES.map((name) => [name, queue()])),
   options: {
     name: "Organization",
     icon: "compass",
@@ -14,6 +13,8 @@ export const organization = actor({
   createState: (_c, organizationId: string) => ({
     organizationId,
   }),
-  actions: organizationActions,
-  run: workflow(runOrganizationWorkflow),
+  actions: {
+    ...organizationActions,
+    ...organizationCommandActions,
+  },
 });

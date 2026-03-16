@@ -181,6 +181,8 @@ export const AgentIcon = memo(function AgentIcon({ agent, size = 14 }: { agent: 
       return <OpenAIIcon size={size} />;
     case "Cursor":
       return <CursorIcon size={size} />;
+    default:
+      return <CursorIcon size={size} />;
   }
 });
 

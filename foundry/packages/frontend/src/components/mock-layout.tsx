@@ -1,14 +1,17 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useStyletron } from "baseui";
 import {
+  DEFAULT_WORKSPACE_MODEL_GROUPS,
+  DEFAULT_WORKSPACE_MODEL_ID,
   createErrorContext,
   type FoundryOrganization,
-  type TaskWorkbenchSnapshot,
-  type WorkbenchOpenPrSummary,
-  type WorkbenchSessionSummary,
-  type WorkbenchTaskDetail,
-  type WorkbenchTaskSummary,
+  type TaskWorkspaceSnapshot,
+  type WorkspaceModelGroup,
+  type WorkspaceSessionSummary,
+  type WorkspaceTaskDetail,
+  type WorkspaceTaskSummary,
 } from "@sandbox-agent/foundry-shared";
 import { useSubscription } from "@sandbox-agent/foundry-client";
 
@@ -39,7 +42,7 @@ import {
   type Message,
   type ModelId,
 } from "./mock-layout/view-model";
-import { activeMockOrganization, useMockAppSnapshot } from "../lib/mock-app";
+import { activeMockOrganization, activeMockUser, useMockAppClient, useMockAppSnapshot } from "../lib/mock-app";
 import { backendClient } from "../lib/backend";
 import { subscriptionManager } from "../lib/subscription";
 import { describeTaskState, isProvisioningTaskStatus } from "../features/tasks/status";
@@ -77,29 +80,38 @@ function sanitizeActiveSessionId(task: Task, sessionId: string | null | undefine
   return openDiffs.length > 0 ? diffTabId(openDiffs[openDiffs.length - 1]!) : lastAgentSessionId;
 }
 
-function githubInstallationWarningTitle(organization: FoundryOrganization): string {
-  return organization.github.installationStatus === "install_required" ? "GitHub App not installed" : "GitHub App needs reconnection";
+type GithubStatusView = Pick<
+  FoundryOrganization["github"],
+  "connectedAccount" | "installationStatus" | "syncStatus" | "importedRepoCount" | "lastSyncLabel"
+> & {
+  syncPhase?: string | null;
+  processedRepositoryCount?: number;
+  totalRepositoryCount?: number;
+};
+
+function githubInstallationWarningTitle(github: GithubStatusView): string {
+  return github.installationStatus === "install_required" ? "GitHub App not installed" : "GitHub App needs reconnection";
 }
 
-function githubInstallationWarningDetail(organization: FoundryOrganization): string {
-  const statusDetail = organization.github.lastSyncLabel.trim();
+function githubInstallationWarningDetail(github: GithubStatusView): string {
+  const statusDetail = github.lastSyncLabel.trim();
   const requirementDetail =
-    organization.github.installationStatus === "install_required"
+    github.installationStatus === "install_required"
       ? "Webhooks are required for Foundry to function. Repo sync and PR updates will not work until the GitHub App is installed for this organization."
       : "Webhook delivery is unavailable. Repo sync and PR updates will not work until the GitHub App is reconnected.";
   return statusDetail ? `${requirementDetail} ${statusDetail}.` : requirementDetail;
 }
 
 function GithubInstallationWarning({
-  organization,
+  github,
   css,
   t,
 }: {
-  organization: FoundryOrganization;
+  github: GithubStatusView;
   css: ReturnType<typeof useStyletron>[0];
   t: ReturnType<typeof useFoundryTokens>;
 }) {
-  if (organization.github.installationStatus === "connected") {
+  if (github.installationStatus === "connected") {
     return null;
   }
 
@@ -123,15 +135,15 @@ function GithubInstallationWarning({
     >
       <CircleAlert size={15} color={t.statusError} />
       <div className={css({ display: "flex", flexDirection: "column", gap: "3px" })}>
-        <div className={css({ fontSize: "11px", fontWeight: 600, color: t.textPrimary })}>{githubInstallationWarningTitle(organization)}</div>
-        <div className={css({ fontSize: "11px", lineHeight: 1.45, color: t.textMuted })}>{githubInstallationWarningDetail(organization)}</div>
+        <div className={css({ fontSize: "11px", fontWeight: 600, color: t.textPrimary })}>{githubInstallationWarningTitle(github)}</div>
+        <div className={css({ fontSize: "11px", lineHeight: 1.45, color: t.textMuted })}>{githubInstallationWarningDetail(github)}</div>
       </div>
     </div>
   );
 }
 
 function toSessionModel(
-  summary: WorkbenchSessionSummary,
+  summary: WorkspaceSessionSummary,
   sessionDetail?: { draft: Task["sessions"][number]["draft"]; transcript: Task["sessions"][number]["transcript"] },
 ): Task["sessions"][number] {
   return {
@@ -155,8 +167,8 @@ function toSessionModel(
 }
 
 function toTaskModel(
-  summary: WorkbenchTaskSummary,
-  detail?: WorkbenchTaskDetail,
+  summary: WorkspaceTaskSummary,
+  detail?: WorkspaceTaskDetail,
   sessionCache?: Map<string, { draft: Task["sessions"][number]["draft"]; transcript: Task["sessions"][number]["transcript"] }>,
 ): Task {
   const sessions = detail?.sessionsSummary ?? summary.sessionsSummary;
@@ -164,53 +176,18 @@ function toTaskModel(
     id: summary.id,
     repoId: summary.repoId,
     title: detail?.title ?? summary.title,
-    status: detail?.runtimeStatus ?? detail?.status ?? summary.status,
-    runtimeStatus: detail?.runtimeStatus,
-    statusMessage: detail?.statusMessage ?? null,
+    status: detail?.status ?? summary.status,
     repoName: detail?.repoName ?? summary.repoName,
     updatedAtMs: detail?.updatedAtMs ?? summary.updatedAtMs,
     branch: detail?.branch ?? summary.branch,
     pullRequest: detail?.pullRequest ?? summary.pullRequest,
+    activeSessionId: detail?.activeSessionId ?? summary.activeSessionId ?? null,
     sessions: sessions.map((session) => toSessionModel(session, sessionCache?.get(session.id))),
     fileChanges: detail?.fileChanges ?? [],
     diffs: detail?.diffs ?? {},
     fileTree: detail?.fileTree ?? [],
     minutesUsed: detail?.minutesUsed ?? 0,
     activeSandboxId: detail?.activeSandboxId ?? null,
-  };
-}
-
-const OPEN_PR_TASK_PREFIX = "pr:";
-
-function openPrTaskId(prId: string): string {
-  return `${OPEN_PR_TASK_PREFIX}${prId}`;
-}
-
-function isOpenPrTaskId(taskId: string): boolean {
-  return taskId.startsWith(OPEN_PR_TASK_PREFIX);
-}
-
-function toOpenPrTaskModel(pullRequest: WorkbenchOpenPrSummary): Task {
-  return {
-    id: openPrTaskId(pullRequest.prId),
-    repoId: pullRequest.repoId,
-    title: pullRequest.title,
-    status: "new",
-    runtimeStatus: undefined,
-    statusMessage: pullRequest.authorLogin ? `@${pullRequest.authorLogin}` : null,
-    repoName: pullRequest.repoFullName,
-    updatedAtMs: pullRequest.updatedAtMs,
-    branch: pullRequest.headRefName,
-    pullRequest: {
-      number: pullRequest.number,
-      status: pullRequest.isDraft ? "draft" : "ready",
-    },
-    sessions: [],
-    fileChanges: [],
-    diffs: {},
-    fileTree: [],
-    minutesUsed: 0,
-    activeSandboxId: null,
   };
 }
 
@@ -230,18 +207,41 @@ function sessionStateMessage(tab: Task["sessions"][number] | null | undefined): 
   return null;
 }
 
-function groupRepositories(repos: Array<{ id: string; label: string }>, tasks: Task[]) {
+function groupRepositories(
+  repos: Array<{ id: string; label: string }>,
+  tasks: Task[],
+  openPullRequests?: Array<{
+    repoId: string;
+    repoFullName: string;
+    number: number;
+    title: string;
+    state: string;
+    url: string;
+    headRefName: string;
+    authorLogin: string | null;
+    isDraft: boolean;
+  }>,
+) {
   return repos
     .map((repo) => ({
       id: repo.id,
       label: repo.label,
       updatedAtMs: tasks.filter((task) => task.repoId === repo.id).reduce((latest, task) => Math.max(latest, task.updatedAtMs), 0),
       tasks: tasks.filter((task) => task.repoId === repo.id).sort((left, right) => right.updatedAtMs - left.updatedAtMs),
+      pullRequests: (openPullRequests ?? []).filter((pr) => pr.repoId === repo.id),
     }))
-    .filter((repo) => repo.tasks.length > 0);
+    .sort((a, b) => {
+      // Repos with tasks first, then repos with PRs, then alphabetical
+      const aHasActivity = a.tasks.length > 0 || a.pullRequests.length > 0;
+      const bHasActivity = b.tasks.length > 0 || b.pullRequests.length > 0;
+      if (aHasActivity && !bHasActivity) return -1;
+      if (!aHasActivity && bHasActivity) return 1;
+      if (a.updatedAtMs !== b.updatedAtMs) return b.updatedAtMs - a.updatedAtMs;
+      return a.label.localeCompare(b.label);
+    });
 }
 
-interface WorkbenchActions {
+interface WorkspaceActions {
   createTask(input: {
     repoId: string;
     task: string;
@@ -250,28 +250,26 @@ interface WorkbenchActions {
     onBranch?: string;
     model?: ModelId;
   }): Promise<{ taskId: string; sessionId?: string }>;
-  markTaskUnread(input: { taskId: string }): Promise<void>;
-  renameTask(input: { taskId: string; value: string }): Promise<void>;
-  renameBranch(input: { taskId: string; value: string }): Promise<void>;
-  archiveTask(input: { taskId: string }): Promise<void>;
-  publishPr(input: { taskId: string }): Promise<void>;
-  revertFile(input: { taskId: string; path: string }): Promise<void>;
-  updateDraft(input: { taskId: string; sessionId: string; text: string; attachments: LineAttachment[] }): Promise<void>;
-  sendMessage(input: { taskId: string; sessionId: string; text: string; attachments: LineAttachment[] }): Promise<void>;
-  stopAgent(input: { taskId: string; sessionId: string }): Promise<void>;
-  setSessionUnread(input: { taskId: string; sessionId: string; unread: boolean }): Promise<void>;
-  renameSession(input: { taskId: string; sessionId: string; title: string }): Promise<void>;
-  closeSession(input: { taskId: string; sessionId: string }): Promise<void>;
-  addSession(input: { taskId: string; model?: string }): Promise<{ sessionId: string }>;
-  changeModel(input: { taskId: string; sessionId: string; model: ModelId }): Promise<void>;
-  reloadGithubOrganization(): Promise<void>;
-  reloadGithubPullRequests(): Promise<void>;
-  reloadGithubRepository(repoId: string): Promise<void>;
-  reloadGithubPullRequest(repoId: string, prNumber: number): Promise<void>;
+  markTaskUnread(input: { repoId: string; taskId: string }): Promise<void>;
+  renameTask(input: { repoId: string; taskId: string; value: string }): Promise<void>;
+  archiveTask(input: { repoId: string; taskId: string }): Promise<void>;
+  publishPr(input: { repoId: string; taskId: string }): Promise<void>;
+  revertFile(input: { repoId: string; taskId: string; path: string }): Promise<void>;
+  updateDraft(input: { repoId: string; taskId: string; sessionId: string; text: string; attachments: LineAttachment[] }): Promise<void>;
+  sendMessage(input: { repoId: string; taskId: string; sessionId: string; text: string; attachments: LineAttachment[] }): Promise<void>;
+  stopAgent(input: { repoId: string; taskId: string; sessionId: string }): Promise<void>;
+  selectSession(input: { repoId: string; taskId: string; sessionId: string }): Promise<void>;
+  setSessionUnread(input: { repoId: string; taskId: string; sessionId: string; unread: boolean }): Promise<void>;
+  renameSession(input: { repoId: string; taskId: string; sessionId: string; title: string }): Promise<void>;
+  closeSession(input: { repoId: string; taskId: string; sessionId: string }): Promise<void>;
+  addSession(input: { repoId: string; taskId: string; model?: string }): Promise<{ sessionId: string }>;
+  changeModel(input: { repoId: string; taskId: string; sessionId: string; model: ModelId }): Promise<void>;
+  adminReloadGithubOrganization(): Promise<void>;
+  adminReloadGithubRepository(repoId: string): Promise<void>;
 }
 
 const TranscriptPanel = memo(function TranscriptPanel({
-  taskWorkbenchClient,
+  taskWorkspaceClient,
   task,
   hasSandbox,
   activeSessionId,
@@ -288,9 +286,10 @@ const TranscriptPanel = memo(function TranscriptPanel({
   rightSidebarCollapsed,
   onToggleRightSidebar,
   selectedSessionHydrating = false,
+  modelGroups,
   onNavigateToUsage,
 }: {
-  taskWorkbenchClient: WorkbenchActions;
+  taskWorkspaceClient: WorkspaceActions;
   task: Task;
   hasSandbox: boolean;
   activeSessionId: string | null;
@@ -307,11 +306,15 @@ const TranscriptPanel = memo(function TranscriptPanel({
   rightSidebarCollapsed?: boolean;
   onToggleRightSidebar?: () => void;
   selectedSessionHydrating?: boolean;
+  modelGroups: WorkspaceModelGroup[];
   onNavigateToUsage?: () => void;
 }) {
   const t = useFoundryTokens();
-  const [defaultModel, setDefaultModel] = useState<ModelId>("claude-sonnet-4");
-  const [editingField, setEditingField] = useState<"title" | "branch" | null>(null);
+  const appSnapshot = useMockAppSnapshot();
+  const appClient = useMockAppClient();
+  const currentUser = activeMockUser(appSnapshot);
+  const defaultModel = currentUser?.defaultModel ?? DEFAULT_WORKSPACE_MODEL_ID;
+  const [editingField, setEditingField] = useState<"title" | null>(null);
   const [editValue, setEditValue] = useState("");
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingSessionName, setEditingSessionName] = useState("");
@@ -333,9 +336,8 @@ const TranscriptPanel = memo(function TranscriptPanel({
   const isTerminal = task.status === "archived";
   const historyEvents = useMemo(() => buildHistoryEvents(task.sessions), [task.sessions]);
   const activeMessages = useMemo(() => buildDisplayMessages(activeAgentSession), [activeAgentSession]);
-  const taskRuntimeStatus = task.runtimeStatus ?? task.status;
-  const taskState = describeTaskState(taskRuntimeStatus, task.statusMessage ?? null);
-  const taskProvisioning = isProvisioningTaskStatus(taskRuntimeStatus);
+  const taskState = describeTaskState(task.status);
+  const taskProvisioning = isProvisioningTaskStatus(task.status);
   const taskProvisioningMessage = taskState.detail;
   const activeSessionMessage = sessionStateMessage(activeAgentSession);
   const showPendingSessionState =
@@ -344,16 +346,17 @@ const TranscriptPanel = memo(function TranscriptPanel({
     (activeAgentSession.status === "pending_provision" || activeAgentSession.status === "pending_session_create" || activeAgentSession.status === "error") &&
     activeMessages.length === 0;
   const serverDraft = promptSession?.draft.text ?? "";
-  const serverAttachments = promptSession?.draft.attachments ?? [];
+  const serverAttachments = promptSession?.draft.attachments;
+  const serverAttachmentsJson = JSON.stringify(serverAttachments ?? []);
 
   // Sync server → local only when user hasn't typed recently (3s cooldown)
   const DRAFT_SYNC_COOLDOWN_MS = 3_000;
   useEffect(() => {
     if (Date.now() - lastEditTimeRef.current > DRAFT_SYNC_COOLDOWN_MS) {
       setLocalDraft(serverDraft);
-      setLocalAttachments(serverAttachments);
+      setLocalAttachments(serverAttachments ?? []);
     }
-  }, [serverDraft, serverAttachments]);
+  }, [serverDraft, serverAttachmentsJson]);
 
   // Reset local draft immediately on session/task switch
   useEffect(() => {
@@ -436,14 +439,15 @@ const TranscriptPanel = memo(function TranscriptPanel({
       return;
     }
 
-    void taskWorkbenchClient.setSessionUnread({
+    void taskWorkspaceClient.setSessionUnread({
+      repoId: task.repoId,
       taskId: task.id,
       sessionId: activeAgentSession.id,
       unread: false,
     });
   }, [activeAgentSession?.id, activeAgentSession?.unread, task.id]);
 
-  const startEditingField = useCallback((field: "title" | "branch", value: string) => {
+  const startEditingField = useCallback((field: "title", value: string) => {
     setEditingField(field);
     setEditValue(value);
   }, []);
@@ -453,18 +457,14 @@ const TranscriptPanel = memo(function TranscriptPanel({
   }, []);
 
   const commitEditingField = useCallback(
-    (field: "title" | "branch") => {
+    (field: "title") => {
       const value = editValue.trim();
       if (!value) {
         setEditingField(null);
         return;
       }
 
-      if (field === "title") {
-        void taskWorkbenchClient.renameTask({ taskId: task.id, value });
-      } else {
-        void taskWorkbenchClient.renameBranch({ taskId: task.id, value });
-      }
+      void taskWorkspaceClient.renameTask({ repoId: task.repoId, taskId: task.id, value });
       setEditingField(null);
     },
     [editValue, task.id],
@@ -474,7 +474,8 @@ const TranscriptPanel = memo(function TranscriptPanel({
 
   const flushDraft = useCallback(
     (text: string, nextAttachments: LineAttachment[], sessionId: string) => {
-      void taskWorkbenchClient.updateDraft({
+      void taskWorkspaceClient.updateDraft({
+        repoId: task.repoId,
         taskId: task.id,
         sessionId,
         text,
@@ -535,7 +536,8 @@ const TranscriptPanel = memo(function TranscriptPanel({
 
     onSetActiveSessionId(promptSession.id);
     onSetLastAgentSessionId(promptSession.id);
-    void taskWorkbenchClient.sendMessage({
+    void taskWorkspaceClient.sendMessage({
+      repoId: task.repoId,
       taskId: task.id,
       sessionId: promptSession.id,
       text,
@@ -548,7 +550,8 @@ const TranscriptPanel = memo(function TranscriptPanel({
       return;
     }
 
-    void taskWorkbenchClient.stopAgent({
+    void taskWorkspaceClient.stopAgent({
+      repoId: task.repoId,
       taskId: task.id,
       sessionId: promptSession.id,
     });
@@ -560,9 +563,15 @@ const TranscriptPanel = memo(function TranscriptPanel({
 
       if (!isDiffTab(sessionId)) {
         onSetLastAgentSessionId(sessionId);
+        void taskWorkspaceClient.selectSession({
+          repoId: task.repoId,
+          taskId: task.id,
+          sessionId,
+        });
         const session = task.sessions.find((candidate) => candidate.id === sessionId);
         if (session?.unread) {
-          void taskWorkbenchClient.setSessionUnread({
+          void taskWorkspaceClient.setSessionUnread({
+            repoId: task.repoId,
             taskId: task.id,
             sessionId,
             unread: false,
@@ -571,14 +580,14 @@ const TranscriptPanel = memo(function TranscriptPanel({
         onSyncRouteSession(task.id, sessionId);
       }
     },
-    [task.id, task.sessions, onSetActiveSessionId, onSetLastAgentSessionId, onSyncRouteSession],
+    [task.id, task.repoId, task.sessions, onSetActiveSessionId, onSetLastAgentSessionId, onSyncRouteSession],
   );
 
   const setSessionUnread = useCallback(
     (sessionId: string, unread: boolean) => {
-      void taskWorkbenchClient.setSessionUnread({ taskId: task.id, sessionId, unread });
+      void taskWorkspaceClient.setSessionUnread({ repoId: task.repoId, taskId: task.id, sessionId, unread });
     },
-    [task.id],
+    [task.id, task.repoId],
   );
 
   const startRenamingSession = useCallback(
@@ -610,7 +619,8 @@ const TranscriptPanel = memo(function TranscriptPanel({
       return;
     }
 
-    void taskWorkbenchClient.renameSession({
+    void taskWorkspaceClient.renameSession({
+      repoId: task.repoId,
       taskId: task.id,
       sessionId: editingSessionId,
       title: trimmedName,
@@ -631,9 +641,9 @@ const TranscriptPanel = memo(function TranscriptPanel({
       }
 
       onSyncRouteSession(task.id, nextSessionId);
-      void taskWorkbenchClient.closeSession({ taskId: task.id, sessionId });
+      void taskWorkspaceClient.closeSession({ repoId: task.repoId, taskId: task.id, sessionId });
     },
-    [activeSessionId, task.id, task.sessions, lastAgentSessionId, onSetActiveSessionId, onSetLastAgentSessionId, onSyncRouteSession],
+    [activeSessionId, task.id, task.repoId, task.sessions, lastAgentSessionId, onSetActiveSessionId, onSetLastAgentSessionId, onSyncRouteSession],
   );
 
   const closeDiffTab = useCallback(
@@ -651,12 +661,12 @@ const TranscriptPanel = memo(function TranscriptPanel({
 
   const addSession = useCallback(() => {
     void (async () => {
-      const { sessionId } = await taskWorkbenchClient.addSession({ taskId: task.id });
+      const { sessionId } = await taskWorkspaceClient.addSession({ repoId: task.repoId, taskId: task.id });
       onSetLastAgentSessionId(sessionId);
       onSetActiveSessionId(sessionId);
       onSyncRouteSession(task.id, sessionId);
     })();
-  }, [task.id, onSetActiveSessionId, onSetLastAgentSessionId, onSyncRouteSession]);
+  }, [task.id, task.repoId, onSetActiveSessionId, onSetLastAgentSessionId, onSyncRouteSession]);
 
   const changeModel = useCallback(
     (model: ModelId) => {
@@ -664,7 +674,8 @@ const TranscriptPanel = memo(function TranscriptPanel({
         throw new Error(`Unable to change model for task ${task.id} without an active prompt session`);
       }
 
-      void taskWorkbenchClient.changeModel({
+      void taskWorkspaceClient.changeModel({
+        repoId: task.repoId,
         taskId: task.id,
         sessionId: promptSession.id,
         model,
@@ -939,7 +950,7 @@ const TranscriptPanel = memo(function TranscriptPanel({
               messageRefs={messageRefs}
               historyEvents={historyEvents}
               onSelectHistoryEvent={jumpToHistoryEvent}
-              targetMessageId={pendingHistoryTarget && activeSessionId === pendingHistoryTarget.sessionId ? pendingHistoryTarget.messageId : null}
+              targetMessageId={pendingHistoryTarget && activeAgentSession?.id === pendingHistoryTarget.sessionId ? pendingHistoryTarget.messageId : null}
               onTargetMessageResolved={() => setPendingHistoryTarget(null)}
               copiedMessageId={copiedMessageId}
               onCopyMessage={(message) => {
@@ -958,6 +969,7 @@ const TranscriptPanel = memo(function TranscriptPanel({
             textareaRef={textareaRef}
             placeholder={!promptSession.created ? "Describe your task..." : "Send a message..."}
             attachments={attachments}
+            modelGroups={modelGroups}
             defaultModel={defaultModel}
             model={promptSession.model}
             isRunning={promptSession.status === "running"}
@@ -966,7 +978,9 @@ const TranscriptPanel = memo(function TranscriptPanel({
             onStop={stopAgent}
             onRemoveAttachment={removeAttachment}
             onChangeModel={changeModel}
-            onSetDefaultModel={setDefaultModel}
+            onSetDefaultModel={(model) => {
+              void appClient.setDefaultModel(model);
+            }}
           />
         ) : null}
       </div>
@@ -1280,45 +1294,37 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
   const [css] = useStyletron();
   const t = useFoundryTokens();
   const navigate = useNavigate();
-  const taskWorkbenchClient = useMemo<WorkbenchActions>(
+  const taskWorkspaceClient = useMemo<WorkspaceActions>(
     () => ({
-      createTask: (input) => backendClient.createWorkbenchTask(organizationId, input),
-      markTaskUnread: (input) => backendClient.markWorkbenchUnread(organizationId, input),
-      renameTask: (input) => backendClient.renameWorkbenchTask(organizationId, input),
-      renameBranch: (input) => backendClient.renameWorkbenchBranch(organizationId, input),
-      archiveTask: async (input) => backendClient.runAction(organizationId, input.taskId, "archive"),
-      publishPr: (input) => backendClient.publishWorkbenchPr(organizationId, input),
-      revertFile: (input) => backendClient.revertWorkbenchFile(organizationId, input),
-      updateDraft: (input) => backendClient.updateWorkbenchDraft(organizationId, input),
-      sendMessage: (input) => backendClient.sendWorkbenchMessage(organizationId, input),
-      stopAgent: (input) => backendClient.stopWorkbenchSession(organizationId, input),
-      setSessionUnread: (input) => backendClient.setWorkbenchSessionUnread(organizationId, input),
-      renameSession: (input) => backendClient.renameWorkbenchSession(organizationId, input),
-      closeSession: (input) => backendClient.closeWorkbenchSession(organizationId, input),
-      addSession: (input) => backendClient.createWorkbenchSession(organizationId, input),
-      changeModel: (input) => backendClient.changeWorkbenchModel(organizationId, input),
-      reloadGithubOrganization: () => backendClient.reloadGithubOrganization(organizationId),
-      reloadGithubPullRequests: () => backendClient.reloadGithubPullRequests(organizationId),
-      reloadGithubRepository: (repoId) => backendClient.reloadGithubRepository(organizationId, repoId),
-      reloadGithubPullRequest: (repoId, prNumber) => backendClient.reloadGithubPullRequest(organizationId, repoId, prNumber),
+      createTask: (input) => backendClient.createWorkspaceTask(organizationId, input),
+      markTaskUnread: (input) => backendClient.markWorkspaceUnread(organizationId, input),
+      renameTask: (input) => backendClient.renameWorkspaceTask(organizationId, input),
+      archiveTask: async (input) => backendClient.runAction(organizationId, input.repoId, input.taskId, "archive"),
+      publishPr: (input) => backendClient.publishWorkspacePr(organizationId, input),
+      revertFile: (input) => backendClient.revertWorkspaceFile(organizationId, input),
+      updateDraft: (input) => backendClient.updateWorkspaceDraft(organizationId, input),
+      sendMessage: (input) => backendClient.sendWorkspaceMessage(organizationId, input),
+      stopAgent: (input) => backendClient.stopWorkspaceSession(organizationId, input),
+      selectSession: (input) => backendClient.selectWorkspaceSession(organizationId, input),
+      setSessionUnread: (input) => backendClient.setWorkspaceSessionUnread(organizationId, input),
+      renameSession: (input) => backendClient.renameWorkspaceSession(organizationId, input),
+      closeSession: (input) => backendClient.closeWorkspaceSession(organizationId, input),
+      addSession: (input) => backendClient.createWorkspaceSession(organizationId, input),
+      changeModel: (input) => backendClient.changeWorkspaceModel(organizationId, input),
+      adminReloadGithubOrganization: () => backendClient.adminReloadGithubOrganization(organizationId),
+      adminReloadGithubRepository: (repoId) => backendClient.adminReloadGithubRepository(organizationId, repoId),
     }),
     [organizationId],
   );
   const organizationState = useSubscription(subscriptionManager, "organization", { organizationId });
-  const organizationRepos = organizationState.data?.repos ?? [];
-  const taskSummaries = organizationState.data?.taskSummaries ?? [];
-  const openPullRequests = organizationState.data?.openPullRequests ?? [];
-  const openPullRequestsByTaskId = useMemo(
-    () => new Map(openPullRequests.map((pullRequest) => [openPrTaskId(pullRequest.prId), pullRequest])),
-    [openPullRequests],
-  );
-  const selectedOpenPullRequest = useMemo(
-    () => (selectedTaskId ? (openPullRequestsByTaskId.get(selectedTaskId) ?? null) : null),
-    [openPullRequestsByTaskId, selectedTaskId],
-  );
+  const organizationReposData = organizationState.data?.repos;
+  const taskSummariesData = organizationState.data?.taskSummaries;
+  const openPullRequestsData = organizationState.data?.openPullRequests;
+  const organizationRepos = organizationReposData ?? [];
+  const taskSummaries = taskSummariesData ?? [];
   const selectedTaskSummary = useMemo(
     () => taskSummaries.find((task) => task.id === selectedTaskId) ?? taskSummaries[0] ?? null,
-    [selectedTaskId, taskSummaries],
+    [selectedTaskId, taskSummariesData],
   );
   const taskState = useSubscription(
     subscriptionManager,
@@ -1359,6 +1365,20 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
       : null,
   );
   const hasSandbox = Boolean(activeSandbox) && sandboxState.status !== "error";
+  const modelGroupsQuery = useQuery({
+    queryKey: ["mock-layout", "workspace-model-groups", organizationId, activeSandbox?.sandboxProviderId ?? "", activeSandbox?.sandboxId ?? ""],
+    enabled: Boolean(activeSandbox?.sandboxId),
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+    queryFn: async () => {
+      if (!activeSandbox) {
+        throw new Error("Cannot load workspace model groups without an active sandbox.");
+      }
+
+      return await backendClient.getSandboxWorkspaceModelGroups(organizationId, activeSandbox.sandboxProviderId, activeSandbox.sandboxId);
+    },
+  });
+  const modelGroups = modelGroupsQuery.data && modelGroupsQuery.data.length > 0 ? modelGroupsQuery.data : DEFAULT_WORKSPACE_MODEL_GROUPS;
   const tasks = useMemo(() => {
     const sessionCache = new Map<string, { draft: Task["sessions"][number]["draft"]; transcript: Task["sessions"][number]["transcript"] }>();
     if (selectedTaskSummary && taskState.data) {
@@ -1383,12 +1403,14 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
     const hydratedTasks = taskSummaries.map((summary) =>
       summary.id === selectedTaskSummary?.id ? toTaskModel(summary, taskState.data, sessionCache) : toTaskModel(summary),
     );
-    const openPrTasks = openPullRequests.map((pullRequest) => toOpenPrTaskModel(pullRequest));
-    return [...hydratedTasks, ...openPrTasks].sort((left, right) => right.updatedAtMs - left.updatedAtMs);
-  }, [openPullRequests, selectedTaskSummary, selectedSessionId, sessionState.data, taskState.data, taskSummaries, organizationId]);
-  const rawRepositories = useMemo(() => groupRepositories(organizationRepos, tasks), [tasks, organizationRepos]);
+    return hydratedTasks.sort((left, right) => right.updatedAtMs - left.updatedAtMs);
+  }, [selectedTaskSummary, selectedSessionId, sessionState.data, taskState.data, taskSummariesData, organizationId]);
+  const openPullRequests = openPullRequestsData ?? [];
+  const rawRepositories = useMemo(() => groupRepositories(organizationRepos, tasks, openPullRequests), [tasks, organizationReposData, openPullRequestsData]);
   const appSnapshot = useMockAppSnapshot();
+  const currentUser = activeMockUser(appSnapshot);
   const activeOrg = activeMockOrganization(appSnapshot);
+  const liveGithub = organizationState.data?.github ?? activeOrg?.github ?? null;
   const navigateToUsage = useCallback(() => {
     if (activeOrg) {
       void navigate({ to: "/organizations/$organizationId/billing" as never, params: { organizationId: activeOrg.id } as never });
@@ -1413,11 +1435,9 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
   const leftWidthRef = useRef(leftWidth);
   const rightWidthRef = useRef(rightWidth);
   const autoCreatingSessionForTaskRef = useRef<Set<string>>(new Set());
-  const resolvingOpenPullRequestsRef = useRef<Set<string>>(new Set());
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
   const [rightSidebarOpen, setRightSidebarOpen] = useState(true);
   const [leftSidebarPeeking, setLeftSidebarPeeking] = useState(false);
-  const [materializingOpenPrId, setMaterializingOpenPrId] = useState<string | null>(null);
   const showDevPanel = useDevPanel();
   const peekTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1484,77 +1504,14 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
   }, []);
 
   const activeTask = useMemo(() => {
-    const realTasks = tasks.filter((task) => !isOpenPrTaskId(task.id));
-    if (selectedOpenPullRequest) {
-      return null;
-    }
     if (selectedTaskId) {
-      return realTasks.find((task) => task.id === selectedTaskId) ?? realTasks[0] ?? null;
+      return tasks.find((task) => task.id === selectedTaskId) ?? tasks[0] ?? null;
     }
-    return realTasks[0] ?? null;
-  }, [selectedOpenPullRequest, selectedTaskId, tasks]);
-
-  const materializeOpenPullRequest = useCallback(
-    async (pullRequest: WorkbenchOpenPrSummary) => {
-      if (resolvingOpenPullRequestsRef.current.has(pullRequest.prId)) {
-        return;
-      }
-
-      resolvingOpenPullRequestsRef.current.add(pullRequest.prId);
-      setMaterializingOpenPrId(pullRequest.prId);
-
-      try {
-        const { taskId, sessionId } = await taskWorkbenchClient.createTask({
-          repoId: pullRequest.repoId,
-          task: `Continue work on GitHub PR #${pullRequest.number}: ${pullRequest.title}`,
-          model: "gpt-5.3-codex",
-          title: pullRequest.title,
-          onBranch: pullRequest.headRefName,
-        });
-        await navigate({
-          to: "/organizations/$organizationId/tasks/$taskId",
-          params: {
-            organizationId,
-            taskId,
-          },
-          search: { sessionId: sessionId ?? undefined },
-          replace: true,
-        });
-      } catch (error) {
-        setMaterializingOpenPrId((current) => (current === pullRequest.prId ? null : current));
-        resolvingOpenPullRequestsRef.current.delete(pullRequest.prId);
-        logger.error(
-          {
-            prId: pullRequest.prId,
-            repoId: pullRequest.repoId,
-            branchName: pullRequest.headRefName,
-            ...createErrorContext(error),
-          },
-          "failed_to_materialize_open_pull_request_task",
-        );
-      }
-    },
-    [navigate, taskWorkbenchClient, organizationId],
-  );
-
-  useEffect(() => {
-    if (!selectedOpenPullRequest) {
-      if (materializingOpenPrId) {
-        resolvingOpenPullRequestsRef.current.delete(materializingOpenPrId);
-      }
-      setMaterializingOpenPrId(null);
-      return;
-    }
-
-    void materializeOpenPullRequest(selectedOpenPullRequest);
-  }, [materializeOpenPullRequest, materializingOpenPrId, selectedOpenPullRequest]);
+    return tasks[0] ?? null;
+  }, [selectedTaskId, tasks]);
 
   useEffect(() => {
     if (activeTask) {
-      return;
-    }
-
-    if (selectedOpenPullRequest || materializingOpenPrId) {
       return;
     }
 
@@ -1574,11 +1531,13 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
       search: { sessionId: fallbackTask?.sessions[0]?.id ?? undefined },
       replace: true,
     });
-  }, [activeTask, materializingOpenPrId, navigate, selectedOpenPullRequest, tasks, organizationId]);
+  }, [activeTask, navigate, tasks, organizationId]);
 
   const openDiffs = activeTask ? sanitizeOpenDiffs(activeTask, openDiffsByTask[activeTask.id]) : [];
   const lastAgentSessionId = activeTask ? sanitizeLastAgentSessionId(activeTask, lastAgentSessionIdByTask[activeTask.id]) : null;
-  const activeSessionId = activeTask ? sanitizeActiveSessionId(activeTask, activeSessionIdByTask[activeTask.id], openDiffs, lastAgentSessionId) : null;
+  const activeSessionId = activeTask
+    ? sanitizeActiveSessionId(activeTask, activeSessionIdByTask[activeTask.id] ?? activeTask.activeSessionId ?? null, openDiffs, lastAgentSessionId)
+    : null;
   const selectedSessionHydrating = Boolean(
     selectedSessionId && activeSessionId === selectedSessionId && sessionState.status === "loading" && !sessionState.data,
   );
@@ -1635,6 +1594,7 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
   }, [activeTask, lastAgentSessionIdByTask, selectedSessionId, syncRouteSession]);
 
   useEffect(() => {
+    const organizationRepos = organizationReposData ?? [];
     if (selectedNewTaskRepoId && organizationRepos.some((repo) => repo.id === selectedNewTaskRepoId)) {
       return;
     }
@@ -1644,7 +1604,7 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
     if (fallbackRepoId !== selectedNewTaskRepoId) {
       setSelectedNewTaskRepoId(fallbackRepoId);
     }
-  }, [activeTask?.repoId, selectedNewTaskRepoId, organizationRepos]);
+  }, [activeTask?.repoId, selectedNewTaskRepoId, organizationReposData]);
 
   useEffect(() => {
     if (!activeTask) {
@@ -1664,7 +1624,7 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
     autoCreatingSessionForTaskRef.current.add(activeTask.id);
     void (async () => {
       try {
-        const { sessionId } = await taskWorkbenchClient.addSession({ taskId: activeTask.id });
+        const { sessionId } = await taskWorkspaceClient.addSession({ repoId: activeTask.repoId, taskId: activeTask.id });
         syncRouteSession(activeTask.id, sessionId, true);
       } catch (error) {
         logger.error(
@@ -1672,13 +1632,13 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
             taskId: activeTask.id,
             ...createErrorContext(error),
           },
-          "failed_to_auto_create_workbench_session",
+          "failed_to_auto_create_workspace_session",
         );
         // Keep the guard in the set on error to prevent retry storms.
         // The guard is cleared when sessions appear (line above) or the task changes.
       }
     })();
-  }, [activeTask, selectedSessionId, syncRouteSession, taskWorkbenchClient]);
+  }, [activeTask, selectedSessionId, syncRouteSession, taskWorkspaceClient]);
 
   const createTask = useCallback(
     (overrideRepoId?: string, options?: { title?: string; task?: string; branch?: string; onBranch?: string }) => {
@@ -1688,10 +1648,10 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
           throw new Error("Cannot create a task without an available repo");
         }
 
-        const { taskId, sessionId } = await taskWorkbenchClient.createTask({
+        const { taskId, sessionId } = await taskWorkspaceClient.createTask({
           repoId,
           task: options?.task ?? "New task",
-          model: "gpt-5.3-codex",
+          model: currentUser?.defaultModel ?? DEFAULT_WORKSPACE_MODEL_ID,
           title: options?.title ?? "New task",
           ...(options?.branch ? { branch: options.branch } : {}),
           ...(options?.onBranch ? { onBranch: options.onBranch } : {}),
@@ -1706,7 +1666,7 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
         });
       })();
     },
-    [navigate, selectedNewTaskRepoId, taskWorkbenchClient, organizationId],
+    [currentUser?.defaultModel, navigate, selectedNewTaskRepoId, taskWorkspaceClient, organizationId],
   );
 
   const openDiffTab = useCallback(
@@ -1735,14 +1695,6 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
 
   const selectTask = useCallback(
     (id: string) => {
-      if (isOpenPrTaskId(id)) {
-        const pullRequest = openPullRequestsByTaskId.get(id);
-        if (!pullRequest) {
-          return;
-        }
-        void materializeOpenPullRequest(pullRequest);
-        return;
-      }
       const task = tasks.find((candidate) => candidate.id === id) ?? null;
       void navigate({
         to: "/organizations/$organizationId/tasks/$taskId",
@@ -1753,12 +1705,19 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
         search: { sessionId: task?.sessions[0]?.id ?? undefined },
       });
     },
-    [materializeOpenPullRequest, navigate, openPullRequestsByTaskId, tasks, organizationId],
+    [navigate, tasks, organizationId],
   );
 
-  const markTaskUnread = useCallback((id: string) => {
-    void taskWorkbenchClient.markTaskUnread({ taskId: id });
-  }, []);
+  const markTaskUnread = useCallback(
+    (id: string) => {
+      const task = tasks.find((candidate) => candidate.id === id);
+      if (!task) {
+        return;
+      }
+      void taskWorkspaceClient.markTaskUnread({ repoId: task.repoId, taskId: id });
+    },
+    [tasks],
+  );
 
   const renameTask = useCallback(
     (id: string) => {
@@ -1777,29 +1736,7 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
         return;
       }
 
-      void taskWorkbenchClient.renameTask({ taskId: id, value: trimmedTitle });
-    },
-    [tasks],
-  );
-
-  const renameBranch = useCallback(
-    (id: string) => {
-      const currentTask = tasks.find((task) => task.id === id);
-      if (!currentTask) {
-        throw new Error(`Unable to rename missing task ${id}`);
-      }
-
-      const nextBranch = window.prompt("Rename branch", currentTask.branch ?? "");
-      if (nextBranch === null) {
-        return;
-      }
-
-      const trimmedBranch = nextBranch.trim();
-      if (!trimmedBranch) {
-        return;
-      }
-
-      void taskWorkbenchClient.renameBranch({ taskId: id, value: trimmedBranch });
+      void taskWorkspaceClient.renameTask({ repoId: currentTask.repoId, taskId: id, value: trimmedTitle });
     },
     [tasks],
   );
@@ -1808,14 +1745,14 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
     if (!activeTask) {
       throw new Error("Cannot archive without an active task");
     }
-    void taskWorkbenchClient.archiveTask({ taskId: activeTask.id });
+    void taskWorkspaceClient.archiveTask({ repoId: activeTask.repoId, taskId: activeTask.id });
   }, [activeTask]);
 
   const publishPr = useCallback(() => {
     if (!activeTask) {
       throw new Error("Cannot publish PR without an active task");
     }
-    void taskWorkbenchClient.publishPr({ taskId: activeTask.id });
+    void taskWorkspaceClient.publishPr({ repoId: activeTask.repoId, taskId: activeTask.id });
   }, [activeTask]);
 
   const revertFile = useCallback(
@@ -1835,7 +1772,8 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
             : (current[activeTask.id] ?? null),
       }));
 
-      void taskWorkbenchClient.revertFile({
+      void taskWorkspaceClient.revertFile({
+        repoId: activeTask.repoId,
         taskId: activeTask.id,
         path,
       });
@@ -1912,7 +1850,6 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
   };
 
   if (!activeTask) {
-    const isMaterializingSelectedOpenPr = Boolean(selectedOpenPullRequest) || materializingOpenPrId != null;
     return (
       <>
         {dragRegion}
@@ -1939,14 +1876,11 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
                 onSelectNewTaskRepo={setSelectedNewTaskRepoId}
                 onMarkUnread={markTaskUnread}
                 onRenameTask={renameTask}
-                onRenameBranch={renameBranch}
                 onReorderRepositories={reorderRepositories}
                 taskOrderByRepository={taskOrderByRepository}
                 onReorderTasks={reorderTasks}
-                onReloadOrganization={() => void taskWorkbenchClient.reloadGithubOrganization()}
-                onReloadPullRequests={() => void taskWorkbenchClient.reloadGithubPullRequests()}
-                onReloadRepository={(repoId) => void taskWorkbenchClient.reloadGithubRepository(repoId)}
-                onReloadPullRequest={(repoId, prNumber) => void taskWorkbenchClient.reloadGithubPullRequest(repoId, prNumber)}
+                onReloadOrganization={() => void taskWorkspaceClient.adminReloadGithubOrganization()}
+                onReloadRepository={(repoId) => void taskWorkspaceClient.adminReloadGithubRepository(repoId)}
                 onToggleSidebar={() => setLeftSidebarOpen(false)}
               />
             </div>
@@ -1988,7 +1922,7 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
                       gap: "12px",
                     }}
                   >
-                    {activeOrg?.github.syncStatus === "syncing" || activeOrg?.github.syncStatus === "pending" ? (
+                    {liveGithub?.syncStatus === "syncing" || liveGithub?.syncStatus === "pending" ? (
                       <>
                         <div
                           className={css({
@@ -2009,19 +1943,18 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
                         />
                         <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 600 }}>Syncing with GitHub</h2>
                         <p style={{ margin: 0, opacity: 0.75 }}>
-                          Importing repos from @{activeOrg.github.connectedAccount || "GitHub"}...
-                          {activeOrg.github.importedRepoCount > 0 && <> {activeOrg.github.importedRepoCount} repos imported so far.</>}
+                          {liveGithub.lastSyncLabel || `Importing repos from @${liveGithub.connectedAccount || "GitHub"}...`}
+                          {(liveGithub.totalRepositoryCount ?? 0) > 0 && (
+                            <>
+                              {" "}
+                              {liveGithub.syncPhase === "syncing_repositories"
+                                ? `${liveGithub.importedRepoCount} of ${liveGithub.totalRepositoryCount} repos imported so far.`
+                                : `${liveGithub.processedRepositoryCount} of ${liveGithub.totalRepositoryCount} repos processed in ${liveGithub.syncPhase?.replace(/^syncing_/, "").replace(/_/g, " ") ?? "sync"}.`}
+                            </>
+                          )}
                         </p>
                       </>
-                    ) : isMaterializingSelectedOpenPr && selectedOpenPullRequest ? (
-                      <>
-                        <SpinnerDot />
-                        <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 600 }}>Creating task from pull request</h2>
-                        <p style={{ margin: 0, opacity: 0.75 }}>
-                          Preparing a task for <strong>{selectedOpenPullRequest.title}</strong> on <strong>{selectedOpenPullRequest.headRefName}</strong>.
-                        </p>
-                      </>
-                    ) : activeOrg?.github.syncStatus === "error" ? (
+                    ) : liveGithub?.syncStatus === "error" ? (
                       <>
                         <h2 style={{ margin: 0, fontSize: "20px", fontWeight: 600, color: t.statusError }}>GitHub sync failed</h2>
                         <p style={{ margin: 0, opacity: 0.75 }}>There was a problem syncing repos from GitHub. Check the dev panel for details.</p>
@@ -2075,11 +2008,11 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
             </div>
           </div>
         </Shell>
-        {activeOrg && <GithubInstallationWarning organization={activeOrg} css={css} t={t} />}
+        {liveGithub && <GithubInstallationWarning github={liveGithub} css={css} t={t} />}
         {showDevPanel && (
           <DevPanel
             organizationId={organizationId}
-            snapshot={{ organizationId, repos: organizationRepos, repositories: rawRepositories, tasks } as TaskWorkbenchSnapshot}
+            snapshot={{ organizationId, repos: organizationRepos, repositories: rawRepositories, tasks } as TaskWorkspaceSnapshot}
             organization={activeOrg}
             focusedTask={null}
           />
@@ -2114,14 +2047,11 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
               onSelectNewTaskRepo={setSelectedNewTaskRepoId}
               onMarkUnread={markTaskUnread}
               onRenameTask={renameTask}
-              onRenameBranch={renameBranch}
               onReorderRepositories={reorderRepositories}
               taskOrderByRepository={taskOrderByRepository}
               onReorderTasks={reorderTasks}
-              onReloadOrganization={() => void taskWorkbenchClient.reloadGithubOrganization()}
-              onReloadPullRequests={() => void taskWorkbenchClient.reloadGithubPullRequests()}
-              onReloadRepository={(repoId) => void taskWorkbenchClient.reloadGithubRepository(repoId)}
-              onReloadPullRequest={(repoId, prNumber) => void taskWorkbenchClient.reloadGithubPullRequest(repoId, prNumber)}
+              onReloadOrganization={() => void taskWorkspaceClient.adminReloadGithubOrganization()}
+              onReloadRepository={(repoId) => void taskWorkspaceClient.adminReloadGithubRepository(repoId)}
               onToggleSidebar={() => setLeftSidebarOpen(false)}
             />
           </div>
@@ -2169,14 +2099,11 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
                 onSelectNewTaskRepo={setSelectedNewTaskRepoId}
                 onMarkUnread={markTaskUnread}
                 onRenameTask={renameTask}
-                onRenameBranch={renameBranch}
                 onReorderRepositories={reorderRepositories}
                 taskOrderByRepository={taskOrderByRepository}
                 onReorderTasks={reorderTasks}
-                onReloadOrganization={() => void taskWorkbenchClient.reloadGithubOrganization()}
-                onReloadPullRequests={() => void taskWorkbenchClient.reloadGithubPullRequests()}
-                onReloadRepository={(repoId) => void taskWorkbenchClient.reloadGithubRepository(repoId)}
-                onReloadPullRequest={(repoId, prNumber) => void taskWorkbenchClient.reloadGithubPullRequest(repoId, prNumber)}
+                onReloadOrganization={() => void taskWorkspaceClient.adminReloadGithubOrganization()}
+                onReloadRepository={(repoId) => void taskWorkspaceClient.adminReloadGithubRepository(repoId)}
                 onToggleSidebar={() => {
                   setLeftSidebarPeeking(false);
                   setLeftSidebarOpen(true);
@@ -2189,9 +2116,10 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
           {leftSidebarOpen ? <PanelResizeHandle onResizeStart={onLeftResizeStart} onResize={onLeftResize} /> : null}
           <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
             <TranscriptPanel
-              taskWorkbenchClient={taskWorkbenchClient}
+              taskWorkspaceClient={taskWorkspaceClient}
               task={activeTask}
               hasSandbox={hasSandbox}
+              modelGroups={modelGroups}
               activeSessionId={activeSessionId}
               lastAgentSessionId={lastAgentSessionId}
               openDiffs={openDiffs}
@@ -2244,22 +2172,20 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
             </div>
           </div>
         </div>
-        {activeOrg && <GithubInstallationWarning organization={activeOrg} css={css} t={t} />}
+        {liveGithub && <GithubInstallationWarning github={liveGithub} css={css} t={t} />}
         {showDevPanel && (
           <DevPanel
             organizationId={organizationId}
-            snapshot={{ organizationId, repos: organizationRepos, repositories: rawRepositories, tasks } as TaskWorkbenchSnapshot}
+            snapshot={{ organizationId, repos: organizationRepos, repositories: rawRepositories, tasks } as TaskWorkspaceSnapshot}
             organization={activeOrg}
             focusedTask={{
               id: activeTask.id,
               repoId: activeTask.repoId,
               title: activeTask.title,
               status: activeTask.status,
-              runtimeStatus: activeTask.runtimeStatus ?? null,
-              statusMessage: activeTask.statusMessage ?? null,
               branch: activeTask.branch ?? null,
               activeSandboxId: activeTask.activeSandboxId ?? null,
-              activeSessionId: selectedSessionId ?? activeTask.sessions[0]?.id ?? null,
+              activeSessionId: activeTask.activeSessionId ?? selectedSessionId ?? activeTask.sessions[0]?.id ?? null,
               sandboxes: [],
               sessions:
                 activeTask.sessions?.map((tab) => ({

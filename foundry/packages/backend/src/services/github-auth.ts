@@ -1,5 +1,5 @@
 import { getOrCreateOrganization } from "../actors/handles.js";
-import { APP_SHELL_ORGANIZATION_ID } from "../actors/organization/app-shell.js";
+import { APP_SHELL_ORGANIZATION_ID } from "../actors/organization/constants.js";
 
 export interface ResolvedGithubAuth {
   githubToken: string;

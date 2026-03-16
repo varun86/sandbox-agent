@@ -18,6 +18,12 @@ const journal = {
       tag: "0002_github_branches",
       breakpoints: true,
     },
+    {
+      idx: 3,
+      when: 1773907200000,
+      tag: "0003_sync_progress",
+      breakpoints: true,
+    },
   ],
 } as const;
 
@@ -32,7 +38,8 @@ export default {
 	\`installation_id\` integer,
 	\`last_sync_label\` text NOT NULL,
 	\`last_sync_at\` integer,
-	\`updated_at\` integer NOT NULL
+	\`updated_at\` integer NOT NULL,
+	CONSTRAINT \`github_meta_singleton_id_check\` CHECK(\`id\` = 1)
 );
 --> statement-breakpoint
 CREATE TABLE \`github_repositories\` (
@@ -78,6 +85,22 @@ CREATE TABLE \`github_pull_requests\` (
 	\`commit_sha\` text NOT NULL,
 	\`updated_at\` integer NOT NULL
 );
+`,
+    m0003: `ALTER TABLE \`github_meta\` ADD \`sync_generation\` integer NOT NULL DEFAULT 0;
+--> statement-breakpoint
+ALTER TABLE \`github_meta\` ADD \`sync_phase\` text;
+--> statement-breakpoint
+ALTER TABLE \`github_meta\` ADD \`processed_repository_count\` integer NOT NULL DEFAULT 0;
+--> statement-breakpoint
+ALTER TABLE \`github_meta\` ADD \`total_repository_count\` integer NOT NULL DEFAULT 0;
+--> statement-breakpoint
+ALTER TABLE \`github_repositories\` ADD \`sync_generation\` integer NOT NULL DEFAULT 0;
+--> statement-breakpoint
+ALTER TABLE \`github_members\` ADD \`sync_generation\` integer NOT NULL DEFAULT 0;
+--> statement-breakpoint
+ALTER TABLE \`github_pull_requests\` ADD \`sync_generation\` integer NOT NULL DEFAULT 0;
+--> statement-breakpoint
+ALTER TABLE \`github_branches\` ADD \`sync_generation\` integer NOT NULL DEFAULT 0;
 `,
   } as const,
 };

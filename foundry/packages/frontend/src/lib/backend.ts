@@ -5,4 +5,5 @@ export const backendClient = createBackendClient({
   endpoint: backendEndpoint,
   defaultOrganizationId,
   mode: frontendClientMode,
+  encoding: import.meta.env.DEV ? "json" : undefined,
 });

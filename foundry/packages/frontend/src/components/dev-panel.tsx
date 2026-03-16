@@ -6,11 +6,10 @@ import { subscriptionManager } from "../lib/subscription";
 import type {
   FoundryAppSnapshot,
   FoundryOrganization,
-  TaskStatus,
-  TaskWorkbenchSnapshot,
-  WorkbenchSandboxSummary,
-  WorkbenchSessionSummary,
-  WorkbenchTaskStatus,
+  TaskWorkspaceSnapshot,
+  WorkspaceSandboxSummary,
+  WorkspaceSessionSummary,
+  WorkspaceTaskStatus,
 } from "@sandbox-agent/foundry-shared";
 import { useSubscription } from "@sandbox-agent/foundry-client";
 import type { DebugSubscriptionTopic } from "@sandbox-agent/foundry-client";
@@ -18,7 +17,7 @@ import { describeTaskState } from "../features/tasks/status";
 
 interface DevPanelProps {
   organizationId: string;
-  snapshot: TaskWorkbenchSnapshot;
+  snapshot: TaskWorkspaceSnapshot;
   organization?: FoundryOrganization | null;
   focusedTask?: DevPanelFocusedTask | null;
 }
@@ -27,14 +26,12 @@ export interface DevPanelFocusedTask {
   id: string;
   repoId: string;
   title: string | null;
-  status: WorkbenchTaskStatus;
-  runtimeStatus?: TaskStatus | null;
-  statusMessage?: string | null;
+  status: WorkspaceTaskStatus;
   branch?: string | null;
   activeSandboxId?: string | null;
   activeSessionId?: string | null;
-  sandboxes?: WorkbenchSandboxSummary[];
-  sessions?: WorkbenchSessionSummary[];
+  sandboxes?: WorkspaceSandboxSummary[];
+  sessions?: WorkspaceSessionSummary[];
 }
 
 interface TopicInfo {
@@ -80,7 +77,7 @@ function timeAgo(ts: number | null): string {
 }
 
 function statusColor(status: string, t: ReturnType<typeof useFoundryTokens>): string {
-  if (status === "new" || status.startsWith("init_") || status.startsWith("archive_") || status.startsWith("kill_") || status.startsWith("pending_")) {
+  if (status.startsWith("init_") || status.startsWith("archive_") || status.startsWith("kill_") || status.startsWith("pending_")) {
     return t.statusWarning;
   }
   switch (status) {
@@ -159,14 +156,16 @@ export const DevPanel = memo(function DevPanel({ organizationId, snapshot, organ
   }, [now]);
 
   const appState = useSubscription(subscriptionManager, "app", {});
+  const organizationState = useSubscription(subscriptionManager, "organization", { organizationId });
   const appSnapshot: FoundryAppSnapshot | null = appState.data ?? null;
+  const liveGithub = organizationState.data?.github ?? organization?.github ?? null;
 
   const repos = snapshot.repos ?? [];
   const tasks = snapshot.tasks ?? [];
   const prCount = tasks.filter((task) => task.pullRequest != null).length;
-  const focusedTaskStatus = focusedTask?.runtimeStatus ?? focusedTask?.status ?? null;
-  const focusedTaskState = describeTaskState(focusedTaskStatus, focusedTask?.statusMessage ?? null);
-  const lastWebhookAt = organization?.github.lastWebhookAt ?? null;
+  const focusedTaskStatus = focusedTask?.status ?? null;
+  const focusedTaskState = describeTaskState(focusedTaskStatus);
+  const lastWebhookAt = liveGithub?.lastWebhookAt ?? null;
   const hasRecentWebhook = lastWebhookAt != null && now - lastWebhookAt < 5 * 60_000;
   const totalOrgs = appSnapshot?.organizations.length ?? 0;
   const authStatus = appSnapshot?.auth.status ?? "unknown";
@@ -442,7 +441,7 @@ export const DevPanel = memo(function DevPanel({ organizationId, snapshot, organ
 
         {/* GitHub */}
         <Section label="GitHub" t={t} css={css}>
-          {organization ? (
+          {liveGithub ? (
             <div className={css({ display: "flex", flexDirection: "column", gap: "3px", fontSize: "10px" })}>
               <div className={css({ display: "flex", alignItems: "center", gap: "6px" })}>
                 <span
@@ -450,13 +449,13 @@ export const DevPanel = memo(function DevPanel({ organizationId, snapshot, organ
                     width: "5px",
                     height: "5px",
                     borderRadius: "50%",
-                    backgroundColor: installStatusColor(organization.github.installationStatus, t),
+                    backgroundColor: installStatusColor(liveGithub.installationStatus, t),
                     flexShrink: 0,
                   })}
                 />
                 <span className={css({ color: t.textPrimary, flex: 1 })}>App Install</span>
-                <span className={`${mono} ${css({ color: installStatusColor(organization.github.installationStatus, t) })}`}>
-                  {organization.github.installationStatus.replace(/_/g, " ")}
+                <span className={`${mono} ${css({ color: installStatusColor(liveGithub.installationStatus, t) })}`}>
+                  {liveGithub.installationStatus.replace(/_/g, " ")}
                 </span>
               </div>
               <div className={css({ display: "flex", alignItems: "center", gap: "6px" })}>
@@ -465,15 +464,13 @@ export const DevPanel = memo(function DevPanel({ organizationId, snapshot, organ
                     width: "5px",
                     height: "5px",
                     borderRadius: "50%",
-                    backgroundColor: syncStatusColor(organization.github.syncStatus, t),
+                    backgroundColor: syncStatusColor(liveGithub.syncStatus, t),
                     flexShrink: 0,
                   })}
                 />
                 <span className={css({ color: t.textPrimary, flex: 1 })}>Sync</span>
-                <span className={`${mono} ${css({ color: syncStatusColor(organization.github.syncStatus, t) })}`}>{organization.github.syncStatus}</span>
-                {organization.github.lastSyncAt != null && (
-                  <span className={`${mono} ${css({ color: t.textTertiary })}`}>{timeAgo(organization.github.lastSyncAt)}</span>
-                )}
+                <span className={`${mono} ${css({ color: syncStatusColor(liveGithub.syncStatus, t) })}`}>{liveGithub.syncStatus}</span>
+                {liveGithub.lastSyncAt != null && <span className={`${mono} ${css({ color: t.textTertiary })}`}>{timeAgo(liveGithub.lastSyncAt)}</span>}
               </div>
               <div className={css({ display: "flex", alignItems: "center", gap: "6px" })}>
                 <span
@@ -488,21 +485,24 @@ export const DevPanel = memo(function DevPanel({ organizationId, snapshot, organ
                 <span className={css({ color: t.textPrimary, flex: 1 })}>Webhook</span>
                 {lastWebhookAt != null ? (
                   <span className={`${mono} ${css({ color: hasRecentWebhook ? t.textPrimary : t.textMuted })}`}>
-                    {organization.github.lastWebhookEvent} · {timeAgo(lastWebhookAt)}
+                    {liveGithub.lastWebhookEvent} · {timeAgo(lastWebhookAt)}
                   </span>
                 ) : (
                   <span className={`${mono} ${css({ color: t.statusWarning })}`}>never received</span>
                 )}
               </div>
               <div className={css({ display: "flex", gap: "10px", marginTop: "2px" })}>
-                <Stat label="imported" value={organization.github.importedRepoCount} t={t} css={css} />
-                <Stat label="catalog" value={organization.repoCatalog.length} t={t} css={css} />
+                <Stat label="imported" value={liveGithub.importedRepoCount} t={t} css={css} />
+                <Stat label="catalog" value={organization?.repoCatalog.length ?? repos.length} t={t} css={css} />
+                <Stat label="target" value={liveGithub.totalRepositoryCount ?? 0} t={t} css={css} />
               </div>
-              {organization.github.connectedAccount && (
-                <div className={`${mono} ${css({ color: t.textMuted, marginTop: "1px" })}`}>@{organization.github.connectedAccount}</div>
-              )}
-              {organization.github.lastSyncLabel && (
-                <div className={`${mono} ${css({ color: t.textMuted })}`}>last sync: {organization.github.lastSyncLabel}</div>
+              {liveGithub.connectedAccount && <div className={`${mono} ${css({ color: t.textMuted, marginTop: "1px" })}`}>@{liveGithub.connectedAccount}</div>}
+              {liveGithub.lastSyncLabel && <div className={`${mono} ${css({ color: t.textMuted })}`}>last sync: {liveGithub.lastSyncLabel}</div>}
+              {liveGithub.syncPhase && (
+                <div className={`${mono} ${css({ color: t.textTertiary })}`}>
+                  phase: {liveGithub.syncPhase.replace(/^syncing_/, "").replace(/_/g, " ")} ({liveGithub.processedRepositoryCount}/
+                  {liveGithub.totalRepositoryCount})
+                </div>
               )}
             </div>
           ) : (

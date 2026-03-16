@@ -5,8 +5,8 @@ import type {
   SandboxProcessesEvent,
   SessionEvent,
   TaskEvent,
-  WorkbenchSessionDetail,
-  WorkbenchTaskDetail,
+  WorkspaceSessionDetail,
+  WorkspaceTaskDetail,
   OrganizationEvent,
   OrganizationSummarySnapshot,
 } from "@sandbox-agent/foundry-shared";
@@ -16,15 +16,15 @@ import type { ActorConn, BackendClient, SandboxProcessRecord } from "../backend-
  * Topic definitions for the subscription manager.
  *
  * Each topic describes one actor connection plus one materialized read model.
- * Events always carry full replacement payloads for the changed entity so the
- * client can replace cached state directly instead of reconstructing patches.
+ * Some topics can apply broadcast payloads directly, while others refetch
+ * through BackendClient so auth-scoped state stays user-specific.
  */
 export interface TopicDefinition<TData, TParams, TEvent> {
   key: (params: TParams) => string;
   event: string;
   connect: (backend: BackendClient, params: TParams) => Promise<ActorConn>;
   fetchInitial: (backend: BackendClient, params: TParams) => Promise<TData>;
-  applyEvent: (current: TData, event: TEvent) => TData;
+  applyEvent: (backend: BackendClient, params: TParams, current: TData, event: TEvent) => Promise<TData> | TData;
 }
 
 export interface AppTopicParams {}
@@ -48,23 +48,13 @@ export interface SandboxProcessesTopicParams {
   sandboxId: string;
 }
 
-function upsertById<T extends { id: string }>(items: T[], nextItem: T, sort: (left: T, right: T) => number): T[] {
-  const filtered = items.filter((item) => item.id !== nextItem.id);
-  return [...filtered, nextItem].sort(sort);
-}
-
-function upsertByPrId<T extends { prId: string }>(items: T[], nextItem: T, sort: (left: T, right: T) => number): T[] {
-  const filtered = items.filter((item) => item.prId !== nextItem.prId);
-  return [...filtered, nextItem].sort(sort);
-}
-
 export const topicDefinitions = {
   app: {
     key: () => "app",
     event: "appUpdated",
     connect: (backend: BackendClient, _params: AppTopicParams) => backend.connectOrganization("app"),
     fetchInitial: (backend: BackendClient, _params: AppTopicParams) => backend.getAppSnapshot(),
-    applyEvent: (_current: FoundryAppSnapshot, event: AppEvent) => event.snapshot,
+    applyEvent: (_backend: BackendClient, _params: AppTopicParams, _current: FoundryAppSnapshot, event: AppEvent) => event.snapshot,
   } satisfies TopicDefinition<FoundryAppSnapshot, AppTopicParams, AppEvent>,
 
   organization: {
@@ -72,41 +62,8 @@ export const topicDefinitions = {
     event: "organizationUpdated",
     connect: (backend: BackendClient, params: OrganizationTopicParams) => backend.connectOrganization(params.organizationId),
     fetchInitial: (backend: BackendClient, params: OrganizationTopicParams) => backend.getOrganizationSummary(params.organizationId),
-    applyEvent: (current: OrganizationSummarySnapshot, event: OrganizationEvent) => {
-      switch (event.type) {
-        case "taskSummaryUpdated":
-          return {
-            ...current,
-            taskSummaries: upsertById(current.taskSummaries, event.taskSummary, (left, right) => right.updatedAtMs - left.updatedAtMs),
-          };
-        case "taskRemoved":
-          return {
-            ...current,
-            taskSummaries: current.taskSummaries.filter((task) => task.id !== event.taskId),
-          };
-        case "repoAdded":
-        case "repoUpdated":
-          return {
-            ...current,
-            repos: upsertById(current.repos, event.repo, (left, right) => right.latestActivityMs - left.latestActivityMs),
-          };
-        case "repoRemoved":
-          return {
-            ...current,
-            repos: current.repos.filter((repo) => repo.id !== event.repoId),
-          };
-        case "pullRequestUpdated":
-          return {
-            ...current,
-            openPullRequests: upsertByPrId(current.openPullRequests, event.pullRequest, (left, right) => right.updatedAtMs - left.updatedAtMs),
-          };
-        case "pullRequestRemoved":
-          return {
-            ...current,
-            openPullRequests: current.openPullRequests.filter((pullRequest) => pullRequest.prId !== event.prId),
-          };
-      }
-    },
+    applyEvent: (_backend: BackendClient, _params: OrganizationTopicParams, _current: OrganizationSummarySnapshot, event: OrganizationEvent) =>
+      event.snapshot,
   } satisfies TopicDefinition<OrganizationSummarySnapshot, OrganizationTopicParams, OrganizationEvent>,
 
   task: {
@@ -114,8 +71,9 @@ export const topicDefinitions = {
     event: "taskUpdated",
     connect: (backend: BackendClient, params: TaskTopicParams) => backend.connectTask(params.organizationId, params.repoId, params.taskId),
     fetchInitial: (backend: BackendClient, params: TaskTopicParams) => backend.getTaskDetail(params.organizationId, params.repoId, params.taskId),
-    applyEvent: (_current: WorkbenchTaskDetail, event: TaskEvent) => event.detail,
-  } satisfies TopicDefinition<WorkbenchTaskDetail, TaskTopicParams, TaskEvent>,
+    applyEvent: (backend: BackendClient, params: TaskTopicParams, _current: WorkspaceTaskDetail, _event: TaskEvent) =>
+      backend.getTaskDetail(params.organizationId, params.repoId, params.taskId),
+  } satisfies TopicDefinition<WorkspaceTaskDetail, TaskTopicParams, TaskEvent>,
 
   session: {
     key: (params: SessionTopicParams) => `session:${params.organizationId}:${params.taskId}:${params.sessionId}`,
@@ -123,13 +81,13 @@ export const topicDefinitions = {
     connect: (backend: BackendClient, params: SessionTopicParams) => backend.connectTask(params.organizationId, params.repoId, params.taskId),
     fetchInitial: (backend: BackendClient, params: SessionTopicParams) =>
       backend.getSessionDetail(params.organizationId, params.repoId, params.taskId, params.sessionId),
-    applyEvent: (current: WorkbenchSessionDetail, event: SessionEvent) => {
-      if (event.session.sessionId !== current.sessionId) {
+    applyEvent: async (backend: BackendClient, params: SessionTopicParams, current: WorkspaceSessionDetail, event: SessionEvent) => {
+      if (event.session.sessionId !== params.sessionId) {
         return current;
       }
-      return event.session;
+      return await backend.getSessionDetail(params.organizationId, params.repoId, params.taskId, params.sessionId);
     },
-  } satisfies TopicDefinition<WorkbenchSessionDetail, SessionTopicParams, SessionEvent>,
+  } satisfies TopicDefinition<WorkspaceSessionDetail, SessionTopicParams, SessionEvent>,
 
   sandboxProcesses: {
     key: (params: SandboxProcessesTopicParams) => `sandbox:${params.organizationId}:${params.sandboxProviderId}:${params.sandboxId}`,
@@ -138,7 +96,8 @@ export const topicDefinitions = {
       backend.connectSandbox(params.organizationId, params.sandboxProviderId, params.sandboxId),
     fetchInitial: async (backend: BackendClient, params: SandboxProcessesTopicParams) =>
       (await backend.listSandboxProcesses(params.organizationId, params.sandboxProviderId, params.sandboxId)).processes,
-    applyEvent: (_current: SandboxProcessRecord[], event: SandboxProcessesEvent) => event.processes,
+    applyEvent: (_backend: BackendClient, _params: SandboxProcessesTopicParams, _current: SandboxProcessRecord[], event: SandboxProcessesEvent) =>
+      event.processes,
   } satisfies TopicDefinition<SandboxProcessRecord[], SandboxProcessesTopicParams, SandboxProcessesEvent>,
 } as const;
 

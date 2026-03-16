@@ -2,6 +2,7 @@ import { memo, type Ref } from "react";
 import { useStyletron } from "baseui";
 import { ChatComposer, type ChatComposerClassNames } from "@sandbox-agent/react";
 import { FileCode, SendHorizonal, Square, X } from "lucide-react";
+import { type WorkspaceModelGroup } from "@sandbox-agent/foundry-shared";
 
 import { useFoundryTokens } from "../../app/theme";
 import { ModelPicker } from "./model-picker";
@@ -13,6 +14,7 @@ export const PromptComposer = memo(function PromptComposer({
   textareaRef,
   placeholder,
   attachments,
+  modelGroups,
   defaultModel,
   model,
   isRunning,
@@ -27,6 +29,7 @@ export const PromptComposer = memo(function PromptComposer({
   textareaRef: Ref<HTMLTextAreaElement>;
   placeholder: string;
   attachments: LineAttachment[];
+  modelGroups: WorkspaceModelGroup[];
   defaultModel: ModelId;
   model: ModelId;
   isRunning: boolean;
@@ -172,7 +175,7 @@ export const PromptComposer = memo(function PromptComposer({
         renderSubmitContent={() => (isRunning ? <Square size={16} style={{ display: "block" }} /> : <SendHorizonal size={16} style={{ display: "block" }} />)}
         renderFooter={() => (
           <div className={css({ padding: "0 10px 8px" })}>
-            <ModelPicker value={model} defaultModel={defaultModel} onChange={onChangeModel} onSetDefault={onSetDefaultModel} />
+            <ModelPicker groups={modelGroups} value={model} defaultModel={defaultModel} onChange={onChangeModel} onSetDefault={onSetDefaultModel} />
           </div>
         )}
       />

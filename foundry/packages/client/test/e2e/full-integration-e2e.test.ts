@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { HistoryEvent, RepoOverview } from "@sandbox-agent/foundry-shared";
+import type { AuditLogEvent as HistoryEvent, RepoOverview } from "@sandbox-agent/foundry-shared";
 import { createBackendClient } from "../../src/backend-client.js";
 import { requireImportedRepo } from "./helpers.js";
 
@@ -132,11 +132,11 @@ describe("e2e(client): full integration stack workflow", () => {
         90_000,
         1_000,
         async () => client.getRepoOverview(organizationId, repo.repoId),
-        (value) => value.branches.some((row) => row.branchName === seededBranch),
+        (value) => value.branches.some((row: RepoOverview["branches"][number]) => row.branchName === seededBranch),
       );
 
       const postActionOverview = await client.getRepoOverview(organizationId, repo.repoId);
-      const seededRow = postActionOverview.branches.find((row) => row.branchName === seededBranch);
+      const seededRow = postActionOverview.branches.find((row: RepoOverview["branches"][number]) => row.branchName === seededBranch);
       expect(Boolean(seededRow)).toBe(true);
       expect(postActionOverview.fetchedAt).toBeGreaterThanOrEqual(overview.fetchedAt);
     } finally {

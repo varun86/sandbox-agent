@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TaskRecord } from "@sandbox-agent/foundry-shared";
-import { formatDiffStat, groupTasksByRepo } from "./model";
+import { groupTasksByRepo } from "./model";
 
 const base: TaskRecord = {
   organizationId: "default",
@@ -12,9 +12,8 @@ const base: TaskRecord = {
   task: "Ship one",
   sandboxProviderId: "local",
   status: "running",
-  statusMessage: null,
   activeSandboxId: "sandbox-1",
-  activeSessionId: "session-1",
+  pullRequest: null,
   sandboxes: [
     {
       sandboxId: "sandbox-1",
@@ -26,17 +25,6 @@ const base: TaskRecord = {
       updatedAt: 10,
     },
   ],
-  agentType: null,
-  prSubmitted: false,
-  diffStat: null,
-  prUrl: null,
-  prAuthor: null,
-  ciStatus: null,
-  reviewStatus: null,
-  reviewer: null,
-  conflictsWithMain: null,
-  hasUnpushed: null,
-  parentBranch: null,
   createdAt: 10,
   updatedAt: 10,
 };
@@ -64,21 +52,5 @@ describe("groupTasksByRepo", () => {
     const groups = groupTasksByRepo(rows);
     expect(groups[0]?.repoId).toBe("repo-z");
     expect(groups[1]?.repoId).toBe("repo-a");
-  });
-});
-
-describe("formatDiffStat", () => {
-  it("returns No changes for zero-diff values", () => {
-    expect(formatDiffStat("+0/-0")).toBe("No changes");
-    expect(formatDiffStat("+0 -0")).toBe("No changes");
-  });
-
-  it("returns dash for empty values", () => {
-    expect(formatDiffStat(null)).toBe("-");
-    expect(formatDiffStat("")).toBe("-");
-  });
-
-  it("keeps non-empty non-zero diff stats", () => {
-    expect(formatDiffStat("+12/-4")).toBe("+12/-4");
   });
 });

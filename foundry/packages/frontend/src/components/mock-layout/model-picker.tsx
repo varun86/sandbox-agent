@@ -2,18 +2,21 @@ import { memo, useState } from "react";
 import { useStyletron } from "baseui";
 import { StatefulPopover, PLACEMENT } from "baseui/popover";
 import { ChevronUp, Star } from "lucide-react";
+import { workspaceModelLabel, type WorkspaceModelGroup } from "@sandbox-agent/foundry-shared";
 
 import { useFoundryTokens } from "../../app/theme";
 import { AgentIcon } from "./ui";
-import { MODEL_GROUPS, modelLabel, providerAgent, type ModelId } from "./view-model";
+import { type ModelId } from "./view-model";
 
 const ModelPickerContent = memo(function ModelPickerContent({
+  groups,
   value,
   defaultModel,
   onChange,
   onSetDefault,
   close,
 }: {
+  groups: WorkspaceModelGroup[];
   value: ModelId;
   defaultModel: ModelId;
   onChange: (id: ModelId) => void;
@@ -26,7 +29,7 @@ const ModelPickerContent = memo(function ModelPickerContent({
 
   return (
     <div className={css({ minWidth: "220px", padding: "6px 0" })}>
-      {MODEL_GROUPS.map((group) => (
+      {groups.map((group) => (
         <div key={group.provider}>
           <div
             className={css({
@@ -44,7 +47,7 @@ const ModelPickerContent = memo(function ModelPickerContent({
             const isActive = model.id === value;
             const isDefault = model.id === defaultModel;
             const isHovered = model.id === hoveredId;
-            const agent = providerAgent(group.provider);
+            const agent = group.agentKind;
 
             return (
               <div
@@ -94,11 +97,13 @@ const ModelPickerContent = memo(function ModelPickerContent({
 });
 
 export const ModelPicker = memo(function ModelPicker({
+  groups,
   value,
   defaultModel,
   onChange,
   onSetDefault,
 }: {
+  groups: WorkspaceModelGroup[];
   value: ModelId;
   defaultModel: ModelId;
   onChange: (id: ModelId) => void;
@@ -137,7 +142,9 @@ export const ModelPicker = memo(function ModelPicker({
           },
         },
       }}
-      content={({ close }) => <ModelPickerContent value={value} defaultModel={defaultModel} onChange={onChange} onSetDefault={onSetDefault} close={close} />}
+      content={({ close }) => (
+        <ModelPickerContent groups={groups} value={value} defaultModel={defaultModel} onChange={onChange} onSetDefault={onSetDefault} close={close} />
+      )}
     >
       <div className={css({ display: "inline-flex" })}>
         <button
@@ -162,7 +169,7 @@ export const ModelPicker = memo(function ModelPicker({
             ":hover": { color: t.textSecondary, backgroundColor: t.interactiveHover },
           })}
         >
-          {modelLabel(value)}
+          {workspaceModelLabel(value, groups)}
           {(isHovered || isOpen) && <ChevronUp size={11} />}
         </button>
       </div>

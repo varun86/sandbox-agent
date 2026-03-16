@@ -3,7 +3,7 @@ import type { TaskRecord } from "@sandbox-agent/foundry-shared";
 import { filterTasks, fuzzyMatch } from "@sandbox-agent/foundry-client";
 import { formatRows } from "../src/tui.js";
 
-const sample: TaskRecord = {
+const sample = {
   organizationId: "default",
   repoId: "repo-a",
   repoRemote: "https://example.com/repo-a.git",
@@ -13,33 +13,22 @@ const sample: TaskRecord = {
   task: "Do test",
   sandboxProviderId: "local",
   status: "running",
-  statusMessage: null,
   activeSandboxId: "sandbox-1",
-  activeSessionId: "session-1",
+  pullRequest: null,
   sandboxes: [
     {
       sandboxId: "sandbox-1",
       sandboxProviderId: "local",
+      sandboxActorId: null,
       switchTarget: "sandbox://local/sandbox-1",
       cwd: null,
       createdAt: 1,
       updatedAt: 1,
     },
   ],
-  agentType: null,
-  prSubmitted: false,
-  diffStat: null,
-  prUrl: null,
-  prAuthor: null,
-  ciStatus: null,
-  reviewStatus: null,
-  reviewer: null,
-  conflictsWithMain: null,
-  hasUnpushed: null,
-  parentBranch: null,
   createdAt: 1,
   updatedAt: 1,
-};
+} satisfies TaskRecord & { pullRequest: null; activeSessionId?: null };
 
 describe("formatRows", () => {
   it("renders rust-style table header and empty state", () => {

@@ -1,5 +1,5 @@
 import type { FoundryAppSnapshot } from "./app-shell.js";
-import type { WorkbenchOpenPrSummary, WorkbenchRepositorySummary, WorkbenchSessionDetail, WorkbenchTaskDetail, WorkbenchTaskSummary } from "./workbench.js";
+import type { OrganizationSummarySnapshot, WorkspaceSessionDetail, WorkspaceTaskDetail } from "./workspace.js";
 
 export interface SandboxProcessSnapshot {
   id: string;
@@ -16,20 +16,13 @@ export interface SandboxProcessSnapshot {
 }
 
 /** Organization-level events broadcast by the organization actor. */
-export type OrganizationEvent =
-  | { type: "taskSummaryUpdated"; taskSummary: WorkbenchTaskSummary }
-  | { type: "taskRemoved"; taskId: string }
-  | { type: "repoAdded"; repo: WorkbenchRepositorySummary }
-  | { type: "repoUpdated"; repo: WorkbenchRepositorySummary }
-  | { type: "repoRemoved"; repoId: string }
-  | { type: "pullRequestUpdated"; pullRequest: WorkbenchOpenPrSummary }
-  | { type: "pullRequestRemoved"; prId: string };
+export type OrganizationEvent = { type: "organizationUpdated"; snapshot: OrganizationSummarySnapshot };
 
 /** Task-level events broadcast by the task actor. */
-export type TaskEvent = { type: "taskDetailUpdated"; detail: WorkbenchTaskDetail };
+export type TaskEvent = { type: "taskUpdated"; detail: WorkspaceTaskDetail };
 
 /** Session-level events broadcast by the task actor and filtered by sessionId on the client. */
-export type SessionEvent = { type: "sessionUpdated"; session: WorkbenchSessionDetail };
+export type SessionEvent = { type: "sessionUpdated"; session: WorkspaceSessionDetail };
 
 /** App-level events broadcast by the app organization actor. */
 export type AppEvent = { type: "appUpdated"; snapshot: FoundryAppSnapshot };

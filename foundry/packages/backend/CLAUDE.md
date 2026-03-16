@@ -5,14 +5,12 @@
 Keep the backend actor tree aligned with this shape unless we explicitly decide to change it:
 
 ```text
-OrganizationActor
-├─ HistoryActor(organization-scoped global feed)
+OrganizationActor (direct coordinator for tasks)
+├─ AuditLogActor (organization-scoped global feed)
 ├─ GithubDataActor
-├─ RepositoryActor(repo)
-│  └─ TaskActor(task)
-│     ├─ TaskSessionActor(session) × N
-│     │  └─ SessionStatusSyncActor(session) × 0..1
-│     └─ Task-local workbench state
+├─ TaskActor(task)
+│  ├─ taskSessions      → session metadata/transcripts
+│  └─ taskSandboxes     → sandbox instance index
 └─ SandboxInstanceActor(sandboxProviderId, sandboxId) × N
 ```
 
@@ -28,52 +26,124 @@ Children push updates **up** to their direct coordinator only. Coordinators broa
 ### Coordinator hierarchy and index tables
 
 ```text
-OrganizationActor (coordinator for repos + auth users)
+OrganizationActor (coordinator for tasks + auth users)
 │
 │  Index tables:
-│  ├─ repos              → RepositoryActor index (repo catalog)
-│  ├─ taskLookup         → TaskActor index (taskId → repoId routing)
-│  ├─ taskSummaries      → TaskActor index (materialized sidebar projection)
-│  ├─ authSessionIndex   → AuthUserActor index (session token → userId)
-│  ├─ authEmailIndex     → AuthUserActor index (email → userId)
-│  └─ authAccountIndex   → AuthUserActor index (OAuth account → userId)
+│  ├─ taskIndex          → TaskActor index (taskId → repoId + branchName)
+│  ├─ taskSummaries      → TaskActor materialized sidebar projection
+│  ├─ authSessionIndex   → UserActor index (session token → userId)
+│  ├─ authEmailIndex     → UserActor index (email → userId)
+│  └─ authAccountIndex   → UserActor index (OAuth account → userId)
 │
-├─ RepositoryActor (coordinator for tasks)
+├─ TaskActor (coordinator for sessions + sandboxes)
 │  │
 │  │  Index tables:
-│  │  └─ taskIndex       → TaskActor index (taskId → branchName)
+│  │  ├─ taskWorkspaceSessions → Session index (session metadata + transcript)
+│  │  └─ taskSandboxes         → SandboxInstanceActor index (sandbox history)
 │  │
-│  └─ TaskActor (coordinator for sessions + sandboxes)
-│     │
-│     │  Index tables:
-│     │  ├─ taskWorkbenchSessions → Session index (session metadata, transcript, draft)
-│     │  └─ taskSandboxes         → SandboxInstanceActor index (sandbox history)
-│     │
-│     └─ SandboxInstanceActor (leaf)
+│  └─ SandboxInstanceActor (leaf)
 │
-├─ HistoryActor (organization-scoped audit log, not a coordinator)
+├─ AuditLogActor (organization-scoped audit log, not a coordinator)
 └─ GithubDataActor (GitHub API cache, not a coordinator)
 ```
 
 When adding a new index table, annotate it in the schema file with a doc comment identifying it as a coordinator index and which child actor it indexes (see existing examples).
 
+## Lazy Task Actor Creation — CRITICAL
+
+**Task actors must NEVER be created during GitHub sync or bulk operations.** Creating hundreds of task actors simultaneously causes OOM crashes. An org can have 200+ PRs; spawning an actor per PR kills the process.
+
+### The two creation points
+
+There are exactly **two** places that may create a task actor:
+
+1. **`createTaskMutation`** in `task-mutations.ts` — the only backend code that calls `getOrCreateTask`. Triggered by explicit user action ("New Task" button). One actor at a time.
+
+2. **`backend-client.ts` client helper** — calls `client.task.getOrCreate(...)`. This is the lazy materialization point: when a user clicks a virtual task in the sidebar, the client creates the actor, and it self-initializes in `getCurrentRecord()` (`workflow/common.ts`) by reading branch/title from the org's `getTaskIndexEntry` action.
+
+### The rule
+
+### The rule
+
+**Never use `getOrCreateTask` inside a sync loop, webhook handler, or any bulk operation.** That's what caused the OOM — 186 actors spawned simultaneously during PR sync.
+
+`getOrCreateTask` IS allowed in:
+- `createTaskMutation` — explicit user "New Task" action
+- `requireWorkspaceTask` — user-initiated actions (createSession, sendMessage, etc.) that may hit a virtual task
+- `getTask` action on the org — called by sandbox actor and client, needs to materialize virtual tasks
+- `backend-client.ts` client helper — lazy materialization when user views a task
+
+### Virtual tasks (PR-driven)
+
+During PR sync, `refreshTaskSummaryForBranchMutation` is called for every changed PR (via github-data's `emitPullRequestChangeEvents`). It writes **virtual task entries** to the org actor's local `taskIndex` + `taskSummaries` tables only. No task actor is spawned. No cross-actor calls to task actors.
+
+When the user interacts with a virtual task (clicks it, creates a session):
+1. Client or org actor calls `getOrCreate` on the task actor key → actor is created with empty DB
+2. Any action on the actor calls `getCurrentRecord()` → sees empty DB → reads branch/title from org's `getTaskIndexEntry` → calls `initBootstrapDbActivity` + `initCompleteActivity` → task is now real
+
+### Call sites to watch
+
+- `refreshTaskSummaryForBranchMutation` — called in bulk during sync. Must ONLY write to org local tables. Never create task actors or call task actor actions.
+- `emitPullRequestChangeEvents` in github-data — iterates all changed PRs. Must remain fire-and-forget with no actor fan-out.
+
 ## Ownership Rules
 
-- `OrganizationActor` is the organization coordinator and lookup/index owner.
-- `HistoryActor` is organization-scoped. There is one organization-level history feed.
-- `RepositoryActor` is the repo coordinator and owns repo-local caches/indexes.
+- `OrganizationActor` is the organization coordinator, direct coordinator for tasks, and lookup/index owner. It owns the task index, task summaries, and repo catalog.
+- `AuditLogActor` is organization-scoped. There is one organization-level audit log feed.
 - `TaskActor` is one branch. Treat `1 task = 1 branch` once branch assignment is finalized.
 - `TaskActor` can have many sessions.
 - `TaskActor` can reference many sandbox instances historically, but should have only one active sandbox/session at a time.
-- Session unread state and draft prompts are backend-owned workbench state, not frontend-local state.
-- Branch rename is a real git operation, not just metadata.
+- Session unread state and draft prompts are backend-owned workspace state, not frontend-local state.
+- Branch names are immutable after task creation. Do not implement branch-rename flows.
 - `SandboxInstanceActor` stays separate from `TaskActor`; tasks/sessions reference it by identity.
 - The backend stores no local git state. No clones, no refs, no working trees, and no git-spice. Repository metadata comes from GitHub API data and webhook events. Any working-tree git operation runs inside a sandbox via `executeInSandbox()`.
 - When a backend request path must aggregate multiple independent actor calls or reads, prefer bounded parallelism over sequential fan-out when correctness permits. Do not serialize independent work by default.
 - Only a coordinator creates/destroys its children. Do not create child actors from outside the coordinator.
-- Children push state changes up to their direct coordinator only — never skip levels (e.g., task pushes to repo, not directly to org, unless org is the direct coordinator for that index).
+- Children push state changes up to their direct coordinator only. Task actors push summary updates directly to the organization actor.
 - Read paths must use the coordinator's local index tables. Do not fan out to child actors on the hot read path.
 - Never build "enriched" read actions that chain through multiple actors (e.g., coordinator → child actor → sibling actor). If data from multiple actors is needed for a read, it should already be materialized in the coordinator's index tables via push updates. If it's not there, fix the write path to push it — do not add a fan-out read path.
+
+## Drizzle Migration Maintenance
+
+After changing any actor's `db/schema.ts`, you **must** regenerate the corresponding migration so the runtime creates the tables that match the schema. Forgetting this step causes `no such table` errors at runtime.
+
+1. **Generate a new drizzle migration.** Run from `packages/backend`:
+   ```bash
+   npx drizzle-kit generate --config=./src/actors/<actor>/db/drizzle.config.ts
+   ```
+   If the interactive prompt is unavailable (e.g. in a non-TTY), manually create a new `.sql` file under `./src/actors/<actor>/db/drizzle/` and add the corresponding entry to `meta/_journal.json`.
+
+2. **Regenerate the compiled `migrations.ts`.** Run from the foundry root:
+   ```bash
+   npx tsx packages/backend/src/actors/_scripts/generate-actor-migrations.ts
+   ```
+
+3. **Verify insert/upsert calls.** Every column with `.notNull()` (and no `.default(...)`) must be provided a value in all `insert()` and `onConflictDoUpdate()` calls. Missing a NOT NULL column causes a runtime constraint violation, not a type error.
+
+4. **Nuke RivetKit state in dev** after migration changes to start fresh:
+   ```bash
+   docker compose -f compose.dev.yaml down
+   docker volume rm foundry_foundry_rivetkit_storage
+   docker compose -f compose.dev.yaml up -d
+   ```
+
+Actors with drizzle migrations: `organization`, `audit-log`, `task`. Other actors (`user`, `github-data`) use inline migrations without drizzle.
+
+## Workflow Step Nesting — FORBIDDEN
+
+**Never call `c.step()` / `ctx.step()` from inside another step's `run` callback.** RivetKit workflow steps cannot be nested. Doing so causes the runtime error: *"Cannot start a new workflow entry while another is in progress."*
+
+This means:
+- Functions called from within a step `run` callback must NOT use `c.step()`, `c.loop()`, `c.sleep()`, or `c.queue.next()`.
+- If a mutation function needs to be called both from a step and standalone, it must only do plain DB/API work — no workflow primitives. The workflow step wrapping belongs in the workflow file, not in the mutation.
+- Helper wrappers that conditionally call `c.step()` (like a `runSyncStep` pattern) are dangerous — if the caller is already inside a step, the nested `c.step()` will crash at runtime with no compile-time warning.
+
+**Rule of thumb:** Workflow primitives (`step`, `loop`, `sleep`, `queue.next`) may only appear at the top level of a workflow function or inside a `loop` callback — never inside a step's `run`.
+
+## SQLite Constraints
+
+- Single-row tables must use an integer primary key with `CHECK (id = 1)` to enforce the singleton invariant at the database level.
+- Follow the task actor pattern for metadata/profile rows and keep the fixed row id in code as `1`, not a string sentinel.
 
 ## Multiplayer Correctness
 
@@ -84,6 +154,49 @@ Per-user UI state must live on the user actor, not on shared task/session actors
 **Task-global state (task actor):** session transcript, session model, session runtime status, sandbox identity, task status, branch name, PR state. These are shared across all users viewing the task — that is correct behavior.
 
 Do not store per-user preferences, selections, or ephemeral UI state on shared actors. If a field's value should differ between two users looking at the same task, it belongs on the user actor.
+
+## Audit Log Maintenance
+
+Every new action or command handler that represents a user-visible or workflow-significant event must append to the audit log actor. The audit log must remain a comprehensive record of significant operations.
+
+## Debugging Actors
+
+### RivetKit Inspector UI
+
+The RivetKit inspector UI at `http://localhost:6420/ui/` is the most reliable way to debug actor state in local development. The inspector HTTP API (`/inspector/workflow-history`) has a known bug where it returns empty `{}` even when the workflow has entries — always cross-check with the UI.
+
+**Useful inspector URL pattern:**
+```
+http://localhost:6420/ui/?u=http%3A%2F%2F127.0.0.1%3A6420&ns=default&r=default&n=[%22<actor-name>%22]&actorId=<actor-id>&tab=<tab>
+```
+
+Tabs: `workflow`, `database`, `state`, `queue`, `connections`, `metadata`.
+
+**To find actor IDs:**
+```bash
+curl -s 'http://127.0.0.1:6420/actors?name=organization'
+```
+
+**To query actor DB via bun (inside container):**
+```bash
+docker compose -f compose.dev.yaml exec -T backend bun -e '
+  var Database = require("bun:sqlite");
+  var db = new Database("/root/.local/share/foundry/rivetkit/databases/<actor-id>.db", { readonly: true });
+  console.log(JSON.stringify(db.query("SELECT name FROM sqlite_master WHERE type=?").all("table")));
+'
+```
+
+**To call actor actions via inspector:**
+```bash
+curl -s -X POST 'http://127.0.0.1:6420/gateway/<actor-id>/inspector/action/<actionName>' \
+  -H 'Content-Type: application/json' -d '{"args":[{}]}'
+```
+
+### Known inspector API bugs
+
+- `GET /inspector/workflow-history` may return `{"history":{}}` even when workflow has run. Use the UI's Workflow tab instead.
+- `GET /inspector/queue` is reliable for checking pending messages.
+- `GET /inspector/state` is reliable for checking actor state.
 
 ## Maintenance
 
