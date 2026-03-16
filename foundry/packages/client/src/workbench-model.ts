@@ -1234,7 +1234,7 @@ export function buildInitialTasks(): Task[] {
       updatedAtMs: minutesAgo(40),
       branch: "perf/transcript-virtualizer",
       pullRequest: null,
-      tabs: [
+      sessions: [
         {
           id: "stress-transcript-tab",
           sessionId: "stress-transcript-session",

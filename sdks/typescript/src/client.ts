@@ -2637,13 +2637,13 @@ function deriveModesFromConfigOptions(configOptions: SessionConfigOption[] | und
   }
 
   const modeOption = findConfigOptionByCategory(configOptions, "mode");
-  if (!modeOption || !Array.isArray(modeOption.options)) {
+  if (!modeOption || modeOption.type !== "select" || !Array.isArray(modeOption.options)) {
     return null;
   }
 
   const availableModes = modeOption.options
-    .flatMap((entry) => flattenConfigOptions(entry))
-    .map((entry) => ({
+    .flatMap((entry: unknown) => flattenConfigOptions(entry))
+    .map((entry: { value: string; name: string; description?: string }) => ({
       id: entry.value,
       name: entry.name,
       description: entry.description ?? null,
@@ -2674,7 +2674,7 @@ function applyConfigOptionValue(configOptions: SessionConfigOption[], configId: 
     return null;
   }
   const updated = cloneConfigOptions(configOptions) ?? [];
-  updated[idx] = { ...updated[idx]!, currentValue: value };
+  updated[idx] = { ...updated[idx]!, currentValue: value } as SessionConfigOption;
   return updated;
 }
 

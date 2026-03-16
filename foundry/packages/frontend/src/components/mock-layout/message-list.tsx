@@ -1,4 +1,7 @@
-import { AgentTranscript, type AgentTranscriptClassNames, type TranscriptEntry } from "@sandbox-agent/react";
+import { AgentTranscript as AgentTranscript_, type AgentTranscriptClassNames, type TranscriptEntry } from "@sandbox-agent/react";
+
+// Cast to work around React 18/19 type incompatibility between @sandbox-agent/react and foundry
+const AgentTranscript = AgentTranscript_ as unknown as (props: Record<string, unknown>) => JSX.Element;
 import { memo, useEffect, useMemo, type MutableRefObject, type RefObject } from "react";
 import { useStyletron } from "baseui";
 import { LabelSmall, LabelXSmall } from "baseui/typography";
@@ -291,7 +294,7 @@ export const MessageList = memo(function MessageList({
             scrollRef={scrollRef}
             scrollToEntryId={targetMessageId}
             virtualize
-            renderMessageText={(entry) => {
+            renderMessageText={(entry: TranscriptEntry) => {
               if (entry.id === PENDING_MESSAGE_ID && pendingMessage) {
                 const pendingMsg: Message = {
                   id: PENDING_MESSAGE_ID,

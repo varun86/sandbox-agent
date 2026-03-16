@@ -939,7 +939,7 @@ const TranscriptPanel = memo(function TranscriptPanel({
               messageRefs={messageRefs}
               historyEvents={historyEvents}
               onSelectHistoryEvent={jumpToHistoryEvent}
-              targetMessageId={pendingHistoryTarget && activeTabId === pendingHistoryTarget.tabId ? pendingHistoryTarget.messageId : null}
+              targetMessageId={pendingHistoryTarget && activeSessionId === pendingHistoryTarget.sessionId ? pendingHistoryTarget.messageId : null}
               onTargetMessageResolved={() => setPendingHistoryTarget(null)}
               copiedMessageId={copiedMessageId}
               onCopyMessage={(message) => {
