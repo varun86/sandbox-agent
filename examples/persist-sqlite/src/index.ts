@@ -1,5 +1,5 @@
 import { SandboxAgent } from "sandbox-agent";
-import { SQLiteSessionPersistDriver } from "@sandbox-agent/persist-sqlite";
+import { SQLiteSessionPersistDriver } from "./persist.ts";
 import { startDockerSandbox } from "@sandbox-agent/example-shared/docker";
 import { detectAgent } from "@sandbox-agent/example-shared";
 

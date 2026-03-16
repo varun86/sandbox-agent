@@ -70,19 +70,19 @@ class StrictUniqueSessionPersistDriver implements SessionPersistDriver {
     return this.events.listEvents(request);
   }
 
-  async insertEvent(event: SessionEvent): Promise<void> {
+  async insertEvent(sessionId: string, event: SessionEvent): Promise<void> {
     await sleep(5);
 
-    const indexes = this.eventIndexesBySession.get(event.sessionId) ?? new Set<number>();
+    const indexes = this.eventIndexesBySession.get(sessionId) ?? new Set<number>();
     if (indexes.has(event.eventIndex)) {
       throw new Error("UNIQUE constraint failed: sandbox_agent_events.session_id, sandbox_agent_events.event_index");
     }
 
     indexes.add(event.eventIndex);
-    this.eventIndexesBySession.set(event.sessionId, indexes);
+    this.eventIndexesBySession.set(sessionId, indexes);
 
     await sleep(5);
-    await this.events.insertEvent(event);
+    await this.events.insertEvent(sessionId, event);
   }
 }
 

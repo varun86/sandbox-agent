@@ -9,10 +9,10 @@
   "dependencies": {
     "@sandbox-agent/example-shared": "workspace:*",
     "dockerode": "latest",
+    "get-port": "latest",
     "sandbox-agent": "workspace:*"
   },
   "devDependencies": {
-    "@types/dockerode": "latest",
     "@types/node": "latest",
     "tsx": "latest",
     "typescript": "latest",

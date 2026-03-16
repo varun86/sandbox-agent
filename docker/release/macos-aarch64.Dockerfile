@@ -10,7 +10,6 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY frontend/packages/inspector/package.json ./frontend/packages/inspector/
 COPY sdks/cli-shared/package.json ./sdks/cli-shared/
 COPY sdks/acp-http-client/package.json ./sdks/acp-http-client/
-COPY sdks/persist-indexeddb/package.json ./sdks/persist-indexeddb/
 COPY sdks/react/package.json ./sdks/react/
 COPY sdks/typescript/package.json ./sdks/typescript/
 
@@ -21,15 +20,13 @@ RUN pnpm install --filter @sandbox-agent/inspector...
 COPY docs/openapi.json ./docs/
 COPY sdks/cli-shared ./sdks/cli-shared
 COPY sdks/acp-http-client ./sdks/acp-http-client
-COPY sdks/persist-indexeddb ./sdks/persist-indexeddb
 COPY sdks/react ./sdks/react
 COPY sdks/typescript ./sdks/typescript
 
-# Build cli-shared, acp-http-client, SDK, then persist-indexeddb and react (depends on SDK)
+# Build cli-shared, acp-http-client, SDK, then react (depends on SDK)
 RUN cd sdks/cli-shared && pnpm exec tsup
 RUN cd sdks/acp-http-client && pnpm exec tsup
 RUN cd sdks/typescript && SKIP_OPENAPI_GEN=1 pnpm exec tsup
-RUN cd sdks/persist-indexeddb && pnpm exec tsup
 RUN cd sdks/react && pnpm exec tsup
 
 # Copy inspector source and build

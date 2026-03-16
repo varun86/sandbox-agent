@@ -8,7 +8,6 @@
   },
   "dependencies": {
     "@sandbox-agent/example-shared": "workspace:*",
-    "@sandbox-agent/persist-postgres": "workspace:*",
     "pg": "latest",
     "sandbox-agent": "workspace:*"
   },

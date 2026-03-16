@@ -15,7 +15,7 @@ await client.setSkillsConfig(
 );
 
 console.log("Creating session...");
-const session = await client.createSession({ agent: detectAgent(), sessionInit: { cwd: "/root", mcpServers: [] } });
+const session = await client.createSession({ agent: detectAgent(), cwd: "/root" });
 const sessionId = session.id;
 console.log(`  UI: ${buildInspectorUrl({ baseUrl, sessionId })}`);
 console.log('  Try: "How do I start sandbox-agent?"');

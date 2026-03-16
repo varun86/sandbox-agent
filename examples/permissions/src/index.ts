@@ -2,6 +2,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { Command } from "commander";
 import { SandboxAgent, type PermissionReply, type SessionPermissionRequest } from "sandbox-agent";
+import { local } from "sandbox-agent/local";
 
 const options = parseOptions();
 const agent = options.agent.trim().toLowerCase();
@@ -9,10 +10,7 @@ const autoReply = parsePermissionReply(options.reply);
 const promptText = options.prompt?.trim() || `Create ./permission-example.txt with the text 'hello from the ${agent} permissions example'.`;
 
 const sdk = await SandboxAgent.start({
-  spawn: {
-    enabled: true,
-    log: "inherit",
-  },
+  sandbox: local({ log: "inherit" }),
 });
 
 try {
@@ -43,10 +41,7 @@ try {
   const session = await sdk.createSession({
     agent,
     ...(mode ? { mode } : {}),
-    sessionInit: {
-      cwd: process.cwd(),
-      mcpServers: [],
-    },
+    cwd: process.cwd(),
   });
 
   const rl = autoReply

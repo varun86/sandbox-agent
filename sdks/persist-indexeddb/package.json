@@ -1,7 +1,7 @@
 {
   "name": "@sandbox-agent/persist-indexeddb",
   "version": "0.3.2",
-  "description": "IndexedDB persistence driver for the Sandbox Agent TypeScript SDK",
+  "description": "IndexedDB persistence driver for the Sandbox Agent TypeScript SDK (DEPRECATED)",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -16,23 +16,16 @@
       "import": "./dist/index.js"
     }
   },
-  "dependencies": {
-    "sandbox-agent": "workspace:*"
-  },
   "files": [
     "dist"
   ],
   "scripts": {
     "build": "tsup",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "fake-indexeddb": "^6.2.4",
     "tsup": "^8.0.0",
-    "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "typescript": "^5.7.0"
   }
 }

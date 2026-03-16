@@ -154,13 +154,13 @@ importers:
       dockerode:
         specifier: latest
         version: 4.0.9
+      get-port:
+        specifier: latest
+        version: 7.1.0
       sandbox-agent:
         specifier: workspace:*
         version: link:../../sdks/typescript
     devDependencies:
-      '@types/dockerode':
-        specifier: latest
-        version: 4.0.1
       '@types/node':
         specifier: latest
         version: 25.5.0
@@ -345,9 +345,6 @@ importers:
       '@sandbox-agent/example-shared':
         specifier: workspace:*
         version: link:../shared
-      '@sandbox-agent/persist-postgres':
-        specifier: workspace:*
-        version: link:../../sdks/persist-postgres
       pg:
         specifier: latest
         version: 8.20.0
@@ -373,13 +370,16 @@ importers:
       '@sandbox-agent/example-shared':
         specifier: workspace:*
         version: link:../shared
-      '@sandbox-agent/persist-sqlite':
-        specifier: workspace:*
-        version: link:../../sdks/persist-sqlite
+      better-sqlite3:
+        specifier: ^11.0.0
+        version: 11.10.0
       sandbox-agent:
         specifier: workspace:*
         version: link:../../sdks/typescript
     devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^7.0.0
+        version: 7.6.13
       '@types/node':
         specifier: latest
         version: 25.5.0
@@ -640,9 +640,6 @@ importers:
 
   frontend/packages/inspector:
     dependencies:
-      '@sandbox-agent/persist-indexeddb':
-        specifier: workspace:*
-        version: link:../../../sdks/persist-indexeddb
       lucide-react:
         specifier: ^0.469.0
         version: 0.469.0(react@18.3.1)
@@ -897,57 +894,30 @@ importers:
   sdks/gigacode/platforms/win32-x64: {}
 
   sdks/persist-indexeddb:
-    dependencies:
-      sandbox-agent:
-        specifier: workspace:*
-        version: link:../typescript
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.7
-      fake-indexeddb:
-        specifier: ^6.2.4
-        version: 6.2.5
       tsup:
         specifier: ^8.0.0
         version: 8.5.1(jiti@1.21.7)(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.2)
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
-      vitest:
-        specifier: ^3.0.0
-        version: 3.2.4(@types/debug@4.1.12)(@types/node@22.19.7)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.2)
 
   sdks/persist-postgres:
-    dependencies:
-      pg:
-        specifier: ^8.16.3
-        version: 8.18.0
-      sandbox-agent:
-        specifier: workspace:*
-        version: link:../typescript
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.7
-      '@types/pg':
-        specifier: ^8.15.6
-        version: 8.16.0
       tsup:
         specifier: ^8.0.0
         version: 8.5.1(jiti@1.21.7)(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.2)
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
-      vitest:
-        specifier: ^3.0.0
-        version: 3.2.4(@types/debug@4.1.12)(@types/node@22.19.7)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.2)
 
   sdks/persist-rivet:
-    dependencies:
-      sandbox-agent:
-        specifier: workspace:*
-        version: link:../typescript
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -958,22 +928,9 @@ importers:
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
-      vitest:
-        specifier: ^3.0.0
-        version: 3.2.4(@types/debug@4.1.12)(@types/node@22.19.7)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.2)
 
   sdks/persist-sqlite:
-    dependencies:
-      better-sqlite3:
-        specifier: ^11.0.0
-        version: 11.10.0
-      sandbox-agent:
-        specifier: workspace:*
-        version: link:../typescript
     devDependencies:
-      '@types/better-sqlite3':
-        specifier: ^7.0.0
-        version: 7.6.13
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.7
@@ -983,9 +940,6 @@ importers:
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
-      vitest:
-        specifier: ^3.0.0
-        version: 3.2.4(@types/debug@4.1.12)(@types/node@22.19.7)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.2)
 
   sdks/react:
     dependencies:
@@ -1025,12 +979,39 @@ importers:
         specifier: workspace:*
         version: link:../cli
     devDependencies:
+      '@cloudflare/sandbox':
+        specifier: '>=0.1.0'
+        version: 0.7.17(@opencode-ai/sdk@1.2.24)
+      '@daytonaio/sdk':
+        specifier: '>=0.12.0'
+        version: 0.151.0(ws@8.19.0)
+      '@e2b/code-interpreter':
+        specifier: '>=1.0.0'
+        version: 2.3.3
+      '@types/dockerode':
+        specifier: ^4.0.0
+        version: 4.0.1
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.7
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
+      '@vercel/sandbox':
+        specifier: '>=0.1.0'
+        version: 1.8.1
+      computesdk:
+        specifier: '>=0.1.0'
+        version: 2.5.0
+      dockerode:
+        specifier: '>=4.0.0'
+        version: 4.0.9
+      get-port:
+        specifier: '>=7.0.0'
+        version: 7.1.0
+      modal:
+        specifier: '>=0.1.0'
+        version: 0.7.3
       openapi-typescript:
         specifier: ^6.7.0
         version: 6.7.6
@@ -3607,9 +3588,6 @@ packages:
   '@types/node@25.5.0':
     resolution: {integrity: sha512-jp2P3tQMSxWugkCUKLRPVUpGaL5MVFwF8RDuSRztfwgN1wmqJeMSbKlnEtQqU8UrhTmzEmZdu2I6v2dpp7XIxw==}
 
-  '@types/pg@8.16.0':
-    resolution: {integrity: sha512-RmhMd/wD+CF8Dfo+cVIy3RR5cl8CyfXQ0tGgW6XBL8L4LM/UTEbNXYRbLwU6w+CgrKBNbrQWt4FUtTfaU5jSYQ==}
-
   '@types/pg@8.18.0':
     resolution: {integrity: sha512-gT+oueVQkqnj6ajGJXblFR4iavIXWsGAFCk3dP4Kki5+a9R4NMt0JARdk6s8cUKcfUoqP5dAtDSLU8xYUTFV+Q==}
 
@@ -5823,20 +5801,12 @@ packages:
   pg-cloudflare@1.3.0:
     resolution: {integrity: sha512-6lswVVSztmHiRtD6I8hw4qP/nDm1EJbKMRhf3HCYaqud7frGysPv7FYJ5noZQdhQtN2xJnimfMtvQq21pdbzyQ==}
 
-  pg-connection-string@2.11.0:
-    resolution: {integrity: sha512-kecgoJwhOpxYU21rZjULrmrBJ698U2RxXofKVzOn5UDj61BPj/qMb7diYUR1nLScCDbrztQFl1TaQZT0t1EtzQ==}
-
   pg-connection-string@2.12.0:
     resolution: {integrity: sha512-U7qg+bpswf3Cs5xLzRqbXbQl85ng0mfSV/J0nnA31MCLgvEaAo7CIhmeyrmJpOr7o+zm0rXK+hNnT5l9RHkCkQ==}
 
   pg-int8@1.0.1:
     resolution: {integrity: sha512-WCtabS6t3c8SkpDBUlb1kjOs7l66xsGdKpIPZsg4wR+B3+u9UAum2odSsF9tnvxg80h4ZxLWMy4pRjOsFIqQpw==}
     engines: {node: '>=4.0.0'}
-
-  pg-pool@3.11.0:
-    resolution: {integrity: sha512-MJYfvHwtGp870aeusDh+hg9apvOe2zmpZJpyt+BMtzUWlVqbhFmMK6bOBXLBUPd7iRtIF9fZplDc7KrPN3PN7w==}
-    peerDependencies:
-      pg: '>=8.0'
 
   pg-pool@3.13.0:
     resolution: {integrity: sha512-gB+R+Xud1gLFuRD/QgOIgGOBE2KCQPaPwkzBBGC9oG69pHTkhQeIuejVIk3/cnDyX39av2AxomQiyPT13WKHQA==}
@@ -5852,15 +5822,6 @@ packages:
   pg-types@2.2.0:
     resolution: {integrity: sha512-qTAAlrEsl8s4OiEQY69wDvcMIdQN6wdz5ojQiOy6YRMuynxenON0O5oCpJI6lshc6scgAY8qvJ2On/p+CXY0GA==}
     engines: {node: '>=4'}
-
-  pg@8.18.0:
-    resolution: {integrity: sha512-xqrUDL1b9MbkydY/s+VZ6v+xiMUmOUk7SS9d/1kpyQxoJ6U9AO1oIJyUWVZojbfe5Cc/oluutcgFG4L9RDP1iQ==}
-    engines: {node: '>= 16.0.0'}
-    peerDependencies:
-      pg-native: '>=3.0.1'
-    peerDependenciesMeta:
-      pg-native:
-        optional: true
 
   pg@8.20.0:
     resolution: {integrity: sha512-ldhMxz2r8fl/6QkXnBD3CR9/xg694oT6DZQ2s6c/RI28OjtSOpxnPrUCGOBJ46RCUxcWdx3p6kw/xnDHjKvaRA==}
@@ -10190,12 +10151,6 @@ snapshots:
     dependencies:
       undici-types: 7.18.2
 
-  '@types/pg@8.16.0':
-    dependencies:
-      '@types/node': 24.10.9
-      pg-protocol: 1.11.0
-      pg-types: 2.2.0
-
   '@types/pg@8.18.0':
     dependencies:
       '@types/node': 24.10.9
@@ -11273,7 +11228,7 @@ snapshots:
       glob: 11.1.0
       openapi-fetch: 0.14.1
       platform: 1.3.6
-      tar: 7.5.6
+      tar: 7.5.7
 
   earcut@2.2.4: {}
 
@@ -12783,15 +12738,9 @@ snapshots:
   pg-cloudflare@1.3.0:
     optional: true
 
-  pg-connection-string@2.11.0: {}
-
   pg-connection-string@2.12.0: {}
 
   pg-int8@1.0.1: {}
-
-  pg-pool@3.11.0(pg@8.18.0):
-    dependencies:
-      pg: 8.18.0
 
   pg-pool@3.13.0(pg@8.20.0):
     dependencies:
@@ -12808,16 +12757,6 @@ snapshots:
       postgres-bytea: 1.0.1
       postgres-date: 1.0.7
       postgres-interval: 1.2.0
-
-  pg@8.18.0:
-    dependencies:
-      pg-connection-string: 2.11.0
-      pg-pool: 3.11.0(pg@8.18.0)
-      pg-protocol: 1.11.0
-      pg-types: 2.2.0
-      pgpass: 1.0.5
-    optionalDependencies:
-      pg-cloudflare: 1.3.0
 
   pg@8.20.0:
     dependencies:

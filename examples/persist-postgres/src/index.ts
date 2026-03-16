@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { Client } from "pg";
 import { setTimeout as delay } from "node:timers/promises";
 import { SandboxAgent } from "sandbox-agent";
-import { PostgresSessionPersistDriver } from "@sandbox-agent/persist-postgres";
+import { PostgresSessionPersistDriver } from "./persist.ts";
 import { startDockerSandbox } from "@sandbox-agent/example-shared/docker";
 import { detectAgent } from "@sandbox-agent/example-shared";
 

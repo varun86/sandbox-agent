@@ -415,7 +415,7 @@ impl AcpProxyRuntime {
 
     async fn is_ready(&self, agent: AgentId) -> bool {
         if agent == AgentId::Mock {
-            return self.inner.agent_manager.agent_process_path(agent).exists();
+            return true;
         }
         self.inner.agent_manager.is_installed(agent)
     }

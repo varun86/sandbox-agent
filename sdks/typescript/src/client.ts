@@ -22,7 +22,7 @@ import {
   type SetSessionModeResponse,
   type SetSessionModeRequest,
 } from "acp-http-client";
-import type { SandboxAgentSpawnHandle, SandboxAgentSpawnOptions } from "./spawn.ts";
+import type { SandboxProvider } from "./providers/types.ts";
 import {
   type AcpServerListResponse,
   type AgentInfo,
@@ -89,6 +89,7 @@ const HEALTH_WAIT_MIN_DELAY_MS = 500;
 const HEALTH_WAIT_MAX_DELAY_MS = 15_000;
 const HEALTH_WAIT_LOG_AFTER_MS = 5_000;
 const HEALTH_WAIT_LOG_EVERY_MS = 10_000;
+const HEALTH_WAIT_ENSURE_SERVER_AFTER_FAILURES = 3;
 
 export interface SandboxAgentHealthWaitOptions {
   timeoutMs?: number;
@@ -101,6 +102,8 @@ interface SandboxAgentConnectCommonOptions {
   replayMaxChars?: number;
   signal?: AbortSignal;
   token?: string;
+  skipHealthCheck?: boolean;
+  /** @deprecated Use skipHealthCheck instead. */
   waitForHealth?: boolean | SandboxAgentHealthWaitOptions;
 }
 
@@ -115,17 +118,24 @@ export type SandboxAgentConnectOptions =
     });
 
 export interface SandboxAgentStartOptions {
+  sandbox: SandboxProvider;
+  sandboxId?: string;
+  skipHealthCheck?: boolean;
   fetch?: typeof fetch;
   headers?: HeadersInit;
   persist?: SessionPersistDriver;
   replayMaxEvents?: number;
   replayMaxChars?: number;
-  spawn?: SandboxAgentSpawnOptions | boolean;
+  signal?: AbortSignal;
+  token?: string;
 }
 
 export interface SessionCreateRequest {
   id?: string;
   agent: string;
+  /** Shorthand for `sessionInit.cwd`. Ignored when `sessionInit` is provided. */
+  cwd?: string;
+  /** Full session init. When omitted, built from `cwd` (or default) with empty `mcpServers`. */
   sessionInit?: Omit<NewSessionRequest, "_meta">;
   model?: string;
   mode?: string;
@@ -135,6 +145,9 @@ export interface SessionCreateRequest {
 export interface SessionResumeOrCreateRequest {
   id: string;
   agent: string;
+  /** Shorthand for `sessionInit.cwd`. Ignored when `sessionInit` is provided. */
+  cwd?: string;
+  /** Full session init. When omitted, built from `cwd` (or default) with empty `mcpServers`. */
   sessionInit?: Omit<NewSessionRequest, "_meta">;
   model?: string;
   mode?: string;
@@ -824,12 +837,14 @@ export class SandboxAgent {
   private readonly defaultHeaders?: HeadersInit;
   private readonly healthWait: NormalizedHealthWaitOptions;
   private readonly healthWaitAbortController = new AbortController();
+  private sandboxProvider?: SandboxProvider;
+  private sandboxProviderId?: string;
+  private sandboxProviderRawId?: string;
 
   private readonly persist: SessionPersistDriver;
   private readonly replayMaxEvents: number;
   private readonly replayMaxChars: number;
 
-  private spawnHandle?: SandboxAgentSpawnHandle;
   private healthPromise?: Promise<void>;
   private healthError?: Error;
   private disposed = false;
@@ -857,7 +872,7 @@ export class SandboxAgent {
     }
     this.fetcher = resolvedFetch;
     this.defaultHeaders = options.headers;
-    this.healthWait = normalizeHealthWaitOptions(options.waitForHealth, options.signal);
+    this.healthWait = normalizeHealthWaitOptions(options.skipHealthCheck, options.waitForHealth, options.signal);
     this.persist = options.persist ?? new InMemorySessionPersistDriver();
 
     this.replayMaxEvents = normalizePositiveInt(options.replayMaxEvents, DEFAULT_REPLAY_MAX_EVENTS);
@@ -870,29 +885,79 @@ export class SandboxAgent {
     return new SandboxAgent(options);
   }
 
-  static async start(options: SandboxAgentStartOptions = {}): Promise<SandboxAgent> {
-    const spawnOptions = normalizeSpawnOptions(options.spawn, true);
-    if (!spawnOptions.enabled) {
-      throw new Error("SandboxAgent.start requires spawn to be enabled.");
+  static async start(options: SandboxAgentStartOptions): Promise<SandboxAgent> {
+    const provider = options.sandbox;
+    if (!provider.getUrl && !provider.getFetch) {
+      throw new Error(`Sandbox provider '${provider.name}' must implement getUrl() or getFetch().`);
     }
 
-    const { spawnSandboxAgent } = await import("./spawn.js");
-    const resolvedFetch = options.fetch ?? globalThis.fetch?.bind(globalThis);
-    const handle = await spawnSandboxAgent(spawnOptions, resolvedFetch);
+    const existingSandbox = options.sandboxId ? parseSandboxProviderId(options.sandboxId) : null;
 
-    const client = new SandboxAgent({
-      baseUrl: handle.baseUrl,
-      token: handle.token,
-      fetch: options.fetch,
-      headers: options.headers,
-      waitForHealth: false,
-      persist: options.persist,
-      replayMaxEvents: options.replayMaxEvents,
-      replayMaxChars: options.replayMaxChars,
-    });
+    if (existingSandbox && existingSandbox.provider !== provider.name) {
+      throw new Error(
+        `SandboxAgent.start received sandboxId '${options.sandboxId}' for provider '${existingSandbox.provider}', but the configured provider is '${provider.name}'.`,
+      );
+    }
 
-    client.spawnHandle = handle;
-    return client;
+    const rawSandboxId = existingSandbox?.rawId ?? (await provider.create());
+    const prefixedSandboxId = `${provider.name}/${rawSandboxId}`;
+    const createdSandbox = !existingSandbox;
+
+    if (existingSandbox) {
+      await provider.ensureServer?.(rawSandboxId);
+    }
+
+    try {
+      const fetcher = await resolveProviderFetch(provider, rawSandboxId);
+      const baseUrl = provider.getUrl ? await provider.getUrl(rawSandboxId) : undefined;
+      const providerFetch = options.fetch ?? fetcher;
+      const commonConnectOptions = {
+        headers: options.headers,
+        persist: options.persist,
+        replayMaxEvents: options.replayMaxEvents,
+        replayMaxChars: options.replayMaxChars,
+        signal: options.signal,
+        skipHealthCheck: options.skipHealthCheck,
+        token: options.token ?? (await resolveProviderToken(provider, rawSandboxId)),
+      };
+
+      const client = providerFetch
+        ? new SandboxAgent({
+            ...commonConnectOptions,
+            baseUrl,
+            fetch: providerFetch,
+          })
+        : new SandboxAgent({
+            ...commonConnectOptions,
+            baseUrl: requireSandboxBaseUrl(baseUrl, provider.name),
+          });
+
+      client.sandboxProvider = provider;
+      client.sandboxProviderId = prefixedSandboxId;
+      client.sandboxProviderRawId = rawSandboxId;
+      return client;
+    } catch (error) {
+      if (createdSandbox) {
+        try {
+          await provider.destroy(rawSandboxId);
+        } catch {
+          // Best-effort cleanup if connect fails after provisioning.
+        }
+      }
+      throw error;
+    }
+  }
+
+  get sandboxId(): string | undefined {
+    return this.sandboxProviderId;
+  }
+
+  get sandbox(): SandboxProvider | undefined {
+    return this.sandboxProvider;
+  }
+
+  get inspectorUrl(): string {
+    return `${this.baseUrl.replace(/\/+$/, "")}/ui/`;
   }
 
   async dispose(): Promise<void> {
@@ -922,10 +987,23 @@ export class SandboxAgent {
         await connection.close();
       }),
     );
+  }
 
-    if (this.spawnHandle) {
-      await this.spawnHandle.dispose();
-      this.spawnHandle = undefined;
+  async destroySandbox(): Promise<void> {
+    const provider = this.sandboxProvider;
+    const rawSandboxId = this.sandboxProviderRawId;
+
+    try {
+      if (provider && rawSandboxId) {
+        await provider.destroy(rawSandboxId);
+      } else if (!provider || !rawSandboxId) {
+        throw new Error("SandboxAgent is not attached to a provisioned sandbox.");
+      }
+    } finally {
+      await this.dispose();
+      this.sandboxProvider = undefined;
+      this.sandboxProviderId = undefined;
+      this.sandboxProviderRawId = undefined;
     }
   }
 
@@ -956,7 +1034,7 @@ export class SandboxAgent {
 
     const localSessionId = request.id?.trim() || randomId();
     const live = await this.getLiveConnection(request.agent.trim());
-    const sessionInit = normalizeSessionInit(request.sessionInit);
+    const sessionInit = normalizeSessionInit(request.sessionInit, request.cwd);
 
     const response = await live.createRemoteSession(localSessionId, sessionInit);
 
@@ -966,6 +1044,7 @@ export class SandboxAgent {
       agentSessionId: response.sessionId,
       lastConnectionId: live.connectionId,
       createdAt: nowMs(),
+      sandboxId: this.sandboxProviderId,
       sessionInit,
       configOptions: cloneConfigOptions(response.configOptions),
       modes: cloneModes(response.modes),
@@ -1692,7 +1771,7 @@ export class SandboxAgent {
       };
 
       try {
-        await this.persist.insertEvent(event);
+        await this.persist.insertEvent(localSessionId, event);
         break;
       } catch (error) {
         if (!isSessionEventIndexConflict(error) || attempt === MAX_EVENT_INDEX_INSERT_RETRIES - 1) {
@@ -2040,6 +2119,7 @@ export class SandboxAgent {
     let delayMs = HEALTH_WAIT_MIN_DELAY_MS;
     let nextLogAt = startedAt + HEALTH_WAIT_LOG_AFTER_MS;
     let lastError: unknown;
+    let consecutiveFailures = 0;
 
     while (!this.disposed && (deadline === undefined || Date.now() < deadline)) {
       throwIfAborted(signal);
@@ -2050,11 +2130,22 @@ export class SandboxAgent {
           return;
         }
         lastError = new Error(`Unexpected health response: ${JSON.stringify(health)}`);
+        consecutiveFailures++;
       } catch (error) {
         if (isAbortError(error)) {
           throw error;
         }
         lastError = error;
+        consecutiveFailures++;
+      }
+
+      if (consecutiveFailures >= HEALTH_WAIT_ENSURE_SERVER_AFTER_FAILURES && this.sandboxProvider?.ensureServer && this.sandboxProviderRawId) {
+        try {
+          await this.sandboxProvider.ensureServer(this.sandboxProviderRawId);
+        } catch {
+          // Best-effort; the next health check will determine if it worked.
+        }
+        consecutiveFailures = 0;
       }
 
       const now = Date.now();
@@ -2255,17 +2346,17 @@ function toAgentQuery(options: AgentQueryOptions | undefined): Record<string, Qu
   };
 }
 
-function normalizeSessionInit(value: Omit<NewSessionRequest, "_meta"> | undefined): Omit<NewSessionRequest, "_meta"> {
+function normalizeSessionInit(value: Omit<NewSessionRequest, "_meta"> | undefined, cwdShorthand?: string): Omit<NewSessionRequest, "_meta"> {
   if (!value) {
     return {
-      cwd: defaultCwd(),
+      cwd: cwdShorthand ?? defaultCwd(),
       mcpServers: [],
     };
   }
 
   return {
     ...value,
-    cwd: value.cwd ?? defaultCwd(),
+    cwd: value.cwd ?? cwdShorthand ?? defaultCwd(),
     mcpServers: value.mcpServers ?? [],
   };
 }
@@ -2405,16 +2496,23 @@ function normalizePositiveInt(value: number | undefined, fallback: number): numb
   return Math.floor(value as number);
 }
 
-function normalizeHealthWaitOptions(value: boolean | SandboxAgentHealthWaitOptions | undefined, signal: AbortSignal | undefined): NormalizedHealthWaitOptions {
-  if (value === false) {
+function normalizeHealthWaitOptions(
+  skipHealthCheck: boolean | undefined,
+  waitForHealth: boolean | SandboxAgentHealthWaitOptions | undefined,
+  signal: AbortSignal | undefined,
+): NormalizedHealthWaitOptions {
+  if (skipHealthCheck === true || waitForHealth === false) {
     return { enabled: false };
   }
 
-  if (value === true || value === undefined) {
+  if (waitForHealth === true || waitForHealth === undefined) {
     return { enabled: true, signal };
   }
 
-  const timeoutMs = typeof value.timeoutMs === "number" && Number.isFinite(value.timeoutMs) && value.timeoutMs > 0 ? Math.floor(value.timeoutMs) : undefined;
+  const timeoutMs =
+    typeof waitForHealth.timeoutMs === "number" && Number.isFinite(waitForHealth.timeoutMs) && waitForHealth.timeoutMs > 0
+      ? Math.floor(waitForHealth.timeoutMs)
+      : undefined;
 
   return {
     enabled: true,
@@ -2423,22 +2521,45 @@ function normalizeHealthWaitOptions(value: boolean | SandboxAgentHealthWaitOptio
   };
 }
 
-function normalizeSpawnOptions(
-  spawn: SandboxAgentSpawnOptions | boolean | undefined,
-  defaultEnabled: boolean,
-): SandboxAgentSpawnOptions & { enabled: boolean } {
-  if (spawn === false) {
-    return { enabled: false };
-  }
-
-  if (spawn === true || spawn === undefined) {
-    return { enabled: defaultEnabled };
+function parseSandboxProviderId(sandboxId: string): { provider: string; rawId: string } {
+  const slashIndex = sandboxId.indexOf("/");
+  if (slashIndex < 1 || slashIndex === sandboxId.length - 1) {
+    throw new Error(`Sandbox IDs must be prefixed as "{provider}/{id}". Received '${sandboxId}'.`);
   }
 
   return {
-    ...spawn,
-    enabled: spawn.enabled ?? defaultEnabled,
+    provider: sandboxId.slice(0, slashIndex),
+    rawId: sandboxId.slice(slashIndex + 1),
   };
+}
+
+function requireSandboxBaseUrl(baseUrl: string | undefined, providerName: string): string {
+  if (!baseUrl) {
+    throw new Error(`Sandbox provider '${providerName}' did not return a base URL.`);
+  }
+  return baseUrl;
+}
+
+async function resolveProviderFetch(provider: SandboxProvider, rawSandboxId: string): Promise<typeof globalThis.fetch | undefined> {
+  if (provider.getFetch) {
+    return await provider.getFetch(rawSandboxId);
+  }
+
+  return undefined;
+}
+
+async function resolveProviderToken(provider: SandboxProvider, rawSandboxId: string): Promise<string | undefined> {
+  const maybeGetToken = (
+    provider as SandboxProvider & {
+      getToken?: (sandboxId: string) => string | undefined | Promise<string | undefined>;
+    }
+  ).getToken;
+  if (typeof maybeGetToken !== "function") {
+    return undefined;
+  }
+
+  const token = await maybeGetToken.call(provider, rawSandboxId);
+  return typeof token === "string" && token ? token : undefined;
 }
 
 async function readProblem(response: Response): Promise<ProblemDetails | undefined> {

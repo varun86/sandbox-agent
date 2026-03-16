@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { buildHeaders } from "@sandbox-agent/example-shared";
-import { setupComputeSdkSandboxAgent } from "../src/computesdk.ts";
+import { SandboxAgent } from "sandbox-agent";
+import { computesdk } from "sandbox-agent/computesdk";
 
 const hasModal = Boolean(process.env.MODAL_TOKEN_ID && process.env.MODAL_TOKEN_SECRET);
 const hasVercel = Boolean(process.env.VERCEL_TOKEN || process.env.VERCEL_OIDC_TOKEN);
@@ -13,20 +13,23 @@ const timeoutMs = Number.parseInt(process.env.SANDBOX_TEST_TIMEOUT_MS || "", 10)
 
 const testFn = shouldRun ? it : it.skip;
 
-describe("computesdk example", () => {
+describe("computesdk provider", () => {
   testFn(
     "starts sandbox-agent and responds to /v1/health",
     async () => {
-      const { baseUrl, cleanup } = await setupComputeSdkSandboxAgent();
+      const envs: Record<string, string> = {};
+      if (process.env.ANTHROPIC_API_KEY) envs.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+      if (process.env.OPENAI_API_KEY) envs.OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+      const sdk = await SandboxAgent.start({
+        sandbox: computesdk({ create: { envs } }),
+      });
+
       try {
-        const response = await fetch(`${baseUrl}/v1/health`, {
-          headers: buildHeaders({}),
-        });
-        expect(response.ok).toBe(true);
-        const data = await response.json();
-        expect(data.status).toBe("ok");
+        const health = await sdk.getHealth();
+        expect(health.status).toBe("ok");
       } finally {
-        await cleanup();
+        await sdk.destroySandbox();
       }
     },
     timeoutMs,

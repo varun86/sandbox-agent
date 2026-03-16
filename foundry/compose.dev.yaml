@@ -65,7 +65,6 @@ services:
       - "foundry_backend_root_node_modules:/app/node_modules"
       - "foundry_backend_backend_node_modules:/app/foundry/packages/backend/node_modules"
       - "foundry_backend_shared_node_modules:/app/foundry/packages/shared/node_modules"
-      - "foundry_backend_persist_rivet_node_modules:/app/sdks/persist-rivet/node_modules"
       - "foundry_backend_typescript_node_modules:/app/sdks/typescript/node_modules"
       - "foundry_backend_pnpm_store:/root/.local/share/pnpm/store"
       # Persist RivetKit local storage across container restarts.
@@ -120,7 +119,6 @@ volumes:
   foundry_backend_root_node_modules: {}
   foundry_backend_backend_node_modules: {}
   foundry_backend_shared_node_modules: {}
-  foundry_backend_persist_rivet_node_modules: {}
   foundry_backend_typescript_node_modules: {}
   foundry_backend_pnpm_store: {}
   foundry_rivetkit_storage: {}

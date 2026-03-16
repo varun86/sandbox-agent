@@ -58,20 +58,32 @@
                 "icon": "server",
                 "pages": [
                   "deploy/local",
-                  "deploy/computesdk",
                   "deploy/e2b",
                   "deploy/daytona",
                   "deploy/vercel",
                   "deploy/cloudflare",
                   "deploy/docker",
-                  "deploy/boxlite"
+                  "deploy/modal",
+                  "deploy/boxlite",
+                  "deploy/computesdk"
                 ]
               }
             ]
           },
           {
             "group": "Agent",
-            "pages": ["agent-sessions", "attachments", "skills-config", "mcp-config", "custom-tools"]
+            "pages": [
+              "agent-sessions",
+              {
+                "group": "Agents",
+                "icon": "robot",
+                "pages": ["agents/claude", "agents/codex", "agents/opencode", "agents/cursor", "agents/amp", "agents/pi"]
+              },
+              "attachments",
+              "skills-config",
+              "mcp-config",
+              "custom-tools"
+            ]
           },
           {
             "group": "System",
@@ -79,12 +91,12 @@
           },
           {
             "group": "Orchestration",
-            "pages": ["architecture", "session-persistence", "observability", "multiplayer", "security"]
+            "pages": ["orchestration-architecture", "session-persistence", "observability", "multiplayer", "security"]
           },
           {
             "group": "Reference",
             "pages": [
-              "agent-capabilities",
+              "architecture",
               "cli",
               "inspector",
               "opencode-compatibility",

@@ -44,7 +44,7 @@ const readmeText = new TextDecoder().decode(readmeBytes);
 console.log(`  README.md content: ${readmeText.trim()}`);
 
 console.log("Creating session...");
-const session = await client.createSession({ agent: detectAgent(), sessionInit: { cwd: "/opt/my-project", mcpServers: [] } });
+const session = await client.createSession({ agent: detectAgent(), cwd: "/opt/my-project" });
 const sessionId = session.id;
 console.log(`  UI: ${buildInspectorUrl({ baseUrl, sessionId })}`);
 console.log('  Try: "read the README in /opt/my-project"');

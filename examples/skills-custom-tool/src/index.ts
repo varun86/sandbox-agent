@@ -36,7 +36,7 @@ await client.setSkillsConfig({ directory: "/", skillName: "random-number" }, { s
 
 // Create a session.
 console.log("Creating session with custom skill...");
-const session = await client.createSession({ agent: detectAgent(), sessionInit: { cwd: "/root", mcpServers: [] } });
+const session = await client.createSession({ agent: detectAgent(), cwd: "/root" });
 const sessionId = session.id;
 console.log(`  UI: ${buildInspectorUrl({ baseUrl, sessionId })}`);
 console.log('  Try: "generate a random number between 1 and 100"');

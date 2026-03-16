@@ -24,7 +24,7 @@ type ConfigOption = {
 };
 type AgentModeInfo = { id: string; name: string; description: string };
 type AgentModelInfo = { id: string; name?: string };
-import { IndexedDbSessionPersistDriver } from "@sandbox-agent/persist-indexeddb";
+import { IndexedDbSessionPersistDriver } from "./persist-indexeddb";
 import ChatPanel from "./components/chat/ChatPanel";
 import ConnectScreen from "./components/ConnectScreen";
 import DebugPanel, { type DebugTab } from "./components/debug/DebugPanel";

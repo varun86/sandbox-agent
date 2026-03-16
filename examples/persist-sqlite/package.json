@@ -8,10 +8,11 @@
   },
   "dependencies": {
     "@sandbox-agent/example-shared": "workspace:*",
-    "@sandbox-agent/persist-sqlite": "workspace:*",
+    "better-sqlite3": "^11.0.0",
     "sandbox-agent": "workspace:*"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.0.0",
     "@types/node": "latest",
     "tsx": "latest",
     "typescript": "latest"

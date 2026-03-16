@@ -98,6 +98,7 @@ export interface SessionRecord {
   lastConnectionId: string;
   createdAt: number;
   destroyedAt?: number;
+  sandboxId?: string;
   sessionInit?: Omit<NewSessionRequest, "_meta">;
   configOptions?: SessionConfigOption[];
   modes?: SessionModeState | null;
@@ -131,11 +132,11 @@ export interface ListEventsRequest extends ListPageRequest {
 }
 
 export interface SessionPersistDriver {
-  getSession(id: string): Promise<SessionRecord | null>;
+  getSession(id: string): Promise<SessionRecord | undefined>;
   listSessions(request?: ListPageRequest): Promise<ListPage<SessionRecord>>;
   updateSession(session: SessionRecord): Promise<void>;
   listEvents(request: ListEventsRequest): Promise<ListPage<SessionEvent>>;
-  insertEvent(event: SessionEvent): Promise<void>;
+  insertEvent(sessionId: string, event: SessionEvent): Promise<void>;
 }
 
 export interface InMemorySessionPersistDriverOptions {
@@ -158,9 +159,9 @@ export class InMemorySessionPersistDriver implements SessionPersistDriver {
     this.maxEventsPerSession = normalizeCap(options.maxEventsPerSession, DEFAULT_MAX_EVENTS_PER_SESSION);
   }
 
-  async getSession(id: string): Promise<SessionRecord | null> {
+  async getSession(id: string): Promise<SessionRecord | undefined> {
     const session = this.sessions.get(id);
-    return session ? cloneSessionRecord(session) : null;
+    return session ? cloneSessionRecord(session) : undefined;
   }
 
   async listSessions(request: ListPageRequest = {}): Promise<ListPage<SessionRecord>> {
@@ -219,15 +220,15 @@ export class InMemorySessionPersistDriver implements SessionPersistDriver {
     };
   }
 
-  async insertEvent(event: SessionEvent): Promise<void> {
-    const events = this.eventsBySession.get(event.sessionId) ?? [];
+  async insertEvent(sessionId: string, event: SessionEvent): Promise<void> {
+    const events = this.eventsBySession.get(sessionId) ?? [];
     events.push(cloneSessionEvent(event));
 
     if (events.length > this.maxEventsPerSession) {
       events.splice(0, events.length - this.maxEventsPerSession);
     }
 
-    this.eventsBySession.set(event.sessionId, events);
+    this.eventsBySession.set(sessionId, events);
   }
 }
 

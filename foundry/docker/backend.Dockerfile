@@ -13,7 +13,6 @@ RUN pnpm --filter @sandbox-agent/foundry-shared build
 RUN pnpm --filter acp-http-client build
 RUN pnpm --filter @sandbox-agent/cli-shared build
 RUN SKIP_OPENAPI_GEN=1 pnpm --filter sandbox-agent build
-RUN pnpm --filter @sandbox-agent/persist-rivet build
 RUN pnpm --filter @sandbox-agent/foundry-backend build
 RUN pnpm --filter @sandbox-agent/foundry-backend deploy --prod /out
 

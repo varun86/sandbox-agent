@@ -5,8 +5,11 @@ import { Code, Server, GitBranch } from "lucide-react";
 import { CopyButton } from "./ui/CopyButton";
 
 const sdkCodeRaw = `import { SandboxAgent } from "sandbox-agent";
+import { local } from "sandbox-agent/local";
 
-const client = await SandboxAgent.start();
+const client = await SandboxAgent.start({
+  sandbox: local(),
+});
 
 await client.createSession("my-session", {
   agent: "claude-code",
@@ -32,13 +35,26 @@ function SdkCodeHighlighted() {
         <span className="text-zinc-300"> </span>
         <span className="text-green-400">"sandbox-agent"</span>
         <span className="text-zinc-300">;</span>
+        {"\n"}
+        <span className="text-purple-400">import</span>
+        <span className="text-zinc-300">{" { "}</span>
+        <span className="text-white">local</span>
+        <span className="text-zinc-300">{" } "}</span>
+        <span className="text-purple-400">from</span>
+        <span className="text-zinc-300"> </span>
+        <span className="text-green-400">"sandbox-agent/local"</span>
+        <span className="text-zinc-300">;</span>
         {"\n\n"}
         <span className="text-purple-400">const</span>
         <span className="text-zinc-300"> client = </span>
         <span className="text-purple-400">await</span>
         <span className="text-zinc-300"> SandboxAgent.</span>
         <span className="text-blue-400">start</span>
-        <span className="text-zinc-300">();</span>
+        <span className="text-zinc-300">{"({"}</span>
+        {"\n"}
+        <span className="text-zinc-300">{"  sandbox: local(),"}</span>
+        {"\n"}
+        <span className="text-zinc-300">{"});"}</span>
         {"\n\n"}
         <span className="text-purple-400">await</span>
         <span className="text-zinc-300"> client.</span>

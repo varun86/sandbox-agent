@@ -78,11 +78,11 @@ function readClaudeCredentialFiles(): ClaudeCredentialFile[] {
   const candidates: Array<{ hostPath: string; containerPath: string }> = [
     {
       hostPath: path.join(homeDir, ".claude", ".credentials.json"),
-      containerPath: "/root/.claude/.credentials.json",
+      containerPath: ".claude/.credentials.json",
     },
     {
       hostPath: path.join(homeDir, ".claude-oauth-credentials.json"),
-      containerPath: "/root/.claude-oauth-credentials.json",
+      containerPath: ".claude-oauth-credentials.json",
     },
   ];
 
@@ -180,10 +180,9 @@ export async function startDockerSandbox(opts: DockerSandboxOptions): Promise<Do
     const credentialBootstrapCommands = claudeCredentialFiles.flatMap((file, index) => {
       const envKey = `SANDBOX_AGENT_CLAUDE_CREDENTIAL_${index}_B64`;
       bootstrapEnv[envKey] = file.base64Content;
-      return [
-        `mkdir -p ${shellSingleQuotedLiteral(path.posix.dirname(file.containerPath))}`,
-        `printf %s "$${envKey}" | base64 -d > ${shellSingleQuotedLiteral(file.containerPath)}`,
-      ];
+      // Use $HOME-relative paths so credentials work regardless of container user
+      const containerDir = path.posix.dirname(file.containerPath);
+      return [`mkdir -p "$HOME/${containerDir}"`, `printf %s "$${envKey}" | base64 -d > "$HOME/${file.containerPath}"`];
     });
     setupCommands.unshift(...credentialBootstrapCommands);
   }
@@ -200,8 +199,9 @@ export async function startDockerSandbox(opts: DockerSandboxOptions): Promise<Do
 
   const container = await docker.createContainer({
     Image: image,
+    Entrypoint: ["/bin/sh", "-c"],
     WorkingDir: "/home/sandbox",
-    Cmd: ["sh", "-c", bootCommands.join(" && ")],
+    Cmd: [bootCommands.join(" && ")],
     Env: [...Object.entries(credentialEnv).map(([key, value]) => `${key}=${value}`), ...Object.entries(bootstrapEnv).map(([key, value]) => `${key}=${value}`)],
     ExposedPorts: { [`${port}/tcp`]: {} },
     HostConfig: {
@@ -253,10 +253,13 @@ export async function startDockerSandbox(opts: DockerSandboxOptions): Promise<Do
     try {
       await container.remove({ force: true });
     } catch {}
+  };
+  const signalCleanup = async () => {
+    await cleanup();
     process.exit(0);
   };
-  process.once("SIGINT", cleanup);
-  process.once("SIGTERM", cleanup);
+  process.once("SIGINT", signalCleanup);
+  process.once("SIGTERM", signalCleanup);
 
   return { baseUrl, cleanup };
 }
