@@ -678,14 +678,17 @@ impl AgentManager {
     }
 
     fn agent_process_status(&self, agent: AgentId) -> Option<AgentProcessStatus> {
-        if agent == AgentId::Mock {
-            return Some(AgentProcessStatus {
-                source: InstallSource::Builtin,
-                version: Some("builtin".to_string()),
-            });
-        }
-
         let launcher = self.agent_process_path(agent);
+
+        if agent == AgentId::Mock {
+            if launcher.exists() {
+                return Some(AgentProcessStatus {
+                    source: InstallSource::Builtin,
+                    version: Some("builtin".to_string()),
+                });
+            }
+            return None;
+        }
         if launcher.exists() {
             return Some(AgentProcessStatus {
                 source: InstallSource::LocalPath,
