@@ -11,7 +11,7 @@ use futures::Stream;
 use sandbox_agent_agent_management::agents::{AgentId, AgentManager, InstallOptions};
 use sandbox_agent_error::SandboxError;
 use sandbox_agent_opencode_adapter::{AcpDispatch, AcpDispatchResult, AcpPayloadStream};
-use serde_json::Value;
+use serde_json::{Number, Value};
 use tokio::sync::{Mutex, RwLock};
 
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 120_000;
@@ -133,6 +133,8 @@ impl AcpProxyRuntime {
             instance_ms = instance_elapsed.as_millis() as u64,
             "acp_proxy: instance resolved"
         );
+
+        let payload = normalize_payload_for_agent(instance.agent, payload);
 
         match instance.runtime.post(payload).await {
             Ok(PostOutcome::Response(value)) => {
@@ -508,6 +510,64 @@ fn map_adapter_error(err: AdapterError, agent: Option<AgentId>) -> SandboxError 
             }
         }
     }
+}
+
+fn normalize_payload_for_agent(agent: AgentId, payload: Value) -> Value {
+    if agent != AgentId::Pi {
+        return payload;
+    }
+
+    // Pi's ACP adapter is stricter than other adapters for a couple of bootstrap
+    // fields. Normalize here so older/raw ACP clients still work against Pi.
+    normalize_pi_payload(payload)
+}
+
+fn normalize_pi_payload(mut payload: Value) -> Value {
+    let method = payload
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+
+    match method {
+        "initialize" => {
+            // Some clients send ACP protocolVersion as a string ("1.0"), but
+            // pi-acp expects a numeric JSON value and rejects strings.
+            if let Some(protocol) = payload.pointer_mut("/params/protocolVersion") {
+                if let Some(raw) = protocol.as_str() {
+                    if let Some(number) = parse_json_number(raw) {
+                        *protocol = Value::Number(number);
+                    }
+                }
+            }
+        }
+        "session/new" => {
+            // The TypeScript SDK and opencode adapter already send mcpServers: [],
+            // but raw /v1/acp callers may omit it. pi-acp currently validates
+            // mcpServers as required, so default it here for compatibility.
+            if let Some(params) = payload.get_mut("params").and_then(Value::as_object_mut) {
+                params
+                    .entry("mcpServers".to_string())
+                    .or_insert_with(|| Value::Array(Vec::new()));
+            }
+        }
+        _ => {}
+    }
+
+    payload
+}
+
+fn parse_json_number(raw: &str) -> Option<Number> {
+    let trimmed = raw.trim();
+
+    if let Ok(unsigned) = trimmed.parse::<u64>() {
+        return Some(Number::from(unsigned));
+    }
+
+    if let Ok(signed) = trimmed.parse::<i64>() {
+        return Some(Number::from(signed));
+    }
+
+    trimmed.parse::<f64>().ok().and_then(Number::from_f64)
 }
 
 /// Inspect JSON-RPC error responses from agent processes and add helpful hints
