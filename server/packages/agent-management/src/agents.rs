@@ -15,6 +15,8 @@ use url::Url;
 const DEFAULT_ACP_REGISTRY_URL: &str =
     "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 
+const ADAPTERS_JSON: &str = include_str!("../../../../scripts/audit-acp-deps/adapters.json");
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentId {
@@ -818,40 +820,6 @@ impl AgentManager {
     ) -> Result<InstalledArtifact, AgentError> {
         let started = Instant::now();
         let artifact = match agent {
-            AgentId::Claude => {
-                let package = fallback_npx_package(
-                    "@zed-industries/claude-agent-acp",
-                    options.agent_process_version.as_deref(),
-                );
-                self.install_npm_agent_process_package(
-                    agent,
-                    &package,
-                    &[],
-                    &HashMap::new(),
-                    InstallSource::Fallback,
-                    options
-                        .agent_process_version
-                        .clone()
-                        .or(extract_npx_version(&package)),
-                )?
-            }
-            AgentId::Codex => {
-                let package = fallback_npx_package(
-                    "@zed-industries/codex-acp",
-                    options.agent_process_version.as_deref(),
-                );
-                self.install_npm_agent_process_package(
-                    agent,
-                    &package,
-                    &[],
-                    &HashMap::new(),
-                    InstallSource::Fallback,
-                    options
-                        .agent_process_version
-                        .clone()
-                        .or(extract_npx_version(&package)),
-                )?
-            }
             AgentId::Opencode => {
                 let launcher = self.agent_process_path(agent);
                 let native = self.resolve_binary(agent)?;
@@ -869,53 +837,6 @@ impl AgentManager {
                     source: InstallSource::Fallback,
                 }
             }
-            AgentId::Amp => {
-                let package =
-                    fallback_npx_package("amp-acp", options.agent_process_version.as_deref());
-                self.install_npm_agent_process_package(
-                    agent,
-                    &package,
-                    &[],
-                    &HashMap::new(),
-                    InstallSource::Fallback,
-                    options
-                        .agent_process_version
-                        .clone()
-                        .or(extract_npx_version(&package)),
-                )?
-            }
-            AgentId::Pi => {
-                let package =
-                    fallback_npx_package("pi-acp", options.agent_process_version.as_deref());
-                self.install_npm_agent_process_package(
-                    agent,
-                    &package,
-                    &[],
-                    &HashMap::new(),
-                    InstallSource::Fallback,
-                    options
-                        .agent_process_version
-                        .clone()
-                        .or(extract_npx_version(&package)),
-                )?
-            }
-            AgentId::Cursor => {
-                let package = fallback_npx_package(
-                    "@blowmage/cursor-agent-acp",
-                    options.agent_process_version.as_deref(),
-                );
-                self.install_npm_agent_process_package(
-                    agent,
-                    &package,
-                    &[],
-                    &HashMap::new(),
-                    InstallSource::Fallback,
-                    options
-                        .agent_process_version
-                        .clone()
-                        .or(extract_npx_version(&package)),
-                )?
-            }
             AgentId::Mock => {
                 let launcher = self.agent_process_path(agent);
                 write_mock_agent_process_launcher(&launcher)?;
@@ -925,6 +846,30 @@ impl AgentManager {
                     version: options.agent_process_version.clone(),
                     source: InstallSource::Fallback,
                 }
+            }
+            _ => {
+                let (npm_package, pinned_version) =
+                    adapter_entry(agent.as_str()).ok_or_else(|| {
+                        AgentError::ExtractFailed(format!(
+                            "no adapter entry in adapters.json for agent: {agent}"
+                        ))
+                    })?;
+                let version = options
+                    .agent_process_version
+                    .as_deref()
+                    .or(Some(pinned_version));
+                let package = fallback_npx_package(npm_package, version);
+                self.install_npm_agent_process_package(
+                    agent,
+                    &package,
+                    &[],
+                    &HashMap::new(),
+                    InstallSource::Fallback,
+                    options
+                        .agent_process_version
+                        .clone()
+                        .or(extract_npx_version(&package)),
+                )?
             }
         };
 
@@ -1016,6 +961,40 @@ pub enum AgentError {
         "npm is required to install {agent}. install npm, then run step 3: `sandbox-agent install-agent {agent}`"
     )]
     MissingNpm { agent: AgentId },
+}
+
+/// Looks up the pinned adapter entry from `adapters.json` for the given agent ID.
+/// Returns `(npm_package, pinned_version)`.
+fn adapter_entry(agent_id: &str) -> Option<(&'static str, &'static str)> {
+    use std::sync::OnceLock;
+
+    #[derive(Deserialize)]
+    struct AdaptersConfig {
+        adapters: Vec<AdapterEntry>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AdapterEntry {
+        agent_id: String,
+        npm_package: String,
+        pinned_version: String,
+    }
+
+    static PARSED: OnceLock<Vec<(String, String, String)>> = OnceLock::new();
+    let entries = PARSED.get_or_init(|| {
+        let config: AdaptersConfig =
+            serde_json::from_str(ADAPTERS_JSON).expect("adapters.json is valid");
+        config
+            .adapters
+            .into_iter()
+            .map(|e| (e.agent_id, e.npm_package, e.pinned_version))
+            .collect()
+    });
+
+    entries
+        .iter()
+        .find(|(id, _, _)| id == agent_id)
+        .map(|(_, pkg, ver)| (pkg.as_str(), ver.as_str()))
 }
 
 fn fallback_npx_package(base: &str, version: Option<&str>) -> String {

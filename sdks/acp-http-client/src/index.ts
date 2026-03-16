@@ -199,8 +199,8 @@ export class AcpHttpClient {
     return wrapRpc(this.connection.setSessionConfigOption(request));
   }
 
-  async unstableListSessions(request: ListSessionsRequest): Promise<ListSessionsResponse> {
-    return wrapRpc(this.connection.unstable_listSessions(request));
+  async listSessions(request: ListSessionsRequest): Promise<ListSessionsResponse> {
+    return wrapRpc(this.connection.listSessions(request));
   }
 
   async unstableForkSession(request: ForkSessionRequest): Promise<ForkSessionResponse> {

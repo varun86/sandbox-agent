@@ -22,6 +22,19 @@
   - `server/packages/sandbox-agent/src/cli.rs`
 - Keep docs aligned to implemented endpoints/commands only (for example ACP under `/v1/acp`, not legacy `/v1/sessions` APIs).
 
+## E2E Agent Testing
+
+- When asked to test agents e2e and you do not have the API tokens/credentials required, always stop and ask the user where to find the tokens before proceeding.
+
+## ACP Adapter Audit
+
+- `scripts/audit-acp-deps/adapters.json` is the single source of truth for ACP adapter npm packages, pinned versions, and the `@agentclientprotocol/sdk` pin.
+- The Rust fallback install path in `server/packages/agent-management/src/agents.rs` reads adapter entries from `adapters.json` at compile time via `include_str!`.
+- Run `cd scripts/audit-acp-deps && npx tsx audit.ts` to compare our pinned versions against the ACP registry and npm latest.
+- When bumping an adapter version, update `adapters.json` only — the Rust code picks it up automatically.
+- When adding a new agent, add an entry to `adapters.json` (the `_` fallback arm in `install_agent_process_fallback` handles it).
+- When updating the `@agentclientprotocol/sdk` pin, update both `adapters.json` (sdkDeps) and `sdks/acp-http-client/package.json`.
+
 ## Change Tracking
 
 - If the user asks to "push" changes, treat that as permission to commit and push all current workspace changes, not a hand-picked subset, unless the user explicitly scopes the push.
