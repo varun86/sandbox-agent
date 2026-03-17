@@ -1,10 +1,35 @@
-import { Camera, Circle, Download, Loader2, Monitor, Play, RefreshCw, Square, Trash2, Video } from "lucide-react";
+import {
+  AppWindow,
+  Camera,
+  Circle,
+  Clipboard,
+  Download,
+  ExternalLink,
+  Loader2,
+  Monitor,
+  MousePointer,
+  Play,
+  RefreshCw,
+  Square,
+  Trash2,
+  Video,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { SandboxAgentError } from "sandbox-agent";
-import type { DesktopRecordingInfo, DesktopStatusResponse, SandboxAgent } from "sandbox-agent";
+import type { DesktopRecordingInfo, DesktopStatusResponse, DesktopWindowInfo, SandboxAgent } from "sandbox-agent";
 import { DesktopViewer } from "@sandbox-agent/react";
 import type { DesktopViewerClient } from "@sandbox-agent/react";
 const MIN_SPIN_MS = 350;
+type DesktopScreenshotRequest = Parameters<SandboxAgent["takeDesktopScreenshot"]>[0] & {
+  showCursor?: boolean;
+};
+type DesktopStartRequestWithAdvanced = Parameters<SandboxAgent["startDesktop"]>[0] & {
+  streamVideoCodec?: string;
+  streamAudioCodec?: string;
+  streamFrameRate?: number;
+  webrtcPortRange?: string;
+  recordingFps?: number;
+};
 const extractErrorMessage = (error: unknown, fallback: string): string => {
   if (error instanceof SandboxAgentError && error.problem?.detail) return error.problem.detail;
   if (error instanceof Error) return error.message;
@@ -31,10 +56,10 @@ const formatDuration = (start: string, end?: string | null): string => {
   const secs = seconds % 60;
   return `${mins}m ${secs}s`;
 };
-const createScreenshotUrl = async (bytes: Uint8Array): Promise<string> => {
+const createScreenshotUrl = async (bytes: Uint8Array, mimeType = "image/png"): Promise<string> => {
   const payload = new Uint8Array(bytes.byteLength);
   payload.set(bytes);
-  const blob = new Blob([payload.buffer], { type: "image/png" });
+  const blob = new Blob([payload.buffer], { type: mimeType });
   if (typeof URL.createObjectURL === "function") {
     return URL.createObjectURL(blob);
   }
@@ -64,9 +89,15 @@ const DesktopTab = ({ getClient }: { getClient: () => SandboxAgent }) => {
   const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null);
   const [screenshotLoading, setScreenshotLoading] = useState(false);
   const [screenshotError, setScreenshotError] = useState<string | null>(null);
+  const [screenshotFormat, setScreenshotFormat] = useState<"png" | "jpeg" | "webp">("png");
+  const [screenshotQuality, setScreenshotQuality] = useState("85");
+  const [screenshotScale, setScreenshotScale] = useState("1.0");
+  const [showCursor, setShowCursor] = useState(false);
   // Live view
   const [liveViewActive, setLiveViewActive] = useState(false);
   const [liveViewError, setLiveViewError] = useState<string | null>(null);
+  const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
+  const [mousePosLoading, setMousePosLoading] = useState(false);
   // Memoize the client as a DesktopViewerClient so the reference is stable
   // across renders and doesn't cause the DesktopViewer effect to re-fire.
   const viewerClient = useMemo<DesktopViewerClient>(() => {
@@ -85,8 +116,47 @@ const DesktopTab = ({ getClient }: { getClient: () => SandboxAgent }) => {
   const [recordingFps, setRecordingFps] = useState("30");
   const [deletingRecordingId, setDeletingRecordingId] = useState<string | null>(null);
   const [downloadingRecordingId, setDownloadingRecordingId] = useState<string | null>(null);
+  const [showAdvancedStart, setShowAdvancedStart] = useState(false);
+  const [streamVideoCodec, setStreamVideoCodec] = useState("vp8");
+  const [streamAudioCodec, setStreamAudioCodec] = useState("opus");
+  const [streamFrameRate, setStreamFrameRate] = useState("30");
+  const [webrtcPortRange, setWebrtcPortRange] = useState("59050-59070");
+  const [defaultRecordingFps, setDefaultRecordingFps] = useState("30");
+  const [clipboardText, setClipboardText] = useState("");
+  const [clipboardSelection, setClipboardSelection] = useState<"clipboard" | "primary">("clipboard");
+  const [clipboardLoading, setClipboardLoading] = useState(false);
+  const [clipboardError, setClipboardError] = useState<string | null>(null);
+  const [clipboardWriteText, setClipboardWriteText] = useState("");
+  const [clipboardWriting, setClipboardWriting] = useState(false);
+  const [windows, setWindows] = useState<DesktopWindowInfo[]>([]);
+  const [windowsLoading, setWindowsLoading] = useState(false);
+  const [windowsError, setWindowsError] = useState<string | null>(null);
+  const [windowActing, setWindowActing] = useState<string | null>(null);
+  const [editingWindow, setEditingWindow] = useState<{ id: string; action: "move" | "resize" } | null>(null);
+  const [editX, setEditX] = useState("");
+  const [editY, setEditY] = useState("");
+  const [editW, setEditW] = useState("");
+  const [editH, setEditH] = useState("");
+  const [launchApp, setLaunchApp] = useState("firefox");
+  const [launchArgs, setLaunchArgs] = useState("");
+  const [launchWait, setLaunchWait] = useState(true);
+  const [launching, setLaunching] = useState(false);
+  const [launchResult, setLaunchResult] = useState<string | null>(null);
+  const [launchError, setLaunchError] = useState<string | null>(null);
+  const [openTarget, setOpenTarget] = useState("");
+  const [opening, setOpening] = useState(false);
+  const [openResult, setOpenResult] = useState<string | null>(null);
+  const [openError, setOpenError] = useState<string | null>(null);
   // Active recording tracking
   const activeRecording = useMemo(() => recordings.find((r) => r.status === "recording"), [recordings]);
+  const visibleWindows = useMemo(() => {
+    return windows.filter((win) => {
+      const title = win.title.trim();
+      if (win.isActive) return true;
+      if (!title || title === "Openbox") return false;
+      return win.width >= 120 && win.height >= 80;
+    });
+  }, [windows]);
   const revokeScreenshotUrl = useCallback(() => {
     setScreenshotUrl((current) => {
       if (current?.startsWith("blob:") && typeof URL.revokeObjectURL === "function") {
@@ -103,6 +173,11 @@ const DesktopTab = ({ getClient }: { getClient: () => SandboxAgent }) => {
       try {
         const next = await getClient().getDesktopStatus();
         setStatus(next);
+        // Status response now includes windows; sync them so we get window
+        // updates for free every time status is polled.
+        if (next.state === "active" && next.windows?.length) {
+          setWindows(next.windows);
+        }
         return next;
       } catch (loadError) {
         setError(extractErrorMessage(loadError, "Unable to load desktop status."));
@@ -118,16 +193,36 @@ const DesktopTab = ({ getClient }: { getClient: () => SandboxAgent }) => {
     setScreenshotLoading(true);
     setScreenshotError(null);
     try {
-      const bytes = await getClient().takeDesktopScreenshot();
+      const quality = Number.parseInt(screenshotQuality, 10);
+      const scale = Number.parseFloat(screenshotScale);
+      const request: DesktopScreenshotRequest = {
+        format: screenshotFormat !== "png" ? screenshotFormat : undefined,
+        quality: screenshotFormat !== "png" && Number.isFinite(quality) ? quality : undefined,
+        scale: Number.isFinite(scale) && scale !== 1.0 ? scale : undefined,
+        showCursor: showCursor || undefined,
+      };
+      const bytes = await getClient().takeDesktopScreenshot(request);
       revokeScreenshotUrl();
-      setScreenshotUrl(await createScreenshotUrl(bytes));
+      const mimeType = screenshotFormat === "jpeg" ? "image/jpeg" : screenshotFormat === "webp" ? "image/webp" : "image/png";
+      setScreenshotUrl(await createScreenshotUrl(bytes, mimeType));
     } catch (captureError) {
       revokeScreenshotUrl();
       setScreenshotError(extractErrorMessage(captureError, "Unable to capture desktop screenshot."));
     } finally {
       setScreenshotLoading(false);
     }
-  }, [getClient, revokeScreenshotUrl]);
+  }, [getClient, revokeScreenshotUrl, screenshotFormat, screenshotQuality, screenshotScale, showCursor]);
+  const loadMousePosition = useCallback(async () => {
+    setMousePosLoading(true);
+    try {
+      const pos = await getClient().getDesktopMousePosition();
+      setMousePos({ x: pos.x, y: pos.y });
+    } catch {
+      setMousePos(null);
+    } finally {
+      setMousePosLoading(false);
+    }
+  }, [getClient]);
   const loadRecordings = useCallback(async () => {
     setRecordingLoading(true);
     setRecordingError(null);
@@ -140,15 +235,88 @@ const DesktopTab = ({ getClient }: { getClient: () => SandboxAgent }) => {
       setRecordingLoading(false);
     }
   }, [getClient]);
+  const loadClipboard = useCallback(async () => {
+    setClipboardLoading(true);
+    setClipboardError(null);
+    try {
+      const result = await getClient().getDesktopClipboard({ selection: clipboardSelection });
+      setClipboardText(result.text);
+    } catch (err) {
+      setClipboardError(extractErrorMessage(err, "Unable to read clipboard."));
+    } finally {
+      setClipboardLoading(false);
+    }
+  }, [clipboardSelection, getClient]);
+  const loadWindows = useCallback(async () => {
+    setWindowsLoading(true);
+    setWindowsError(null);
+    try {
+      const result = await getClient().listDesktopWindows();
+      setWindows(result.windows);
+    } catch (err) {
+      setWindowsError(extractErrorMessage(err, "Unable to list windows."));
+    } finally {
+      setWindowsLoading(false);
+    }
+  }, [getClient]);
+  const handleFocusWindow = async (windowId: string) => {
+    setWindowActing(windowId);
+    try {
+      await getClient().focusDesktopWindow(windowId);
+      await loadWindows();
+    } catch (err) {
+      setWindowsError(extractErrorMessage(err, "Unable to focus window."));
+    } finally {
+      setWindowActing(null);
+    }
+  };
+  const handleMoveWindow = async (windowId: string) => {
+    const x = Number.parseInt(editX, 10);
+    const y = Number.parseInt(editY, 10);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    setWindowActing(windowId);
+    try {
+      await getClient().moveDesktopWindow(windowId, { x, y });
+      setEditingWindow(null);
+      await loadWindows();
+    } catch (err) {
+      setWindowsError(extractErrorMessage(err, "Unable to move window."));
+    } finally {
+      setWindowActing(null);
+    }
+  };
+  const handleResizeWindow = async (windowId: string) => {
+    const nextWidth = Number.parseInt(editW, 10);
+    const nextHeight = Number.parseInt(editH, 10);
+    if (!Number.isFinite(nextWidth) || !Number.isFinite(nextHeight) || nextWidth <= 0 || nextHeight <= 0) return;
+    setWindowActing(windowId);
+    try {
+      await getClient().resizeDesktopWindow(windowId, { width: nextWidth, height: nextHeight });
+      setEditingWindow(null);
+      await loadWindows();
+    } catch (err) {
+      setWindowsError(extractErrorMessage(err, "Unable to resize window."));
+    } finally {
+      setWindowActing(null);
+    }
+  };
   useEffect(() => {
     void loadStatus();
   }, [loadStatus]);
+  // Auto-refresh status (and windows via status) every 5 seconds when active
+  useEffect(() => {
+    if (status?.state !== "active") return;
+    const interval = setInterval(() => void loadStatus("refresh"), 5000);
+    return () => clearInterval(interval);
+  }, [status?.state, loadStatus]);
   useEffect(() => {
     if (status?.state === "active") {
       void loadRecordings();
     } else {
       revokeScreenshotUrl();
       setLiveViewActive(false);
+      setMousePos(null);
+      setEditingWindow(null);
     }
   }, [status?.state, loadRecordings, revokeScreenshotUrl]);
   useEffect(() => {
@@ -160,19 +328,35 @@ const DesktopTab = ({ getClient }: { getClient: () => SandboxAgent }) => {
     const interval = setInterval(() => void loadRecordings(), 3000);
     return () => clearInterval(interval);
   }, [activeRecording, loadRecordings]);
+  useEffect(() => {
+    if (status?.state !== "active") {
+      setWindows([]);
+      return;
+    }
+    // Initial load; subsequent updates come from the status auto-refresh.
+    void loadWindows();
+  }, [status?.state, loadWindows]);
   const handleStart = async () => {
     const parsedWidth = Number.parseInt(width, 10);
     const parsedHeight = Number.parseInt(height, 10);
     const parsedDpi = Number.parseInt(dpi, 10);
+    const parsedFrameRate = Number.parseInt(streamFrameRate, 10);
+    const parsedRecordingFps = Number.parseInt(defaultRecordingFps, 10);
     setActing("start");
     setError(null);
     const startedAt = Date.now();
     try {
-      const next = await getClient().startDesktop({
+      const request: DesktopStartRequestWithAdvanced = {
         width: Number.isFinite(parsedWidth) ? parsedWidth : undefined,
         height: Number.isFinite(parsedHeight) ? parsedHeight : undefined,
         dpi: Number.isFinite(parsedDpi) ? parsedDpi : undefined,
-      });
+        streamVideoCodec: streamVideoCodec !== "vp8" ? streamVideoCodec : undefined,
+        streamAudioCodec: streamAudioCodec !== "opus" ? streamAudioCodec : undefined,
+        streamFrameRate: Number.isFinite(parsedFrameRate) && parsedFrameRate !== 30 ? parsedFrameRate : undefined,
+        webrtcPortRange: webrtcPortRange !== "59050-59070" ? webrtcPortRange : undefined,
+        recordingFps: Number.isFinite(parsedRecordingFps) && parsedRecordingFps !== 30 ? parsedRecordingFps : undefined,
+      };
+      const next = await getClient().startDesktop(request);
       setStatus(next);
     } catch (startError) {
       setError(extractErrorMessage(startError, "Unable to start desktop runtime."));
@@ -203,6 +387,18 @@ const DesktopTab = ({ getClient }: { getClient: () => SandboxAgent }) => {
         await new Promise((resolve) => window.setTimeout(resolve, MIN_SPIN_MS - elapsedMs));
       }
       setActing(null);
+    }
+  };
+  const handleWriteClipboard = async () => {
+    setClipboardWriting(true);
+    setClipboardError(null);
+    try {
+      await getClient().setDesktopClipboard({ text: clipboardWriteText, selection: clipboardSelection });
+      setClipboardText(clipboardWriteText);
+    } catch (err) {
+      setClipboardError(extractErrorMessage(err, "Unable to write clipboard."));
+    } finally {
+      setClipboardWriting(false);
     }
   };
   const handleStartRecording = async () => {
@@ -262,6 +458,41 @@ const DesktopTab = ({ getClient }: { getClient: () => SandboxAgent }) => {
       setDownloadingRecordingId(null);
     }
   };
+  const handleLaunchApp = async () => {
+    if (!launchApp.trim()) return;
+    setLaunching(true);
+    setLaunchError(null);
+    setLaunchResult(null);
+    try {
+      const args = launchArgs.trim() ? launchArgs.trim().split(/\s+/) : undefined;
+      const result = await getClient().launchDesktopApp({
+        app: launchApp.trim(),
+        args,
+        wait: launchWait || undefined,
+      });
+      setLaunchResult(`Started ${result.processId}${result.windowId ? ` (window: ${result.windowId})` : ""}`);
+      await loadWindows();
+    } catch (err) {
+      setLaunchError(extractErrorMessage(err, "Unable to launch app."));
+    } finally {
+      setLaunching(false);
+    }
+  };
+  const handleOpenTarget = async () => {
+    if (!openTarget.trim()) return;
+    setOpening(true);
+    setOpenError(null);
+    setOpenResult(null);
+    try {
+      const result = await getClient().openDesktopTarget({ target: openTarget.trim() });
+      setOpenResult(`Opened via ${result.processId}`);
+      await loadWindows();
+    } catch (err) {
+      setOpenError(extractErrorMessage(err, "Unable to open target."));
+    } finally {
+      setOpening(false);
+    }
+  };
   const canRefreshScreenshot = status?.state === "active";
   const isActive = status?.state === "active";
   const resolutionLabel = useMemo(() => {
@@ -284,6 +515,48 @@ const DesktopTab = ({ getClient }: { getClient: () => SandboxAgent }) => {
           </button>
         )}
       </div>
+      {isActive && !liveViewActive && (
+        <div className="desktop-screenshot-controls">
+          <div className="desktop-input-group">
+            <label className="label">Format</label>
+            <select
+              className="setup-input mono"
+              value={screenshotFormat}
+              onChange={(event) => setScreenshotFormat(event.target.value as "png" | "jpeg" | "webp")}
+            >
+              <option value="png">PNG</option>
+              <option value="jpeg">JPEG</option>
+              <option value="webp">WebP</option>
+            </select>
+          </div>
+          {screenshotFormat !== "png" && (
+            <div className="desktop-input-group">
+              <label className="label">Quality</label>
+              <input
+                className="setup-input mono"
+                value={screenshotQuality}
+                onChange={(event) => setScreenshotQuality(event.target.value)}
+                inputMode="numeric"
+                style={{ maxWidth: 60 }}
+              />
+            </div>
+          )}
+          <div className="desktop-input-group">
+            <label className="label">Scale</label>
+            <input
+              className="setup-input mono"
+              value={screenshotScale}
+              onChange={(event) => setScreenshotScale(event.target.value)}
+              inputMode="decimal"
+              style={{ maxWidth: 60 }}
+            />
+          </div>
+          <label className="desktop-checkbox-label">
+            <input type="checkbox" checked={showCursor} onChange={(event) => setShowCursor(event.target.checked)} />
+            Show cursor
+          </label>
+        </div>
+      )}
       {error && <div className="banner error">{error}</div>}
       {screenshotError && <div className="banner error">{screenshotError}</div>}
       {/* ========== Runtime Section ========== */}
@@ -329,6 +602,56 @@ const DesktopTab = ({ getClient }: { getClient: () => SandboxAgent }) => {
             <input className="setup-input mono" value={dpi} onChange={(event) => setDpi(event.target.value)} inputMode="numeric" />
           </div>
         </div>
+        <button
+          className="button ghost small"
+          onClick={() => setShowAdvancedStart((value) => !value)}
+          style={{ marginTop: 8, fontSize: 11, padding: "4px 8px" }}
+        >
+          {showAdvancedStart ? "v Advanced" : "> Advanced"}
+        </button>
+        {showAdvancedStart && (
+          <div className="desktop-advanced-grid">
+            <div className="desktop-input-group">
+              <label className="label">Video Codec</label>
+              <select className="setup-input mono" value={streamVideoCodec} onChange={(event) => setStreamVideoCodec(event.target.value)} disabled={isActive}>
+                <option value="vp8">vp8</option>
+                <option value="vp9">vp9</option>
+                <option value="h264">h264</option>
+              </select>
+            </div>
+            <div className="desktop-input-group">
+              <label className="label">Audio Codec</label>
+              <select className="setup-input mono" value={streamAudioCodec} onChange={(event) => setStreamAudioCodec(event.target.value)} disabled={isActive}>
+                <option value="opus">opus</option>
+                <option value="g722">g722</option>
+              </select>
+            </div>
+            <div className="desktop-input-group">
+              <label className="label">Frame Rate</label>
+              <input
+                className="setup-input mono"
+                value={streamFrameRate}
+                onChange={(event) => setStreamFrameRate(event.target.value)}
+                inputMode="numeric"
+                disabled={isActive}
+              />
+            </div>
+            <div className="desktop-input-group">
+              <label className="label">WebRTC Ports</label>
+              <input className="setup-input mono" value={webrtcPortRange} onChange={(event) => setWebrtcPortRange(event.target.value)} disabled={isActive} />
+            </div>
+            <div className="desktop-input-group">
+              <label className="label">Recording FPS</label>
+              <input
+                className="setup-input mono"
+                value={defaultRecordingFps}
+                onChange={(event) => setDefaultRecordingFps(event.target.value)}
+                inputMode="numeric"
+                disabled={isActive}
+              />
+            </div>
+          </div>
+        )}
         <div className="card-actions">
           {isActive ? (
             <button className="button danger small" onClick={() => void handleStop()} disabled={acting === "stop"}>
@@ -416,7 +739,29 @@ const DesktopTab = ({ getClient }: { getClient: () => SandboxAgent }) => {
           </div>
         )}
         {!isActive && <div className="desktop-screenshot-empty">Start the desktop runtime to enable live view.</div>}
-        {isActive && liveViewActive && <DesktopViewer client={viewerClient} autoStart={true} showStatusBar={true} />}
+        {isActive && liveViewActive && (
+          <>
+            <div className="desktop-stream-hint">
+              <span>Right click to open window</span>
+              {status?.resolution && (
+                <span className="mono" style={{ color: "var(--muted)" }}>
+                  {status.resolution.width}x{status.resolution.height}
+                </span>
+              )}
+            </div>
+            <DesktopViewer
+              client={viewerClient}
+              height={360}
+              showStatusBar={false}
+              style={{
+                border: "1px solid var(--border)",
+                borderRadius: 10,
+                background: "linear-gradient(180deg, rgba(15, 23, 42, 0.92) 0%, rgba(17, 24, 39, 0.98) 100%)",
+                boxShadow: "none",
+              }}
+            />
+          </>
+        )}
         {isActive && !liveViewActive && (
           <>
             {screenshotUrl ? (
@@ -428,7 +773,313 @@ const DesktopTab = ({ getClient }: { getClient: () => SandboxAgent }) => {
             )}
           </>
         )}
+        {isActive && (
+          <div className="desktop-mouse-pos">
+            <button
+              className="button ghost small"
+              onClick={() => void loadMousePosition()}
+              disabled={mousePosLoading}
+              style={{ padding: "4px 8px", fontSize: 11 }}
+            >
+              {mousePosLoading ? <Loader2 size={12} className="spinner-icon" /> : <MousePointer size={12} style={{ marginRight: 4 }} />}
+              Position
+            </button>
+            {mousePos && (
+              <span className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>
+                ({mousePos.x}, {mousePos.y})
+              </span>
+            )}
+          </div>
+        )}
       </div>
+      {isActive && (
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title">
+              <Clipboard size={14} style={{ marginRight: 6 }} />
+              Clipboard
+            </span>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <select
+                className="setup-input mono"
+                value={clipboardSelection}
+                onChange={(event) => setClipboardSelection(event.target.value as "clipboard" | "primary")}
+                style={{ fontSize: 11, padding: "2px 6px", width: "auto" }}
+              >
+                <option value="clipboard">clipboard</option>
+                <option value="primary">primary</option>
+              </select>
+              <button
+                className="button secondary small"
+                onClick={() => void loadClipboard()}
+                disabled={clipboardLoading}
+                style={{ padding: "4px 8px", fontSize: 11 }}
+              >
+                {clipboardLoading ? <Loader2 size={12} className="spinner-icon" /> : <RefreshCw size={12} />}
+              </button>
+            </div>
+          </div>
+          {clipboardError && (
+            <div className="banner error" style={{ marginBottom: 8 }}>
+              {clipboardError}
+            </div>
+          )}
+          <div className="desktop-clipboard-content">
+            <div className="card-meta">Current contents</div>
+            <pre className="desktop-clipboard-text">
+              {clipboardText ? clipboardText : <span style={{ color: "var(--muted)", fontStyle: "italic" }}>(empty)</span>}
+            </pre>
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <div className="card-meta">Write to clipboard</div>
+            <textarea
+              className="setup-input mono"
+              value={clipboardWriteText}
+              onChange={(event) => setClipboardWriteText(event.target.value)}
+              rows={2}
+              style={{ width: "100%", resize: "vertical", marginTop: 4 }}
+              placeholder="Text to copy..."
+            />
+            <button className="button secondary small" onClick={() => void handleWriteClipboard()} disabled={clipboardWriting} style={{ marginTop: 6 }}>
+              {clipboardWriting ? <Loader2 className="button-icon spinner-icon" /> : null}
+              Update Clipboard
+            </button>
+          </div>
+        </div>
+      )}
+      {isActive && (
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title">
+              <AppWindow size={14} style={{ marginRight: 6 }} />
+              Windows
+            </span>
+            <button
+              className="button secondary small"
+              onClick={() => void loadWindows()}
+              disabled={windowsLoading}
+              style={{ padding: "4px 8px", fontSize: 11 }}
+            >
+              {windowsLoading ? <Loader2 size={12} className="spinner-icon" /> : <RefreshCw size={12} />}
+            </button>
+          </div>
+          {windowsError && (
+            <div className="banner error" style={{ marginBottom: 8 }}>
+              {windowsError}
+            </div>
+          )}
+          {visibleWindows.length > 0 ? (
+            <div className="desktop-process-list">
+              {windows.length !== visibleWindows.length && (
+                <div className="card-meta">
+                  Showing {visibleWindows.length} top-level windows ({windows.length - visibleWindows.length} helper entries hidden)
+                </div>
+              )}
+              {visibleWindows.map((win) => (
+                <div key={win.id} className={`desktop-window-item ${win.isActive ? "desktop-window-focused" : ""}`}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <div style={{ minWidth: 0 }}>
+                      <strong style={{ fontSize: 12 }}>{win.title || "(untitled)"}</strong>
+                      {win.isActive && (
+                        <span className="pill success" style={{ marginLeft: 8 }}>
+                          focused
+                        </span>
+                      )}
+                      <div className="mono" style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+                        id: {win.id}
+                        {" \u00b7 "}
+                        {win.x},{win.y}
+                        {" \u00b7 "}
+                        {win.width}x{win.height}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                      <button
+                        className="button ghost small"
+                        title="Focus"
+                        onClick={() => void handleFocusWindow(win.id)}
+                        disabled={windowActing === win.id}
+                        style={{ padding: "4px 6px", fontSize: 10 }}
+                      >
+                        Focus
+                      </button>
+                      <button
+                        className="button ghost small"
+                        title="Move"
+                        onClick={() => {
+                          setEditingWindow({ id: win.id, action: "move" });
+                          setEditX(String(win.x));
+                          setEditY(String(win.y));
+                        }}
+                        style={{ padding: "4px 6px", fontSize: 10 }}
+                      >
+                        Move
+                      </button>
+                      <button
+                        className="button ghost small"
+                        title="Resize"
+                        onClick={() => {
+                          setEditingWindow({ id: win.id, action: "resize" });
+                          setEditW(String(win.width));
+                          setEditH(String(win.height));
+                        }}
+                        style={{ padding: "4px 6px", fontSize: 10 }}
+                      >
+                        Resize
+                      </button>
+                    </div>
+                  </div>
+                  {editingWindow?.id === win.id && editingWindow.action === "move" && (
+                    <div className="desktop-window-editor">
+                      <input
+                        className="setup-input mono"
+                        placeholder="x"
+                        value={editX}
+                        onChange={(event) => setEditX(event.target.value)}
+                        style={{ width: 60 }}
+                        inputMode="numeric"
+                      />
+                      <input
+                        className="setup-input mono"
+                        placeholder="y"
+                        value={editY}
+                        onChange={(event) => setEditY(event.target.value)}
+                        style={{ width: 60 }}
+                        inputMode="numeric"
+                      />
+                      <button
+                        className="button success small"
+                        onClick={() => void handleMoveWindow(win.id)}
+                        disabled={windowActing === win.id}
+                        style={{ padding: "4px 8px", fontSize: 10 }}
+                      >
+                        Apply
+                      </button>
+                      <button className="button ghost small" onClick={() => setEditingWindow(null)} style={{ padding: "4px 8px", fontSize: 10 }}>
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                  {editingWindow?.id === win.id && editingWindow.action === "resize" && (
+                    <div className="desktop-window-editor">
+                      <input
+                        className="setup-input mono"
+                        placeholder="width"
+                        value={editW}
+                        onChange={(event) => setEditW(event.target.value)}
+                        style={{ width: 60 }}
+                        inputMode="numeric"
+                      />
+                      <input
+                        className="setup-input mono"
+                        placeholder="height"
+                        value={editH}
+                        onChange={(event) => setEditH(event.target.value)}
+                        style={{ width: 60 }}
+                        inputMode="numeric"
+                      />
+                      <button
+                        className="button success small"
+                        onClick={() => void handleResizeWindow(win.id)}
+                        disabled={windowActing === win.id}
+                        style={{ padding: "4px 8px", fontSize: 10 }}
+                      >
+                        Apply
+                      </button>
+                      <button className="button ghost small" onClick={() => setEditingWindow(null)} style={{ padding: "4px 8px", fontSize: 10 }}>
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="desktop-screenshot-empty">{windowsLoading ? "Loading..." : "No windows detected. Click refresh to update."}</div>
+          )}
+        </div>
+      )}
+      {isActive && (
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title">
+              <ExternalLink size={14} style={{ marginRight: 6 }} />
+              Launch / Open
+            </span>
+          </div>
+          <div className="card-meta">Launch application</div>
+          <div className="desktop-launch-row">
+            <input
+              className="setup-input mono"
+              placeholder="binary name (e.g. firefox)"
+              value={launchApp}
+              onChange={(event) => setLaunchApp(event.target.value)}
+              style={{ flex: 1 }}
+            />
+            <input
+              className="setup-input mono"
+              placeholder="args (optional)"
+              value={launchArgs}
+              onChange={(event) => setLaunchArgs(event.target.value)}
+              style={{ flex: 1 }}
+            />
+            <label className="desktop-checkbox-label">
+              <input type="checkbox" checked={launchWait} onChange={(event) => setLaunchWait(event.target.checked)} />
+              Wait
+            </label>
+            <button
+              className="button success small"
+              onClick={() => void handleLaunchApp()}
+              disabled={launching || !launchApp.trim()}
+              style={{ padding: "4px 10px", fontSize: 11 }}
+            >
+              {launching ? <Loader2 size={12} className="spinner-icon" /> : <Play size={12} style={{ marginRight: 4 }} />}
+              Launch
+            </button>
+          </div>
+          {launchError && (
+            <div className="banner error" style={{ marginTop: 6 }}>
+              {launchError}
+            </div>
+          )}
+          {launchResult && (
+            <div className="mono" style={{ fontSize: 11, color: "var(--success)", marginTop: 4 }}>
+              {launchResult}
+            </div>
+          )}
+          <div className="card-meta" style={{ marginTop: 14 }}>
+            Open file or URL
+          </div>
+          <div className="desktop-launch-row">
+            <input
+              className="setup-input mono"
+              placeholder="https://example.com or /path/to/file"
+              value={openTarget}
+              onChange={(event) => setOpenTarget(event.target.value)}
+              style={{ flex: 1 }}
+            />
+            <button
+              className="button success small"
+              onClick={() => void handleOpenTarget()}
+              disabled={opening || !openTarget.trim()}
+              style={{ padding: "4px 10px", fontSize: 11 }}
+            >
+              {opening ? <Loader2 size={12} className="spinner-icon" /> : <ExternalLink size={12} style={{ marginRight: 4 }} />}
+              Open
+            </button>
+          </div>
+          {openError && (
+            <div className="banner error" style={{ marginTop: 6 }}>
+              {openError}
+            </div>
+          )}
+          {openResult && (
+            <div className="mono" style={{ fontSize: 11, color: "var(--success)", marginTop: 4 }}>
+              {openResult}
+            </div>
+          )}
+        </div>
+      )}
       {/* ========== Recording Section ========== */}
       <div className="card">
         <div className="card-header">

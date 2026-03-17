@@ -38,6 +38,15 @@
 - Docker-backed Rust and TypeScript tests build `docker/test-agent/Dockerfile` directly in-process and cache the image tag only in memory (`OnceLock` in Rust, module-level variable in TypeScript).
 - Do not add cross-process image-build scripts unless there is a concrete need for them.
 
+## Common Software Sync
+
+- These three files must stay in sync:
+  - `docs/common-software.mdx` (user-facing documentation)
+  - `docker/test-common-software/Dockerfile` (packages installed in the test image)
+  - `server/packages/sandbox-agent/tests/common_software.rs` (test assertions)
+- When adding or removing software from `docs/common-software.mdx`, also add/remove the corresponding `apt-get install` line in the Dockerfile and add/remove the test in `common_software.rs`.
+- Run `cargo test -p sandbox-agent --test common_software` to verify.
+
 ## Install Version References
 
 - Channel policy:

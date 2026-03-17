@@ -217,6 +217,28 @@ pub fn build_router_with_state(shared: Arc<AppState>) -> (Router, Arc<AppState>)
         .route("/desktop/display/info", get(get_v1_desktop_display_info))
         .route("/desktop/windows", get(get_v1_desktop_windows))
         .route(
+            "/desktop/windows/focused",
+            get(get_v1_desktop_windows_focused),
+        )
+        .route(
+            "/desktop/windows/:id/focus",
+            post(post_v1_desktop_window_focus),
+        )
+        .route(
+            "/desktop/windows/:id/move",
+            post(post_v1_desktop_window_move),
+        )
+        .route(
+            "/desktop/windows/:id/resize",
+            post(post_v1_desktop_window_resize),
+        )
+        .route(
+            "/desktop/clipboard",
+            get(get_v1_desktop_clipboard).post(post_v1_desktop_clipboard),
+        )
+        .route("/desktop/launch", post(post_v1_desktop_launch))
+        .route("/desktop/open", post(post_v1_desktop_open))
+        .route(
             "/desktop/recording/start",
             post(post_v1_desktop_recording_start),
         )
@@ -235,6 +257,7 @@ pub fn build_router_with_state(shared: Arc<AppState>) -> (Router, Arc<AppState>)
         )
         .route("/desktop/stream/start", post(post_v1_desktop_stream_start))
         .route("/desktop/stream/stop", post(post_v1_desktop_stream_stop))
+        .route("/desktop/stream/status", get(get_v1_desktop_stream_status))
         .route("/desktop/stream/signaling", get(get_v1_desktop_stream_ws))
         .route("/agents", get(get_v1_agents))
         .route("/agents/:agent", get(get_v1_agent))
@@ -405,6 +428,15 @@ pub async fn shutdown_servers(state: &Arc<AppState>) {
         post_v1_desktop_keyboard_up,
         get_v1_desktop_display_info,
         get_v1_desktop_windows,
+        get_v1_desktop_windows_focused,
+        post_v1_desktop_window_focus,
+        post_v1_desktop_window_move,
+        post_v1_desktop_window_resize,
+        get_v1_desktop_clipboard,
+        post_v1_desktop_clipboard,
+        post_v1_desktop_launch,
+        post_v1_desktop_open,
+        get_v1_desktop_stream_status,
         post_v1_desktop_recording_start,
         post_v1_desktop_recording_stop,
         get_v1_desktop_recordings,
@@ -483,6 +515,15 @@ pub async fn shutdown_servers(state: &Arc<AppState>) {
             DesktopRecordingInfo,
             DesktopRecordingListResponse,
             DesktopStreamStatusResponse,
+            DesktopClipboardResponse,
+            DesktopClipboardQuery,
+            DesktopClipboardWriteRequest,
+            DesktopLaunchRequest,
+            DesktopLaunchResponse,
+            DesktopOpenRequest,
+            DesktopOpenResponse,
+            DesktopWindowMoveRequest,
+            DesktopWindowResizeRequest,
             ServerStatus,
             ServerStatusInfo,
             AgentCapabilities,
@@ -1029,6 +1070,193 @@ async fn get_v1_desktop_windows(
     Ok(Json(windows))
 }
 
+/// Get the currently focused desktop window.
+///
+/// Returns information about the window that currently has input focus.
+#[utoipa::path(
+    get,
+    path = "/v1/desktop/windows/focused",
+    tag = "v1",
+    responses(
+        (status = 200, description = "Focused window info", body = DesktopWindowInfo),
+        (status = 404, description = "No window is focused", body = ProblemDetails),
+        (status = 409, description = "Desktop runtime is not ready", body = ProblemDetails)
+    )
+)]
+async fn get_v1_desktop_windows_focused(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<DesktopWindowInfo>, ApiError> {
+    let window = state.desktop_runtime().focused_window().await?;
+    Ok(Json(window))
+}
+
+/// Focus a desktop window.
+///
+/// Brings the specified window to the foreground and gives it input focus.
+#[utoipa::path(
+    post,
+    path = "/v1/desktop/windows/{id}/focus",
+    tag = "v1",
+    params(
+        ("id" = String, Path, description = "X11 window ID")
+    ),
+    responses(
+        (status = 200, description = "Window info after focus", body = DesktopWindowInfo),
+        (status = 404, description = "Window not found", body = ProblemDetails),
+        (status = 409, description = "Desktop runtime is not ready", body = ProblemDetails)
+    )
+)]
+async fn post_v1_desktop_window_focus(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<DesktopWindowInfo>, ApiError> {
+    let window = state.desktop_runtime().focus_window(&id).await?;
+    Ok(Json(window))
+}
+
+/// Move a desktop window.
+///
+/// Moves the specified window to the given position.
+#[utoipa::path(
+    post,
+    path = "/v1/desktop/windows/{id}/move",
+    tag = "v1",
+    params(
+        ("id" = String, Path, description = "X11 window ID")
+    ),
+    request_body = DesktopWindowMoveRequest,
+    responses(
+        (status = 200, description = "Window info after move", body = DesktopWindowInfo),
+        (status = 404, description = "Window not found", body = ProblemDetails),
+        (status = 409, description = "Desktop runtime is not ready", body = ProblemDetails)
+    )
+)]
+async fn post_v1_desktop_window_move(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<DesktopWindowMoveRequest>,
+) -> Result<Json<DesktopWindowInfo>, ApiError> {
+    let window = state.desktop_runtime().move_window(&id, body).await?;
+    Ok(Json(window))
+}
+
+/// Resize a desktop window.
+///
+/// Resizes the specified window to the given dimensions.
+#[utoipa::path(
+    post,
+    path = "/v1/desktop/windows/{id}/resize",
+    tag = "v1",
+    params(
+        ("id" = String, Path, description = "X11 window ID")
+    ),
+    request_body = DesktopWindowResizeRequest,
+    responses(
+        (status = 200, description = "Window info after resize", body = DesktopWindowInfo),
+        (status = 404, description = "Window not found", body = ProblemDetails),
+        (status = 409, description = "Desktop runtime is not ready", body = ProblemDetails)
+    )
+)]
+async fn post_v1_desktop_window_resize(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<DesktopWindowResizeRequest>,
+) -> Result<Json<DesktopWindowInfo>, ApiError> {
+    let window = state.desktop_runtime().resize_window(&id, body).await?;
+    Ok(Json(window))
+}
+
+/// Read the desktop clipboard.
+///
+/// Returns the current text content of the X11 clipboard.
+#[utoipa::path(
+    get,
+    path = "/v1/desktop/clipboard",
+    tag = "v1",
+    params(DesktopClipboardQuery),
+    responses(
+        (status = 200, description = "Clipboard contents", body = DesktopClipboardResponse),
+        (status = 409, description = "Desktop runtime is not ready", body = ProblemDetails),
+        (status = 500, description = "Clipboard read failed", body = ProblemDetails)
+    )
+)]
+async fn get_v1_desktop_clipboard(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<DesktopClipboardQuery>,
+) -> Result<Json<DesktopClipboardResponse>, ApiError> {
+    let clipboard = state
+        .desktop_runtime()
+        .get_clipboard(query.selection)
+        .await?;
+    Ok(Json(clipboard))
+}
+
+/// Write to the desktop clipboard.
+///
+/// Sets the text content of the X11 clipboard.
+#[utoipa::path(
+    post,
+    path = "/v1/desktop/clipboard",
+    tag = "v1",
+    request_body = DesktopClipboardWriteRequest,
+    responses(
+        (status = 200, description = "Clipboard updated", body = DesktopActionResponse),
+        (status = 409, description = "Desktop runtime is not ready", body = ProblemDetails),
+        (status = 500, description = "Clipboard write failed", body = ProblemDetails)
+    )
+)]
+async fn post_v1_desktop_clipboard(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<DesktopClipboardWriteRequest>,
+) -> Result<Json<DesktopActionResponse>, ApiError> {
+    let result = state.desktop_runtime().set_clipboard(body).await?;
+    Ok(Json(result))
+}
+
+/// Launch a desktop application.
+///
+/// Launches an application by name on the managed desktop, optionally waiting
+/// for its window to appear.
+#[utoipa::path(
+    post,
+    path = "/v1/desktop/launch",
+    tag = "v1",
+    request_body = DesktopLaunchRequest,
+    responses(
+        (status = 200, description = "Application launched", body = DesktopLaunchResponse),
+        (status = 404, description = "Application not found", body = ProblemDetails),
+        (status = 409, description = "Desktop runtime is not ready", body = ProblemDetails)
+    )
+)]
+async fn post_v1_desktop_launch(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<DesktopLaunchRequest>,
+) -> Result<Json<DesktopLaunchResponse>, ApiError> {
+    let result = state.desktop_runtime().launch_app(body).await?;
+    Ok(Json(result))
+}
+
+/// Open a file or URL with the default handler.
+///
+/// Opens a file path or URL using xdg-open on the managed desktop.
+#[utoipa::path(
+    post,
+    path = "/v1/desktop/open",
+    tag = "v1",
+    request_body = DesktopOpenRequest,
+    responses(
+        (status = 200, description = "Target opened", body = DesktopOpenResponse),
+        (status = 409, description = "Desktop runtime is not ready", body = ProblemDetails)
+    )
+)]
+async fn post_v1_desktop_open(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<DesktopOpenRequest>,
+) -> Result<Json<DesktopOpenResponse>, ApiError> {
+    let result = state.desktop_runtime().open_target(body).await?;
+    Ok(Json(result))
+}
+
 /// Start desktop recording.
 ///
 /// Starts an ffmpeg x11grab recording against the managed desktop and returns
@@ -1199,6 +1427,23 @@ async fn post_v1_desktop_stream_stop(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<DesktopStreamStatusResponse>, ApiError> {
     Ok(Json(state.desktop_runtime().stop_streaming().await))
+}
+
+/// Get desktop stream status.
+///
+/// Returns the current state of the desktop WebRTC streaming session.
+#[utoipa::path(
+    get,
+    path = "/v1/desktop/stream/status",
+    tag = "v1",
+    responses(
+        (status = 200, description = "Desktop stream status", body = DesktopStreamStatusResponse)
+    )
+)]
+async fn get_v1_desktop_stream_status(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<DesktopStreamStatusResponse>, ApiError> {
+    Ok(Json(state.desktop_runtime().stream_status().await))
 }
 
 /// Open a desktop WebRTC signaling session.

@@ -41,6 +41,49 @@ curl -X POST "http://127.0.0.1:2468/v1/desktop/stop"
 
 All fields in the start request are optional. Defaults are 1440x900 at 96 DPI.
 
+### Start request options
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `width` | number | 1440 | Desktop width in pixels |
+| `height` | number | 900 | Desktop height in pixels |
+| `dpi` | number | 96 | Display DPI |
+| `displayNum` | number | 99 | Starting X display number. The runtime probes from this number upward to find an available display. |
+| `stateDir` | string | (auto) | Desktop state directory for home, logs, recordings |
+| `streamVideoCodec` | string | `"vp8"` | WebRTC video codec (`vp8`, `vp9`, `h264`) |
+| `streamAudioCodec` | string | `"opus"` | WebRTC audio codec (`opus`, `g722`) |
+| `streamFrameRate` | number | 30 | Streaming frame rate (1-60) |
+| `webrtcPortRange` | string | `"59050-59070"` | UDP port range for WebRTC media |
+| `recordingFps` | number | 30 | Default recording FPS when not specified in `startDesktopRecording` (1-60) |
+
+The streaming and recording options configure defaults for the desktop session. They take effect when streaming or recording is started later.
+
+<CodeGroup>
+```ts TypeScript
+const status = await sdk.startDesktop({
+  width: 1920,
+  height: 1080,
+  streamVideoCodec: "h264",
+  streamFrameRate: 60,
+  webrtcPortRange: "59100-59120",
+  recordingFps: 15,
+});
+```
+
+```bash cURL
+curl -X POST "http://127.0.0.1:2468/v1/desktop/start" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "width": 1920,
+    "height": 1080,
+    "streamVideoCodec": "h264",
+    "streamFrameRate": 60,
+    "webrtcPortRange": "59100-59120",
+    "recordingFps": 15
+  }'
+```
+</CodeGroup>
+
 ## Status
 
 <CodeGroup>
@@ -56,7 +99,7 @@ curl "http://127.0.0.1:2468/v1/desktop/status"
 
 ## Screenshots
 
-Capture the full desktop or a specific region.
+Capture the full desktop or a specific region. Optionally include the cursor position.
 
 <CodeGroup>
 ```ts TypeScript
@@ -68,6 +111,11 @@ const jpeg = await sdk.takeDesktopScreenshot({
   format: "jpeg",
   quality: 70,
   scale: 0.5,
+});
+
+// Include cursor overlay
+const withCursor = await sdk.takeDesktopScreenshot({
+  showCursor: true,
 });
 
 // Region screenshot
@@ -85,10 +133,25 @@ curl "http://127.0.0.1:2468/v1/desktop/screenshot" --output screenshot.png
 curl "http://127.0.0.1:2468/v1/desktop/screenshot?format=jpeg&quality=70&scale=0.5" \
   --output screenshot.jpg
 
+# Include cursor overlay
+curl "http://127.0.0.1:2468/v1/desktop/screenshot?show_cursor=true" \
+  --output with_cursor.png
+
 curl "http://127.0.0.1:2468/v1/desktop/screenshot/region?x=100&y=100&width=400&height=300" \
   --output region.png
 ```
 </CodeGroup>
+
+### Screenshot options
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `format` | string | `"png"` | Output format: `png`, `jpeg`, or `webp` |
+| `quality` | number | 85 | Compression quality (1-100, JPEG/WebP only) |
+| `scale` | number | 1.0 | Scale factor (0.1-1.0) |
+| `showCursor` | boolean | `false` | Composite a crosshair at the cursor position |
+
+When `showCursor` is enabled, the cursor position is captured at the moment of the screenshot and a red crosshair is drawn at that location. This is useful for AI agents that need to see where the cursor is in the screenshot.
 
 ## Mouse
 
@@ -166,6 +229,52 @@ curl -X POST "http://127.0.0.1:2468/v1/desktop/keyboard/press" \
 ```
 </CodeGroup>
 
+## Clipboard
+
+Read and write the X11 clipboard programmatically.
+
+<CodeGroup>
+```ts TypeScript
+// Read clipboard
+const clipboard = await sdk.getDesktopClipboard();
+console.log(clipboard.text);
+
+// Read primary selection (mouse-selected text)
+const primary = await sdk.getDesktopClipboard({ selection: "primary" });
+
+// Write to clipboard
+await sdk.setDesktopClipboard({ text: "Pasted via API" });
+
+// Write to both clipboard and primary selection
+await sdk.setDesktopClipboard({
+  text: "Synced text",
+  selection: "both",
+});
+```
+
+```bash cURL
+curl "http://127.0.0.1:2468/v1/desktop/clipboard"
+
+curl "http://127.0.0.1:2468/v1/desktop/clipboard?selection=primary"
+
+curl -X POST "http://127.0.0.1:2468/v1/desktop/clipboard" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Pasted via API"}'
+
+curl -X POST "http://127.0.0.1:2468/v1/desktop/clipboard" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Synced text","selection":"both"}'
+```
+</CodeGroup>
+
+The `selection` parameter controls which X11 selection to read or write:
+
+| Value | Description |
+|-------|-------------|
+| `clipboard` (default) | The standard clipboard (Ctrl+C / Ctrl+V) |
+| `primary` | The primary selection (text selected with the mouse) |
+| `both` | Write to both clipboard and primary selection (write only) |
+
 ## Display and windows
 
 <CodeGroup>
@@ -185,6 +294,112 @@ curl "http://127.0.0.1:2468/v1/desktop/display/info"
 curl "http://127.0.0.1:2468/v1/desktop/windows"
 ```
 </CodeGroup>
+
+The windows endpoint filters out noise automatically: window manager internals (Openbox), windows with empty titles, and tiny helper windows (under 120x80) are excluded. The currently active/focused window is always included regardless of filters.
+
+### Focused window
+
+Get the currently focused window without listing all windows.
+
+<CodeGroup>
+```ts TypeScript
+const focused = await sdk.getDesktopFocusedWindow();
+console.log(focused.title, focused.id);
+```
+
+```bash cURL
+curl "http://127.0.0.1:2468/v1/desktop/windows/focused"
+```
+</CodeGroup>
+
+Returns 404 if no window currently has focus.
+
+### Window management
+
+Focus, move, and resize windows by their X11 window ID.
+
+<CodeGroup>
+```ts TypeScript
+const { windows } = await sdk.listDesktopWindows();
+const win = windows[0];
+
+// Bring window to foreground
+await sdk.focusDesktopWindow(win.id);
+
+// Move window
+await sdk.moveDesktopWindow(win.id, { x: 100, y: 50 });
+
+// Resize window
+await sdk.resizeDesktopWindow(win.id, { width: 1280, height: 720 });
+```
+
+```bash cURL
+# Focus a window
+curl -X POST "http://127.0.0.1:2468/v1/desktop/windows/12345/focus"
+
+# Move a window
+curl -X POST "http://127.0.0.1:2468/v1/desktop/windows/12345/move" \
+  -H "Content-Type: application/json" \
+  -d '{"x":100,"y":50}'
+
+# Resize a window
+curl -X POST "http://127.0.0.1:2468/v1/desktop/windows/12345/resize" \
+  -H "Content-Type: application/json" \
+  -d '{"width":1280,"height":720}'
+```
+</CodeGroup>
+
+All three endpoints return the updated window info so you can verify the operation took effect. The window manager may adjust the requested position or size.
+
+## App launching
+
+Launch applications or open files/URLs on the desktop without needing to shell out.
+
+<CodeGroup>
+```ts TypeScript
+// Launch an app by name
+const result = await sdk.launchDesktopApp({
+  app: "firefox",
+  args: ["--private"],
+});
+console.log(result.processId); // "proc_7"
+
+// Launch and wait for the window to appear
+const withWindow = await sdk.launchDesktopApp({
+  app: "xterm",
+  wait: true,
+});
+console.log(withWindow.windowId); // "12345" or null if timed out
+
+// Open a URL with the default handler
+const opened = await sdk.openDesktopTarget({
+  target: "https://example.com",
+});
+console.log(opened.processId);
+```
+
+```bash cURL
+curl -X POST "http://127.0.0.1:2468/v1/desktop/launch" \
+  -H "Content-Type: application/json" \
+  -d '{"app":"firefox","args":["--private"]}'
+
+curl -X POST "http://127.0.0.1:2468/v1/desktop/launch" \
+  -H "Content-Type: application/json" \
+  -d '{"app":"xterm","wait":true}'
+
+curl -X POST "http://127.0.0.1:2468/v1/desktop/open" \
+  -H "Content-Type: application/json" \
+  -d '{"target":"https://example.com"}'
+```
+</CodeGroup>
+
+The returned `processId` can be used with the [Process API](/processes) to read logs (`GET /v1/processes/{id}/logs`) or stop the application (`POST /v1/processes/{id}/stop`).
+
+When `wait` is `true`, the API polls for up to 5 seconds for a window to appear. If the window appears, its ID is returned in `windowId`. If it times out, `windowId` is `null` but the process is still running.
+
+<Tip>
+**Launch/Open vs the Process API:** Both `launch` and `open` are convenience wrappers around the [Process API](/processes). They create managed processes (with `owner: "desktop"`) that you can inspect, log, and stop through the same Process endpoints. The difference is that `launch` validates the binary exists in PATH first and can optionally wait for a window to appear, while `open` delegates to the system default handler (`xdg-open`). Use the Process API directly when you need full control over command, environment, working directory, or restart policies.
+</Tip>
 
 ## Recording
 
@@ -285,6 +500,11 @@ Start a WebRTC stream for real-time desktop viewing in a browser.
 ```ts TypeScript
 await sdk.startDesktopStream();
 
+// Check stream status
+const status = await sdk.getDesktopStreamStatus();
+console.log(status.active); // true
+console.log(status.processId); // "proc_5"
+
 // Connect via the React DesktopViewer component or
 // use the WebSocket signaling endpoint directly
 // at ws://127.0.0.1:2468/v1/desktop/stream/signaling
@@ -295,6 +515,9 @@ await sdk.stopDesktopStream();
 ```bash cURL
 curl -X POST "http://127.0.0.1:2468/v1/desktop/stream/start"
 
+# Check stream status
+curl "http://127.0.0.1:2468/v1/desktop/stream/status"
+
 # Connect to ws://127.0.0.1:2468/v1/desktop/stream/signaling for WebRTC signaling
 
 curl -X POST "http://127.0.0.1:2468/v1/desktop/stream/stop"
@@ -302,6 +525,89 @@ curl -X POST "http://127.0.0.1:2468/v1/desktop/stream/stop"
 </CodeGroup>
 
 For a drop-in React component, see [React Components](/react-components).
+
+## API reference
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/desktop/start` | Start the desktop runtime |
+| `POST` | `/v1/desktop/stop` | Stop the desktop runtime |
+| `GET` | `/v1/desktop/status` | Get desktop runtime status |
+| `GET` | `/v1/desktop/screenshot` | Capture full desktop screenshot |
+| `GET` | `/v1/desktop/screenshot/region` | Capture a region screenshot |
+| `GET` | `/v1/desktop/mouse/position` | Get current mouse position |
+| `POST` | `/v1/desktop/mouse/move` | Move the mouse |
+| `POST` | `/v1/desktop/mouse/click` | Click the mouse |
+| `POST` | `/v1/desktop/mouse/down` | Press mouse button down |
+| `POST` | `/v1/desktop/mouse/up` | Release mouse button |
+| `POST` | `/v1/desktop/mouse/drag` | Drag from one point to another |
+| `POST` | `/v1/desktop/mouse/scroll` | Scroll at a position |
+| `POST` | `/v1/desktop/keyboard/type` | Type text |
+| `POST` | `/v1/desktop/keyboard/press` | Press a key with optional modifiers |
+| `POST` | `/v1/desktop/keyboard/down` | Press a key down (hold) |
+| `POST` | `/v1/desktop/keyboard/up` | Release a key |
+| `GET` | `/v1/desktop/display/info` | Get display info |
+| `GET` | `/v1/desktop/windows` | List visible windows |
+| `GET` | `/v1/desktop/windows/focused` | Get focused window info |
+| `POST` | `/v1/desktop/windows/{id}/focus` | Focus a window |
+| `POST` | `/v1/desktop/windows/{id}/move` | Move a window |
+| `POST` | `/v1/desktop/windows/{id}/resize` | Resize a window |
+| `GET` | `/v1/desktop/clipboard` | Read clipboard contents |
+| `POST` | `/v1/desktop/clipboard` | Write to clipboard |
+| `POST` | `/v1/desktop/launch` | Launch an application |
+| `POST` | `/v1/desktop/open` | Open a file or URL |
+| `POST` | `/v1/desktop/recording/start` | Start recording |
+| `POST` | `/v1/desktop/recording/stop` | Stop recording |
+| `GET` | `/v1/desktop/recordings` | List recordings |
+| `GET` | `/v1/desktop/recordings/{id}` | Get recording metadata |
+| `GET` | `/v1/desktop/recordings/{id}/download` | Download recording |
+| `DELETE` | `/v1/desktop/recordings/{id}` | Delete recording |
+| `POST` | `/v1/desktop/stream/start` | Start WebRTC streaming |
+| `POST` | `/v1/desktop/stream/stop` | Stop WebRTC streaming |
+| `GET` | `/v1/desktop/stream/status` | Get stream status |
+| `GET` | `/v1/desktop/stream/signaling` | WebSocket for WebRTC signaling |
+
+### TypeScript SDK methods
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `startDesktop(request?)` | `DesktopStatusResponse` | Start the desktop |
+| `stopDesktop()` | `DesktopStatusResponse` | Stop the desktop |
+| `getDesktopStatus()` | `DesktopStatusResponse` | Get desktop status |
+| `takeDesktopScreenshot(query?)` | `Uint8Array` | Capture screenshot |
+| `takeDesktopRegionScreenshot(query)` | `Uint8Array` | Capture region screenshot |
+| `getDesktopMousePosition()` | `DesktopMousePositionResponse` | Get mouse position |
+| `moveDesktopMouse(request)` | `DesktopMousePositionResponse` | Move mouse |
+| `clickDesktop(request)` | `DesktopMousePositionResponse` | Click mouse |
+| `mouseDownDesktop(request)` | `DesktopMousePositionResponse` | Mouse button down |
+| `mouseUpDesktop(request)` | `DesktopMousePositionResponse` | Mouse button up |
+| `dragDesktopMouse(request)` | `DesktopMousePositionResponse` | Drag mouse |
+| `scrollDesktop(request)` | `DesktopMousePositionResponse` | Scroll |
+| `typeDesktopText(request)` | `DesktopActionResponse` | Type text |
+| `pressDesktopKey(request)` | `DesktopActionResponse` | Press key |
+| `keyDownDesktop(request)` | `DesktopActionResponse` | Key down |
+| `keyUpDesktop(request)` | `DesktopActionResponse` | Key up |
+| `getDesktopDisplayInfo()` | `DesktopDisplayInfoResponse` | Get display info |
+| `listDesktopWindows()` | `DesktopWindowListResponse` | List windows |
+| `getDesktopFocusedWindow()` | `DesktopWindowInfo` | Get focused window |
+| `focusDesktopWindow(id)` | `DesktopWindowInfo` | Focus a window |
+| `moveDesktopWindow(id, request)` | `DesktopWindowInfo` | Move a window |
+| `resizeDesktopWindow(id, request)` | `DesktopWindowInfo` | Resize a window |
+| `getDesktopClipboard(query?)` | `DesktopClipboardResponse` | Read clipboard |
+| `setDesktopClipboard(request)` | `DesktopActionResponse` | Write clipboard |
+| `launchDesktopApp(request)` | `DesktopLaunchResponse` | Launch an app |
+| `openDesktopTarget(request)` | `DesktopOpenResponse` | Open file/URL |
+| `startDesktopRecording(request?)` | `DesktopRecordingInfo` | Start recording |
+| `stopDesktopRecording()` | `DesktopRecordingInfo` | Stop recording |
+| `listDesktopRecordings()` | `DesktopRecordingListResponse` | List recordings |
+| `getDesktopRecording(id)` | `DesktopRecordingInfo` | Get recording |
+| `downloadDesktopRecording(id)` | `Uint8Array` | Download recording |
+| `deleteDesktopRecording(id)` | `void` | Delete recording |
+| `startDesktopStream()` | `DesktopStreamStatusResponse` | Start streaming |
+| `stopDesktopStream()` | `DesktopStreamStatusResponse` | Stop streaming |
+| `getDesktopStreamStatus()` | `DesktopStreamStatusResponse` | Stream status |
 
 ## Customizing the desktop environment
 

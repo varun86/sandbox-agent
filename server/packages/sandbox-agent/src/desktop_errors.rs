@@ -113,6 +113,40 @@ impl DesktopProblem {
             .with_processes(processes)
     }
 
+    pub fn window_not_found(message: impl Into<String>) -> Self {
+        Self::new(404, "Window Not Found", "window_not_found", message)
+    }
+
+    pub fn no_focused_window() -> Self {
+        Self::new(
+            404,
+            "No Focused Window",
+            "no_focused_window",
+            "No window currently has focus",
+        )
+    }
+
+    pub fn stream_already_active(message: impl Into<String>) -> Self {
+        Self::new(
+            409,
+            "Stream Already Active",
+            "stream_already_active",
+            message,
+        )
+    }
+
+    pub fn stream_not_active(message: impl Into<String>) -> Self {
+        Self::new(409, "Stream Not Active", "stream_not_active", message)
+    }
+
+    pub fn clipboard_failed(message: impl Into<String>) -> Self {
+        Self::new(500, "Clipboard Failed", "clipboard_failed", message)
+    }
+
+    pub fn app_not_found(message: impl Into<String>) -> Self {
+        Self::new(404, "App Not Found", "app_not_found", message)
+    }
+
     pub fn to_problem_details(&self) -> ProblemDetails {
         let mut extensions = Map::new();
         extensions.insert("code".to_string(), Value::String(self.code.to_string()));

@@ -31,6 +31,18 @@ export interface paths {
     put: operations["put_v1_config_skills"];
     delete: operations["delete_v1_config_skills"];
   };
+  "/v1/desktop/clipboard": {
+    /**
+     * Read the desktop clipboard.
+     * @description Returns the current text content of the X11 clipboard.
+     */
+    get: operations["get_v1_desktop_clipboard"];
+    /**
+     * Write to the desktop clipboard.
+     * @description Sets the text content of the X11 clipboard.
+     */
+    post: operations["post_v1_desktop_clipboard"];
+  };
   "/v1/desktop/display/info": {
     /**
      * Get desktop display information.
@@ -70,6 +82,14 @@ export interface paths {
      * desktop.
      */
     post: operations["post_v1_desktop_keyboard_up"];
+  };
+  "/v1/desktop/launch": {
+    /**
+     * Launch a desktop application.
+     * @description Launches an application by name on the managed desktop, optionally waiting
+     * for its window to appear.
+     */
+    post: operations["post_v1_desktop_launch"];
   };
   "/v1/desktop/mouse/click": {
     /**
@@ -125,6 +145,13 @@ export interface paths {
      * and returns the resulting mouse position.
      */
     post: operations["post_v1_desktop_mouse_up"];
+  };
+  "/v1/desktop/open": {
+    /**
+     * Open a file or URL with the default handler.
+     * @description Opens a file path or URL using xdg-open on the managed desktop.
+     */
+    post: operations["post_v1_desktop_open"];
   };
   "/v1/desktop/recording/start": {
     /**
@@ -208,12 +235,28 @@ export interface paths {
      */
     post: operations["post_v1_desktop_stop"];
   };
+  "/v1/desktop/stream/signaling": {
+    /**
+     * Open a desktop WebRTC signaling session.
+     * @description Upgrades the connection to a WebSocket used for WebRTC signaling between
+     * the browser client and the desktop streaming process. Also accepts mouse
+     * and keyboard input frames as a fallback transport.
+     */
+    get: operations["get_v1_desktop_stream_ws"];
+  };
   "/v1/desktop/stream/start": {
     /**
      * Start desktop streaming.
      * @description Enables desktop websocket streaming for the managed desktop.
      */
     post: operations["post_v1_desktop_stream_start"];
+  };
+  "/v1/desktop/stream/status": {
+    /**
+     * Get desktop stream status.
+     * @description Returns the current state of the desktop WebRTC streaming session.
+     */
+    get: operations["get_v1_desktop_stream_status"];
   };
   "/v1/desktop/stream/stop": {
     /**
@@ -222,14 +265,6 @@ export interface paths {
      */
     post: operations["post_v1_desktop_stream_stop"];
   };
-  "/v1/desktop/stream/ws": {
-    /**
-     * Open a desktop websocket streaming session.
-     * @description Upgrades the connection to a websocket that streams JPEG desktop frames and
-     * accepts mouse and keyboard control frames.
-     */
-    get: operations["get_v1_desktop_stream_ws"];
-  };
   "/v1/desktop/windows": {
     /**
      * List visible desktop windows.
@@ -237,6 +272,34 @@ export interface paths {
      * desktop and returns the current window metadata.
      */
     get: operations["get_v1_desktop_windows"];
+  };
+  "/v1/desktop/windows/focused": {
+    /**
+     * Get the currently focused desktop window.
+     * @description Returns information about the window that currently has input focus.
+     */
+    get: operations["get_v1_desktop_windows_focused"];
+  };
+  "/v1/desktop/windows/{id}/focus": {
+    /**
+     * Focus a desktop window.
+     * @description Brings the specified window to the foreground and gives it input focus.
+     */
+    post: operations["post_v1_desktop_window_focus"];
+  };
+  "/v1/desktop/windows/{id}/move": {
+    /**
+     * Move a desktop window.
+     * @description Moves the specified window to the given position.
+     */
+    post: operations["post_v1_desktop_window_move"];
+  };
+  "/v1/desktop/windows/{id}/resize": {
+    /**
+     * Resize a desktop window.
+     * @description Resizes the specified window to the given dimensions.
+     */
+    post: operations["post_v1_desktop_window_resize"];
   };
   "/v1/fs/entries": {
     get: operations["get_v1_fs_entries"];
@@ -443,6 +506,17 @@ export interface components {
     DesktopActionResponse: {
       ok: boolean;
     };
+    DesktopClipboardQuery: {
+      selection?: string | null;
+    };
+    DesktopClipboardResponse: {
+      selection: string;
+      text: string;
+    };
+    DesktopClipboardWriteRequest: {
+      selection?: string | null;
+      text: string;
+    };
     DesktopDisplayInfoResponse: {
       display: string;
       resolution: components["schemas"]["DesktopResolution"];
@@ -471,6 +545,17 @@ export interface components {
     };
     DesktopKeyboardUpRequest: {
       key: string;
+    };
+    DesktopLaunchRequest: {
+      app: string;
+      args?: string[] | null;
+      wait?: boolean | null;
+    };
+    DesktopLaunchResponse: {
+      /** Format: int32 */
+      pid?: number | null;
+      processId: string;
+      windowId?: string | null;
     };
     /** @enum {string} */
     DesktopMouseButton: "left" | "middle" | "right";
@@ -533,6 +618,14 @@ export interface components {
       /** Format: int32 */
       y?: number | null;
     };
+    DesktopOpenRequest: {
+      target: string;
+    };
+    DesktopOpenResponse: {
+      /** Format: int32 */
+      pid?: number | null;
+      processId: string;
+    };
     DesktopProcessInfo: {
       logPath?: string | null;
       name: string;
@@ -567,6 +660,7 @@ export interface components {
       quality?: number | null;
       /** Format: float */
       scale?: number | null;
+      showCursor?: boolean | null;
       /** Format: int32 */
       width: number;
       /** Format: int32 */
@@ -590,12 +684,23 @@ export interface components {
       quality?: number | null;
       /** Format: float */
       scale?: number | null;
+      showCursor?: boolean | null;
     };
     DesktopStartRequest: {
+      /** Format: int32 */
+      displayNum?: number | null;
       /** Format: int32 */
       dpi?: number | null;
       /** Format: int32 */
       height?: number | null;
+      /** Format: int32 */
+      recordingFps?: number | null;
+      stateDir?: string | null;
+      streamAudioCodec?: string | null;
+      /** Format: int32 */
+      streamFrameRate?: number | null;
+      streamVideoCodec?: string | null;
+      webrtcPortRange?: string | null;
       /** Format: int32 */
       width?: number | null;
     };
@@ -611,9 +716,13 @@ export interface components {
       runtimeLogPath?: string | null;
       startedAt?: string | null;
       state: components["schemas"]["DesktopState"];
+      /** @description Current visible windows (included when the desktop is active). */
+      windows?: components["schemas"]["DesktopWindowInfo"][];
     };
     DesktopStreamStatusResponse: {
       active: boolean;
+      processId?: string | null;
+      windowId?: string | null;
     };
     DesktopWindowInfo: {
       /** Format: int32 */
@@ -630,6 +739,18 @@ export interface components {
     };
     DesktopWindowListResponse: {
       windows: components["schemas"]["DesktopWindowInfo"][];
+    };
+    DesktopWindowMoveRequest: {
+      /** Format: int32 */
+      x: number;
+      /** Format: int32 */
+      y: number;
+    };
+    DesktopWindowResizeRequest: {
+      /** Format: int32 */
+      height: number;
+      /** Format: int32 */
+      width: number;
     };
     /** @enum {string} */
     ErrorType:
@@ -1232,6 +1353,68 @@ export interface operations {
     };
   };
   /**
+   * Read the desktop clipboard.
+   * @description Returns the current text content of the X11 clipboard.
+   */
+  get_v1_desktop_clipboard: {
+    parameters: {
+      query?: {
+        selection?: string | null;
+      };
+    };
+    responses: {
+      /** @description Clipboard contents */
+      200: {
+        content: {
+          "application/json": components["schemas"]["DesktopClipboardResponse"];
+        };
+      };
+      /** @description Desktop runtime is not ready */
+      409: {
+        content: {
+          "application/json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description Clipboard read failed */
+      500: {
+        content: {
+          "application/json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  /**
+   * Write to the desktop clipboard.
+   * @description Sets the text content of the X11 clipboard.
+   */
+  post_v1_desktop_clipboard: {
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["DesktopClipboardWriteRequest"];
+      };
+    };
+    responses: {
+      /** @description Clipboard updated */
+      200: {
+        content: {
+          "application/json": components["schemas"]["DesktopActionResponse"];
+        };
+      };
+      /** @description Desktop runtime is not ready */
+      409: {
+        content: {
+          "application/json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description Clipboard write failed */
+      500: {
+        content: {
+          "application/json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  /**
    * Get desktop display information.
    * @description Performs a health-gated display query against the managed desktop and
    * returns the current display identifier and resolution.
@@ -1404,6 +1587,38 @@ export interface operations {
       };
       /** @description Desktop runtime health or input failed */
       502: {
+        content: {
+          "application/json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  /**
+   * Launch a desktop application.
+   * @description Launches an application by name on the managed desktop, optionally waiting
+   * for its window to appear.
+   */
+  post_v1_desktop_launch: {
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["DesktopLaunchRequest"];
+      };
+    };
+    responses: {
+      /** @description Application launched */
+      200: {
+        content: {
+          "application/json": components["schemas"]["DesktopLaunchResponse"];
+        };
+      };
+      /** @description Application not found */
+      404: {
+        content: {
+          "application/json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description Desktop runtime is not ready */
+      409: {
         content: {
           "application/json": components["schemas"]["ProblemDetails"];
         };
@@ -1665,6 +1880,31 @@ export interface operations {
     };
   };
   /**
+   * Open a file or URL with the default handler.
+   * @description Opens a file path or URL using xdg-open on the managed desktop.
+   */
+  post_v1_desktop_open: {
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["DesktopOpenRequest"];
+      };
+    };
+    responses: {
+      /** @description Target opened */
+      200: {
+        content: {
+          "application/json": components["schemas"]["DesktopOpenResponse"];
+        };
+      };
+      /** @description Desktop runtime is not ready */
+      409: {
+        content: {
+          "application/json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  /**
    * Start desktop recording.
    * @description Starts an ffmpeg x11grab recording against the managed desktop and returns
    * the created recording metadata.
@@ -1834,6 +2074,7 @@ export interface operations {
         format?: components["schemas"]["DesktopScreenshotFormat"] | null;
         quality?: number | null;
         scale?: number | null;
+        showCursor?: boolean | null;
       };
     };
     responses: {
@@ -1876,6 +2117,7 @@ export interface operations {
         format?: components["schemas"]["DesktopScreenshotFormat"] | null;
         quality?: number | null;
         scale?: number | null;
+        showCursor?: boolean | null;
       };
     };
     responses: {
@@ -1990,37 +2232,10 @@ export interface operations {
     };
   };
   /**
-   * Start desktop streaming.
-   * @description Enables desktop websocket streaming for the managed desktop.
-   */
-  post_v1_desktop_stream_start: {
-    responses: {
-      /** @description Desktop streaming started */
-      200: {
-        content: {
-          "application/json": components["schemas"]["DesktopStreamStatusResponse"];
-        };
-      };
-    };
-  };
-  /**
-   * Stop desktop streaming.
-   * @description Disables desktop websocket streaming for the managed desktop.
-   */
-  post_v1_desktop_stream_stop: {
-    responses: {
-      /** @description Desktop streaming stopped */
-      200: {
-        content: {
-          "application/json": components["schemas"]["DesktopStreamStatusResponse"];
-        };
-      };
-    };
-  };
-  /**
-   * Open a desktop websocket streaming session.
-   * @description Upgrades the connection to a websocket that streams JPEG desktop frames and
-   * accepts mouse and keyboard control frames.
+   * Open a desktop WebRTC signaling session.
+   * @description Upgrades the connection to a WebSocket used for WebRTC signaling between
+   * the browser client and the desktop streaming process. Also accepts mouse
+   * and keyboard input frames as a fallback transport.
    */
   get_v1_desktop_stream_ws: {
     parameters: {
@@ -2049,6 +2264,48 @@ export interface operations {
     };
   };
   /**
+   * Start desktop streaming.
+   * @description Enables desktop websocket streaming for the managed desktop.
+   */
+  post_v1_desktop_stream_start: {
+    responses: {
+      /** @description Desktop streaming started */
+      200: {
+        content: {
+          "application/json": components["schemas"]["DesktopStreamStatusResponse"];
+        };
+      };
+    };
+  };
+  /**
+   * Get desktop stream status.
+   * @description Returns the current state of the desktop WebRTC streaming session.
+   */
+  get_v1_desktop_stream_status: {
+    responses: {
+      /** @description Desktop stream status */
+      200: {
+        content: {
+          "application/json": components["schemas"]["DesktopStreamStatusResponse"];
+        };
+      };
+    };
+  };
+  /**
+   * Stop desktop streaming.
+   * @description Disables desktop websocket streaming for the managed desktop.
+   */
+  post_v1_desktop_stream_stop: {
+    responses: {
+      /** @description Desktop streaming stopped */
+      200: {
+        content: {
+          "application/json": components["schemas"]["DesktopStreamStatusResponse"];
+        };
+      };
+    };
+  };
+  /**
    * List visible desktop windows.
    * @description Performs a health-gated visible-window enumeration against the managed
    * desktop and returns the current window metadata.
@@ -2069,6 +2326,138 @@ export interface operations {
       };
       /** @description Desktop runtime health or window query failed */
       503: {
+        content: {
+          "application/json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  /**
+   * Get the currently focused desktop window.
+   * @description Returns information about the window that currently has input focus.
+   */
+  get_v1_desktop_windows_focused: {
+    responses: {
+      /** @description Focused window info */
+      200: {
+        content: {
+          "application/json": components["schemas"]["DesktopWindowInfo"];
+        };
+      };
+      /** @description No window is focused */
+      404: {
+        content: {
+          "application/json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description Desktop runtime is not ready */
+      409: {
+        content: {
+          "application/json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  /**
+   * Focus a desktop window.
+   * @description Brings the specified window to the foreground and gives it input focus.
+   */
+  post_v1_desktop_window_focus: {
+    parameters: {
+      path: {
+        /** @description X11 window ID */
+        id: string;
+      };
+    };
+    responses: {
+      /** @description Window info after focus */
+      200: {
+        content: {
+          "application/json": components["schemas"]["DesktopWindowInfo"];
+        };
+      };
+      /** @description Window not found */
+      404: {
+        content: {
+          "application/json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description Desktop runtime is not ready */
+      409: {
+        content: {
+          "application/json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  /**
+   * Move a desktop window.
+   * @description Moves the specified window to the given position.
+   */
+  post_v1_desktop_window_move: {
+    parameters: {
+      path: {
+        /** @description X11 window ID */
+        id: string;
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["DesktopWindowMoveRequest"];
+      };
+    };
+    responses: {
+      /** @description Window info after move */
+      200: {
+        content: {
+          "application/json": components["schemas"]["DesktopWindowInfo"];
+        };
+      };
+      /** @description Window not found */
+      404: {
+        content: {
+          "application/json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description Desktop runtime is not ready */
+      409: {
+        content: {
+          "application/json": components["schemas"]["ProblemDetails"];
+        };
+      };
+    };
+  };
+  /**
+   * Resize a desktop window.
+   * @description Resizes the specified window to the given dimensions.
+   */
+  post_v1_desktop_window_resize: {
+    parameters: {
+      path: {
+        /** @description X11 window ID */
+        id: string;
+      };
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["DesktopWindowResizeRequest"];
+      };
+    };
+    responses: {
+      /** @description Window info after resize */
+      200: {
+        content: {
+          "application/json": components["schemas"]["DesktopWindowInfo"];
+        };
+      };
+      /** @description Window not found */
+      404: {
+        content: {
+          "application/json": components["schemas"]["ProblemDetails"];
+        };
+      };
+      /** @description Desktop runtime is not ready */
+      409: {
         content: {
           "application/json": components["schemas"]["ProblemDetails"];
         };

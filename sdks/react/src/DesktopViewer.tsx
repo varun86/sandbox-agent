@@ -14,6 +14,7 @@ export interface DesktopViewerProps {
   style?: CSSProperties;
   imageStyle?: CSSProperties;
   height?: number | string;
+  showStatusBar?: boolean;
   onConnect?: (status: DesktopStreamReadyStatus) => void;
   onDisconnect?: () => void;
   onError?: (error: DesktopStreamErrorStatus | Error) => void;
@@ -76,7 +77,17 @@ const getStatusColor = (state: ConnectionState): string => {
   }
 };
 
-export const DesktopViewer = ({ client, className, style, imageStyle, height = 480, onConnect, onDisconnect, onError }: DesktopViewerProps) => {
+export const DesktopViewer = ({
+  client,
+  className,
+  style,
+  imageStyle,
+  height = 480,
+  showStatusBar = true,
+  onConnect,
+  onDisconnect,
+  onError,
+}: DesktopViewerProps) => {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const sessionRef = useRef<ReturnType<DesktopViewerClient["connectDesktopStream"]> | null>(null);
@@ -194,10 +205,12 @@ export const DesktopViewer = ({ client, className, style, imageStyle, height = 4
 
   return (
     <div className={className} style={{ ...shellStyle, ...style }}>
-      <div style={statusBarStyle}>
-        <span style={{ color: getStatusColor(connectionState) }}>{statusMessage}</span>
-        <span style={hintStyle}>{resolution ? `${resolution.width}×${resolution.height}` : "Awaiting stream"}</span>
-      </div>
+      {showStatusBar ? (
+        <div style={statusBarStyle}>
+          <span style={{ color: getStatusColor(connectionState) }}>{statusMessage}</span>
+          <span style={hintStyle}>{resolution ? `${resolution.width}×${resolution.height}` : "Awaiting stream"}</span>
+        </div>
+      ) : null}
       <div
         ref={wrapperRef}
         role="button"

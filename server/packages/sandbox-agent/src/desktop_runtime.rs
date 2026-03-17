@@ -74,6 +74,8 @@ struct DesktopRuntimeStateData {
     xvfb: Option<ManagedDesktopProcess>,
     openbox: Option<ManagedDesktopProcess>,
     dbus_pid: Option<u32>,
+    streaming_config: Option<crate::desktop_streaming::StreamingConfig>,
+    recording_fps: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -138,26 +140,10 @@ impl DesktopScreenshotOptions {
 
 impl Default for DesktopRuntimeConfig {
     fn default() -> Self {
-        let display_num = std::env::var("SANDBOX_AGENT_DESKTOP_DISPLAY_NUM")
-            .ok()
-            .and_then(|value| value.parse::<i32>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_DISPLAY_NUM);
-
-        let state_dir = std::env::var("SANDBOX_AGENT_DESKTOP_STATE_DIR")
-            .ok()
-            .map(PathBuf::from)
-            .unwrap_or_else(default_state_dir);
-
-        let assume_linux_for_tests = std::env::var("SANDBOX_AGENT_DESKTOP_TEST_ASSUME_LINUX")
-            .ok()
-            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-
         Self {
-            state_dir,
-            display_num,
-            assume_linux_for_tests,
+            state_dir: default_state_dir(),
+            display_num: DEFAULT_DISPLAY_NUM,
+            assume_linux_for_tests: false,
         }
     }
 }
@@ -189,6 +175,8 @@ impl DesktopRuntime {
                 xvfb: None,
                 openbox: None,
                 dbus_pid: None,
+                streaming_config: None,
+                recording_fps: None,
             })),
             config,
         }
@@ -200,6 +188,15 @@ impl DesktopRuntime {
         let mut response = self.snapshot_locked(&state);
         drop(state);
         self.append_neko_process(&mut response).await;
+
+        // Include the current window list when the desktop is active so callers
+        // get windows for free when polling status (avoids a separate request).
+        if response.state == DesktopState::Active {
+            if let Ok(window_list) = self.list_windows().await {
+                response.windows = window_list.windows;
+            }
+        }
+
         response
     }
 
@@ -248,7 +245,9 @@ impl DesktopRuntime {
         let dpi = request.dpi.unwrap_or(DEFAULT_DPI);
         validate_start_request(width, height, dpi)?;
 
-        let display_num = self.choose_display_num()?;
+        // Override display_num if provided in request
+        let display_num =
+            self.choose_display_num_from(request.display_num.unwrap_or(self.config.display_num))?;
         let display = format!(":{display_num}");
         let resolution = DesktopResolution {
             width,
@@ -256,6 +255,29 @@ impl DesktopRuntime {
             dpi: Some(dpi),
         };
         let environment = self.base_environment(&display)?;
+
+        // Store streaming and recording config for later use
+        state.streaming_config = if request.stream_video_codec.is_some()
+            || request.stream_audio_codec.is_some()
+            || request.stream_frame_rate.is_some()
+            || request.webrtc_port_range.is_some()
+        {
+            Some(crate::desktop_streaming::StreamingConfig {
+                video_codec: request
+                    .stream_video_codec
+                    .unwrap_or_else(|| "vp8".to_string()),
+                audio_codec: request
+                    .stream_audio_codec
+                    .unwrap_or_else(|| "opus".to_string()),
+                frame_rate: request.stream_frame_rate.unwrap_or(30).clamp(1, 60),
+                webrtc_port_range: request
+                    .webrtc_port_range
+                    .unwrap_or_else(|| "59050-59070".to_string()),
+            })
+        } else {
+            None
+        };
+        state.recording_fps = request.recording_fps.map(|fps| fps.clamp(1, 60));
 
         state.state = DesktopState::Starting;
         state.display_num = display_num;
@@ -344,6 +366,8 @@ impl DesktopRuntime {
         state.missing_dependencies = self.detect_missing_dependencies();
         state.install_command = self.install_command_for(&state.missing_dependencies);
         state.environment.clear();
+        state.streaming_config = None;
+        state.recording_fps = None;
 
         let mut response = self.snapshot_locked(&state);
         drop(state);
@@ -360,11 +384,17 @@ impl DesktopRuntime {
         query: DesktopScreenshotQuery,
     ) -> Result<DesktopScreenshotData, DesktopProblem> {
         let options = screenshot_options(query.format, query.quality, query.scale)?;
+        let show_cursor = query.show_cursor.unwrap_or(false);
         let mut state = self.inner.lock().await;
         let ready = self.ensure_ready_locked(&mut state).await?;
-        let bytes = self
+        let mut bytes = self
             .capture_screenshot_locked(&state, Some(&ready), &options)
             .await?;
+        if show_cursor {
+            bytes = self
+                .composite_cursor(&state, &ready, bytes, &options)
+                .await?;
+        }
         Ok(DesktopScreenshotData {
             bytes,
             content_type: options.content_type(),
@@ -377,12 +407,27 @@ impl DesktopRuntime {
     ) -> Result<DesktopScreenshotData, DesktopProblem> {
         validate_region(&query)?;
         let options = screenshot_options(query.format, query.quality, query.scale)?;
+        let show_cursor = query.show_cursor.unwrap_or(false);
         let mut state = self.inner.lock().await;
         let ready = self.ensure_ready_locked(&mut state).await?;
         let crop = format!("{}x{}+{}+{}", query.width, query.height, query.x, query.y);
-        let bytes = self
+        let mut bytes = self
             .capture_screenshot_with_crop_locked(&state, &ready, &crop, &options)
             .await?;
+        if show_cursor {
+            bytes = self
+                .composite_cursor_region(
+                    &state,
+                    &ready,
+                    bytes,
+                    &options,
+                    query.x,
+                    query.y,
+                    query.width,
+                    query.height,
+                )
+                .await?;
+        }
         Ok(DesktopScreenshotData {
             bytes,
             content_type: options.content_type(),
@@ -598,6 +643,21 @@ impl DesktopRuntime {
             let (x, y, width, height) = self
                 .window_geometry_locked(&state, &ready, &window_id)
                 .await?;
+            let is_active = active_window_id
+                .as_deref()
+                .map(|active| active == window_id)
+                .unwrap_or(false);
+
+            // Filter out noise: window-manager chrome, toolkit internals, and
+            // invisible helper windows. Always keep the active window so the
+            // caller can track focus even when the WM itself is focused.
+            if !is_active {
+                let trimmed = title.trim();
+                if trimmed.is_empty() || trimmed == "Openbox" || (width < 120 && height < 80) {
+                    continue;
+                }
+            }
+
             windows.push(DesktopWindowInfo {
                 id: window_id.clone(),
                 title,
@@ -605,10 +665,7 @@ impl DesktopRuntime {
                 y,
                 width,
                 height,
-                is_active: active_window_id
-                    .as_deref()
-                    .map(|active| active == window_id)
-                    .unwrap_or(false),
+                is_active,
             });
         }
         Ok(DesktopWindowListResponse { windows })
@@ -658,9 +715,10 @@ impl DesktopRuntime {
             })?;
         let environment = state.environment.clone();
         let display = display.to_string();
+        let streaming_config = state.streaming_config.clone();
         drop(state);
         self.streaming_manager
-            .start(&display, resolution, &environment)
+            .start(&display, resolution, &environment, streaming_config, None)
             .await
     }
 
@@ -1503,14 +1561,21 @@ impl DesktopRuntime {
     }
 
     fn choose_display_num(&self) -> Result<i32, DesktopProblem> {
+        self.choose_display_num_from(self.config.display_num)
+    }
+
+    fn choose_display_num_from(&self, start: i32) -> Result<i32, DesktopProblem> {
+        if start <= 0 {
+            return Err(DesktopProblem::invalid_action("displayNum must be > 0"));
+        }
         for offset in 0..MAX_DISPLAY_PROBE {
-            let candidate = self.config.display_num + offset;
+            let candidate = start + offset;
             if !socket_path(candidate).exists() {
                 return Ok(candidate);
             }
         }
         Err(DesktopProblem::runtime_failed(
-            "unable to find an available X display starting at :99",
+            format!("unable to find an available X display starting at :{start}"),
             None,
             Vec::new(),
         ))
@@ -1579,6 +1644,7 @@ impl DesktopRuntime {
             install_command: state.install_command.clone(),
             processes: self.processes_locked(state),
             runtime_log_path: Some(state.runtime_log_path.to_string_lossy().to_string()),
+            windows: Vec::new(),
         }
     }
 
@@ -1655,6 +1721,391 @@ impl DesktopRuntime {
             .append(true)
             .open(&state.runtime_log_path)
             .and_then(|mut file| std::io::Write::write_all(&mut file, line.as_bytes()));
+    }
+
+    pub async fn get_clipboard(
+        &self,
+        selection: Option<String>,
+    ) -> Result<crate::desktop_types::DesktopClipboardResponse, DesktopProblem> {
+        let mut state = self.inner.lock().await;
+        let ready = self.ensure_ready_locked(&mut state).await?;
+        let sel = selection.unwrap_or_else(|| "clipboard".to_string());
+        let args = vec!["-selection".to_string(), sel.clone(), "-o".to_string()];
+        let output = run_command_output("xclip", &args, &ready.environment, INPUT_TIMEOUT)
+            .await
+            .map_err(|err| {
+                DesktopProblem::clipboard_failed(format!("failed to read clipboard: {err}"))
+            })?;
+        if !output.status.success() {
+            // Empty clipboard is not an error
+            return Ok(crate::desktop_types::DesktopClipboardResponse {
+                text: String::new(),
+                selection: sel,
+            });
+        }
+        Ok(crate::desktop_types::DesktopClipboardResponse {
+            text: String::from_utf8_lossy(&output.stdout).to_string(),
+            selection: sel,
+        })
+    }
+
+    pub async fn set_clipboard(
+        &self,
+        request: crate::desktop_types::DesktopClipboardWriteRequest,
+    ) -> Result<DesktopActionResponse, DesktopProblem> {
+        let mut state = self.inner.lock().await;
+        let ready = self.ensure_ready_locked(&mut state).await?;
+        let sel = request.selection.unwrap_or_else(|| "clipboard".to_string());
+        let selections: Vec<String> = if sel == "both" {
+            vec!["clipboard".to_string(), "primary".to_string()]
+        } else {
+            vec![sel]
+        };
+        for selection in &selections {
+            let args = vec![
+                "-selection".to_string(),
+                selection.clone(),
+                "-i".to_string(),
+            ];
+            let output = run_command_output_with_stdin(
+                "xclip",
+                &args,
+                &ready.environment,
+                INPUT_TIMEOUT,
+                request.text.as_bytes().to_vec(),
+            )
+            .await
+            .map_err(|err| {
+                DesktopProblem::clipboard_failed(format!("failed to write clipboard: {err}"))
+            })?;
+            if !output.status.success() {
+                return Err(DesktopProblem::clipboard_failed(format!(
+                    "clipboard write failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )));
+            }
+        }
+        Ok(DesktopActionResponse { ok: true })
+    }
+
+    pub async fn focused_window(&self) -> Result<DesktopWindowInfo, DesktopProblem> {
+        let mut state = self.inner.lock().await;
+        let ready = self.ensure_ready_locked(&mut state).await?;
+        let window_id = self
+            .active_window_id_locked(&state, &ready)
+            .await?
+            .ok_or_else(DesktopProblem::no_focused_window)?;
+        let title = self.window_title_locked(&state, &ready, &window_id).await?;
+        let (x, y, width, height) = self
+            .window_geometry_locked(&state, &ready, &window_id)
+            .await?;
+        Ok(DesktopWindowInfo {
+            id: window_id,
+            title,
+            x,
+            y,
+            width,
+            height,
+            is_active: true,
+        })
+    }
+
+    pub async fn focus_window(&self, window_id: &str) -> Result<DesktopWindowInfo, DesktopProblem> {
+        let mut state = self.inner.lock().await;
+        let ready = self.ensure_ready_locked(&mut state).await?;
+        let args = vec![
+            "windowactivate".to_string(),
+            "--sync".to_string(),
+            window_id.to_string(),
+            "windowfocus".to_string(),
+            "--sync".to_string(),
+            window_id.to_string(),
+        ];
+        self.run_input_command_locked(&state, &ready, args)
+            .await
+            .map_err(|_| {
+                DesktopProblem::window_not_found(format!("Window {window_id} not found"))
+            })?;
+        self.window_info_locked(&state, &ready, window_id).await
+    }
+
+    pub async fn move_window(
+        &self,
+        window_id: &str,
+        request: crate::desktop_types::DesktopWindowMoveRequest,
+    ) -> Result<DesktopWindowInfo, DesktopProblem> {
+        let mut state = self.inner.lock().await;
+        let ready = self.ensure_ready_locked(&mut state).await?;
+        let args = vec![
+            "windowmove".to_string(),
+            window_id.to_string(),
+            request.x.to_string(),
+            request.y.to_string(),
+        ];
+        self.run_input_command_locked(&state, &ready, args)
+            .await
+            .map_err(|_| {
+                DesktopProblem::window_not_found(format!("Window {window_id} not found"))
+            })?;
+        self.window_info_locked(&state, &ready, window_id).await
+    }
+
+    pub async fn resize_window(
+        &self,
+        window_id: &str,
+        request: crate::desktop_types::DesktopWindowResizeRequest,
+    ) -> Result<DesktopWindowInfo, DesktopProblem> {
+        let mut state = self.inner.lock().await;
+        let ready = self.ensure_ready_locked(&mut state).await?;
+        let args = vec![
+            "windowsize".to_string(),
+            window_id.to_string(),
+            request.width.to_string(),
+            request.height.to_string(),
+        ];
+        self.run_input_command_locked(&state, &ready, args)
+            .await
+            .map_err(|_| {
+                DesktopProblem::window_not_found(format!("Window {window_id} not found"))
+            })?;
+        self.window_info_locked(&state, &ready, window_id).await
+    }
+
+    async fn window_info_locked(
+        &self,
+        state: &DesktopRuntimeStateData,
+        ready: &DesktopReadyContext,
+        window_id: &str,
+    ) -> Result<DesktopWindowInfo, DesktopProblem> {
+        let active_id = self.active_window_id_locked(state, ready).await?;
+        let title = self.window_title_locked(state, ready, window_id).await?;
+        let (x, y, width, height) = self.window_geometry_locked(state, ready, window_id).await?;
+        Ok(DesktopWindowInfo {
+            id: window_id.to_string(),
+            title,
+            x,
+            y,
+            width,
+            height,
+            is_active: active_id
+                .as_deref()
+                .map(|a| a == window_id)
+                .unwrap_or(false),
+        })
+    }
+
+    pub async fn launch_app(
+        &self,
+        request: crate::desktop_types::DesktopLaunchRequest,
+    ) -> Result<crate::desktop_types::DesktopLaunchResponse, DesktopProblem> {
+        let mut state = self.inner.lock().await;
+        let ready = self.ensure_ready_locked(&mut state).await?;
+
+        // Verify the app exists
+        if find_binary(&request.app).is_none() {
+            // Also try which via the desktop environment
+            let check = run_command_output(
+                "which",
+                &[request.app.clone()],
+                &ready.environment,
+                INPUT_TIMEOUT,
+            )
+            .await;
+            if check.is_err() || !check.as_ref().unwrap().status.success() {
+                return Err(DesktopProblem::app_not_found(format!(
+                    "Application '{}' not found in PATH",
+                    request.app
+                )));
+            }
+        }
+
+        let args = request.args.unwrap_or_default();
+        let snapshot = self
+            .process_runtime
+            .start_process(ProcessStartSpec {
+                command: request.app.clone(),
+                args,
+                cwd: None,
+                env: ready.environment.clone(),
+                tty: false,
+                interactive: false,
+                owner: ProcessOwner::Desktop,
+                restart_policy: None,
+            })
+            .await
+            .map_err(|err| {
+                DesktopProblem::runtime_failed(
+                    format!("failed to launch {}: {err}", request.app),
+                    None,
+                    self.processes_locked(&state),
+                )
+            })?;
+
+        let mut window_id = None;
+        if request.wait.unwrap_or(false) {
+            if let Some(pid) = snapshot.pid {
+                // Poll for window to appear
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+                let search_args = vec!["search".to_string(), "--pid".to_string(), pid.to_string()];
+                loop {
+                    let output = run_command_output(
+                        "xdotool",
+                        &search_args,
+                        &ready.environment,
+                        INPUT_TIMEOUT,
+                    )
+                    .await;
+                    if let Ok(ref out) = output {
+                        if out.status.success() {
+                            let id = String::from_utf8_lossy(&out.stdout)
+                                .lines()
+                                .next()
+                                .map(|s| s.trim().to_string());
+                            if id.as_ref().is_some_and(|s| !s.is_empty()) {
+                                window_id = id;
+                                break;
+                            }
+                        }
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }
+        }
+
+        Ok(crate::desktop_types::DesktopLaunchResponse {
+            process_id: snapshot.id,
+            pid: snapshot.pid,
+            window_id,
+        })
+    }
+
+    pub async fn open_target(
+        &self,
+        request: crate::desktop_types::DesktopOpenRequest,
+    ) -> Result<crate::desktop_types::DesktopOpenResponse, DesktopProblem> {
+        let mut state = self.inner.lock().await;
+        let ready = self.ensure_ready_locked(&mut state).await?;
+
+        let snapshot = self
+            .process_runtime
+            .start_process(ProcessStartSpec {
+                command: "xdg-open".to_string(),
+                args: vec![request.target],
+                cwd: None,
+                env: ready.environment.clone(),
+                tty: false,
+                interactive: false,
+                owner: ProcessOwner::Desktop,
+                restart_policy: None,
+            })
+            .await
+            .map_err(|err| {
+                DesktopProblem::runtime_failed(
+                    format!("failed to open target: {err}"),
+                    None,
+                    self.processes_locked(&state),
+                )
+            })?;
+
+        Ok(crate::desktop_types::DesktopOpenResponse {
+            process_id: snapshot.id,
+            pid: snapshot.pid,
+        })
+    }
+
+    async fn composite_cursor(
+        &self,
+        state: &DesktopRuntimeStateData,
+        ready: &DesktopReadyContext,
+        screenshot_bytes: Vec<u8>,
+        options: &DesktopScreenshotOptions,
+    ) -> Result<Vec<u8>, DesktopProblem> {
+        let pos = self.mouse_position_locked(state, ready).await?;
+        self.draw_cursor_on_image(screenshot_bytes, pos.x, pos.y, options, &ready.environment)
+            .await
+    }
+
+    async fn composite_cursor_region(
+        &self,
+        state: &DesktopRuntimeStateData,
+        ready: &DesktopReadyContext,
+        screenshot_bytes: Vec<u8>,
+        options: &DesktopScreenshotOptions,
+        region_x: i32,
+        region_y: i32,
+        _region_width: u32,
+        _region_height: u32,
+    ) -> Result<Vec<u8>, DesktopProblem> {
+        let pos = self.mouse_position_locked(state, ready).await?;
+        // Adjust cursor position relative to the region
+        let cursor_x = pos.x - region_x;
+        let cursor_y = pos.y - region_y;
+        if cursor_x < 0 || cursor_y < 0 {
+            // Cursor is outside the region, return screenshot as-is
+            return Ok(screenshot_bytes);
+        }
+        self.draw_cursor_on_image(
+            screenshot_bytes,
+            cursor_x,
+            cursor_y,
+            options,
+            &ready.environment,
+        )
+        .await
+    }
+
+    async fn draw_cursor_on_image(
+        &self,
+        image_bytes: Vec<u8>,
+        x: i32,
+        y: i32,
+        options: &DesktopScreenshotOptions,
+        environment: &HashMap<String, String>,
+    ) -> Result<Vec<u8>, DesktopProblem> {
+        // Draw a crosshair cursor using ImageMagick convert
+        let draw_cmd = format!(
+            "stroke red stroke-width 2 line {},{},{},{} line {},{},{},{}",
+            x - 10,
+            y,
+            x + 10,
+            y,
+            x,
+            y - 10,
+            x,
+            y + 10
+        );
+        let args = vec![
+            "-".to_string(), // read from stdin
+            "-draw".to_string(),
+            draw_cmd,
+            options.output_arg().to_string(),
+        ];
+        let output = run_command_output_with_stdin(
+            "convert",
+            &args,
+            environment,
+            SCREENSHOT_TIMEOUT,
+            image_bytes.clone(),
+        )
+        .await
+        .map_err(|err| {
+            DesktopProblem::screenshot_failed(
+                format!("failed to composite cursor: {err}"),
+                Vec::new(),
+            )
+        })?;
+        if !output.status.success() {
+            // Fall back to returning the original screenshot without cursor
+            return Ok(image_bytes);
+        }
+        Ok(output.stdout)
+    }
+
+    pub async fn stream_status(&self) -> DesktopStreamStatusResponse {
+        self.streaming_manager.status().await
     }
 }
 

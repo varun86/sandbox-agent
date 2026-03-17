@@ -31,10 +31,15 @@ import {
   type AgentInstallResponse,
   type AgentListResponse,
   type DesktopActionResponse,
+  type DesktopClipboardQuery,
+  type DesktopClipboardResponse,
+  type DesktopClipboardWriteRequest,
   type DesktopDisplayInfoResponse,
   type DesktopKeyboardDownRequest,
   type DesktopKeyboardPressRequest,
   type DesktopKeyboardTypeRequest,
+  type DesktopLaunchRequest,
+  type DesktopLaunchResponse,
   type DesktopMouseClickRequest,
   type DesktopMouseDownRequest,
   type DesktopMouseDragRequest,
@@ -43,6 +48,8 @@ import {
   type DesktopMouseScrollRequest,
   type DesktopMouseUpRequest,
   type DesktopKeyboardUpRequest,
+  type DesktopOpenRequest,
+  type DesktopOpenResponse,
   type DesktopRecordingInfo,
   type DesktopRecordingListResponse,
   type DesktopRecordingStartRequest,
@@ -51,7 +58,10 @@ import {
   type DesktopStartRequest,
   type DesktopStatusResponse,
   type DesktopStreamStatusResponse,
+  type DesktopWindowInfo,
   type DesktopWindowListResponse,
+  type DesktopWindowMoveRequest,
+  type DesktopWindowResizeRequest,
   type FsActionResponse,
   type FsDeleteQuery,
   type FsEntriesQuery,
@@ -1661,6 +1671,54 @@ export class SandboxAgent {
 
   async listDesktopWindows(): Promise<DesktopWindowListResponse> {
     return this.requestJson("GET", `${API_PREFIX}/desktop/windows`);
+  }
+
+  async getDesktopFocusedWindow(): Promise<DesktopWindowInfo> {
+    return this.requestJson("GET", `${API_PREFIX}/desktop/windows/focused`);
+  }
+
+  async focusDesktopWindow(windowId: string): Promise<DesktopWindowInfo> {
+    return this.requestJson("POST", `${API_PREFIX}/desktop/windows/${encodeURIComponent(windowId)}/focus`);
+  }
+
+  async moveDesktopWindow(windowId: string, request: DesktopWindowMoveRequest): Promise<DesktopWindowInfo> {
+    return this.requestJson("POST", `${API_PREFIX}/desktop/windows/${encodeURIComponent(windowId)}/move`, {
+      body: request,
+    });
+  }
+
+  async resizeDesktopWindow(windowId: string, request: DesktopWindowResizeRequest): Promise<DesktopWindowInfo> {
+    return this.requestJson("POST", `${API_PREFIX}/desktop/windows/${encodeURIComponent(windowId)}/resize`, {
+      body: request,
+    });
+  }
+
+  async getDesktopClipboard(query: DesktopClipboardQuery = {}): Promise<DesktopClipboardResponse> {
+    return this.requestJson("GET", `${API_PREFIX}/desktop/clipboard`, {
+      query,
+    });
+  }
+
+  async setDesktopClipboard(request: DesktopClipboardWriteRequest): Promise<DesktopActionResponse> {
+    return this.requestJson("POST", `${API_PREFIX}/desktop/clipboard`, {
+      body: request,
+    });
+  }
+
+  async launchDesktopApp(request: DesktopLaunchRequest): Promise<DesktopLaunchResponse> {
+    return this.requestJson("POST", `${API_PREFIX}/desktop/launch`, {
+      body: request,
+    });
+  }
+
+  async openDesktopTarget(request: DesktopOpenRequest): Promise<DesktopOpenResponse> {
+    return this.requestJson("POST", `${API_PREFIX}/desktop/open`, {
+      body: request,
+    });
+  }
+
+  async getDesktopStreamStatus(): Promise<DesktopStreamStatusResponse> {
+    return this.requestJson("GET", `${API_PREFIX}/desktop/stream/status`);
   }
 
   async startDesktopRecording(request: DesktopRecordingStartRequest = {}): Promise<DesktopRecordingInfo> {

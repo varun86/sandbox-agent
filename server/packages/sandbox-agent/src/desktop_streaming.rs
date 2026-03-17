@@ -22,12 +22,31 @@ const NEKO_READY_TIMEOUT: Duration = Duration::from_secs(15);
 const NEKO_READY_POLL: Duration = Duration::from_millis(300);
 
 #[derive(Debug, Clone)]
+pub struct StreamingConfig {
+    pub video_codec: String,
+    pub audio_codec: String,
+    pub frame_rate: u32,
+    pub webrtc_port_range: String,
+}
+
+impl Default for StreamingConfig {
+    fn default() -> Self {
+        Self {
+            video_codec: "vp8".to_string(),
+            audio_codec: "opus".to_string(),
+            frame_rate: 30,
+            webrtc_port_range: NEKO_EPR.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct DesktopStreamingManager {
     inner: Arc<Mutex<DesktopStreamingState>>,
     process_runtime: Arc<ProcessRuntime>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct DesktopStreamingState {
     active: bool,
     process_id: Option<String>,
@@ -37,6 +56,23 @@ struct DesktopStreamingState {
     neko_session_cookie: Option<String>,
     display: Option<String>,
     resolution: Option<DesktopResolution>,
+    streaming_config: StreamingConfig,
+    window_id: Option<String>,
+}
+
+impl Default for DesktopStreamingState {
+    fn default() -> Self {
+        Self {
+            active: false,
+            process_id: None,
+            neko_base_url: None,
+            neko_session_cookie: None,
+            display: None,
+            resolution: None,
+            streaming_config: StreamingConfig::default(),
+            window_id: None,
+        }
+    }
 }
 
 impl DesktopStreamingManager {
@@ -53,11 +89,18 @@ impl DesktopStreamingManager {
         display: &str,
         resolution: DesktopResolution,
         environment: &HashMap<String, String>,
+        config: Option<StreamingConfig>,
+        window_id: Option<String>,
     ) -> Result<DesktopStreamStatusResponse, SandboxError> {
+        let config = config.unwrap_or_default();
         let mut state = self.inner.lock().await;
 
         if state.active {
-            return Ok(DesktopStreamStatusResponse { active: true });
+            return Ok(DesktopStreamStatusResponse {
+                active: true,
+                window_id: state.window_id.clone(),
+                process_id: state.process_id.clone(),
+            });
         }
 
         // Stop any stale process.
@@ -72,7 +115,10 @@ impl DesktopStreamingManager {
         env.insert("DISPLAY".to_string(), display.to_string());
 
         let bind_addr = format!("0.0.0.0:{}", NEKO_INTERNAL_PORT);
-        let screen = format!("{}x{}@30", resolution.width, resolution.height);
+        let screen = format!(
+            "{}x{}@{}",
+            resolution.width, resolution.height, config.frame_rate
+        );
 
         let snapshot = self
             .process_runtime
@@ -89,11 +135,11 @@ impl DesktopStreamingManager {
                     "--capture.video.display".to_string(),
                     display.to_string(),
                     "--capture.video.codec".to_string(),
-                    "vp8".to_string(),
+                    config.video_codec.clone(),
                     "--capture.audio.codec".to_string(),
-                    "opus".to_string(),
+                    config.audio_codec.clone(),
                     "--webrtc.epr".to_string(),
-                    NEKO_EPR.to_string(),
+                    config.webrtc_port_range.clone(),
                     "--webrtc.icelite".to_string(),
                     "--webrtc.nat1to1".to_string(),
                     "127.0.0.1".to_string(),
@@ -117,10 +163,13 @@ impl DesktopStreamingManager {
             })?;
 
         let neko_base = format!("http://127.0.0.1:{}", NEKO_INTERNAL_PORT);
+        let process_id_clone = snapshot.id.clone();
         state.process_id = Some(snapshot.id.clone());
         state.neko_base_url = Some(neko_base.clone());
         state.display = Some(display.to_string());
         state.resolution = Some(resolution);
+        state.streaming_config = config;
+        state.window_id = window_id;
         state.active = true;
 
         // Drop the lock before waiting for readiness.
@@ -183,7 +232,15 @@ impl DesktopStreamingManager {
             state.neko_session_cookie = Some(cookie.clone());
         }
 
-        Ok(DesktopStreamStatusResponse { active: true })
+        let state = self.inner.lock().await;
+        let state_window_id = state.window_id.clone();
+        drop(state);
+
+        Ok(DesktopStreamStatusResponse {
+            active: true,
+            window_id: state_window_id,
+            process_id: Some(process_id_clone),
+        })
     }
 
     /// Stop streaming and tear down neko subprocess.
@@ -200,7 +257,21 @@ impl DesktopStreamingManager {
         state.neko_session_cookie = None;
         state.display = None;
         state.resolution = None;
-        DesktopStreamStatusResponse { active: false }
+        state.window_id = None;
+        DesktopStreamStatusResponse {
+            active: false,
+            window_id: None,
+            process_id: None,
+        }
+    }
+
+    pub async fn status(&self) -> DesktopStreamStatusResponse {
+        let state = self.inner.lock().await;
+        DesktopStreamStatusResponse {
+            active: state.active,
+            window_id: state.window_id.clone(),
+            process_id: state.process_id.clone(),
+        }
     }
 
     pub async fn ensure_active(&self) -> Result<(), SandboxError> {

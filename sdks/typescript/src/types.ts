@@ -36,6 +36,16 @@ export type DesktopRecordingStatus = components["schemas"]["DesktopRecordingStat
 export type DesktopRecordingInfo = JsonResponse<operations["post_v1_desktop_recording_start"], 200>;
 export type DesktopRecordingListResponse = JsonResponse<operations["get_v1_desktop_recordings"], 200>;
 export type DesktopStreamStatusResponse = JsonResponse<operations["post_v1_desktop_stream_start"], 200>;
+export type DesktopClipboardResponse = JsonResponse<operations["get_v1_desktop_clipboard"], 200>;
+export type DesktopClipboardQuery =
+  QueryParams<operations["get_v1_desktop_clipboard"]> extends never ? Record<string, never> : QueryParams<operations["get_v1_desktop_clipboard"]>;
+export type DesktopClipboardWriteRequest = JsonRequestBody<operations["post_v1_desktop_clipboard"]>;
+export type DesktopLaunchRequest = JsonRequestBody<operations["post_v1_desktop_launch"]>;
+export type DesktopLaunchResponse = JsonResponse<operations["post_v1_desktop_launch"], 200>;
+export type DesktopOpenRequest = JsonRequestBody<operations["post_v1_desktop_open"]>;
+export type DesktopOpenResponse = JsonResponse<operations["post_v1_desktop_open"], 200>;
+export type DesktopWindowMoveRequest = JsonRequestBody<operations["post_v1_desktop_window_move"]>;
+export type DesktopWindowResizeRequest = JsonRequestBody<operations["post_v1_desktop_window_resize"]>;
 export type AgentListResponse = JsonResponse<operations["get_v1_agents"], 200>;
 export type AgentInfo = components["schemas"]["AgentInfo"];
 export type AgentQuery = QueryParams<operations["get_v1_agents"]>;
