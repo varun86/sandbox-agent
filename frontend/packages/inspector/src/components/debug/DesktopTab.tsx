@@ -443,7 +443,7 @@ const DesktopTab = ({ getClient }: { getClient: () => SandboxAgent }) => {
     setDownloadingRecordingId(id);
     try {
       const bytes = await getClient().downloadDesktopRecording(id);
-      const blob = new Blob([bytes], { type: "video/mp4" });
+      const blob = new Blob([bytes as BlobPart], { type: "video/mp4" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;

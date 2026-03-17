@@ -1,4 +1,4 @@
-export const DEFAULT_SANDBOX_AGENT_IMAGE = "rivetdev/sandbox-agent:0.4.1-rc.1-full";
+export const DEFAULT_SANDBOX_AGENT_IMAGE = "rivetdev/sandbox-agent:0.5.0-rc.1-full";
 export const SANDBOX_AGENT_INSTALL_SCRIPT = "https://releases.rivet.dev/sandbox-agent/0.3.x/install.sh";
 export const DEFAULT_AGENTS = ["claude", "codex"] as const;
 
