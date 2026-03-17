@@ -149,12 +149,12 @@ export const organizationTaskActions = {
 
   async markWorkspaceUnread(c: any, input: TaskWorkspaceSelectInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
-    await task.send(taskWorkflowQueueName("task.command.workspace.mark_unread"), { authSessionId: input.authSessionId }, { wait: false });
+    await task.markUnread({ authSessionId: input.authSessionId });
   },
 
   async renameWorkspaceTask(c: any, input: TaskWorkspaceRenameInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
-    await task.send(taskWorkflowQueueName("task.command.workspace.rename_task"), { value: input.value }, { wait: false });
+    await task.renameTask({ value: input.value });
   },
 
   async createWorkspaceSession(c: any, input: TaskWorkspaceSelectInput & { model?: string }): Promise<{ sessionId: string }> {
@@ -173,54 +173,34 @@ export const organizationTaskActions = {
 
   async renameWorkspaceSession(c: any, input: TaskWorkspaceRenameSessionInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
-    await task.send(
-      taskWorkflowQueueName("task.command.workspace.rename_session"),
-      { sessionId: input.sessionId, title: input.title, authSessionId: input.authSessionId },
-      { wait: false },
-    );
+    await task.renameSession({ sessionId: input.sessionId, title: input.title });
   },
 
   async selectWorkspaceSession(c: any, input: TaskWorkspaceSessionInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
-    await task.send(
-      taskWorkflowQueueName("task.command.workspace.select_session"),
-      { sessionId: input.sessionId, authSessionId: input.authSessionId },
-      { wait: false },
-    );
+    await task.selectSession({ sessionId: input.sessionId, authSessionId: input.authSessionId });
   },
 
   async setWorkspaceSessionUnread(c: any, input: TaskWorkspaceSetSessionUnreadInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
-    await task.send(
-      taskWorkflowQueueName("task.command.workspace.set_session_unread"),
-      { sessionId: input.sessionId, unread: input.unread, authSessionId: input.authSessionId },
-      { wait: false },
-    );
+    await task.setSessionUnread({ sessionId: input.sessionId, unread: input.unread, authSessionId: input.authSessionId });
   },
 
   async updateWorkspaceDraft(c: any, input: TaskWorkspaceUpdateDraftInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
     void task
-      .send(
-        taskWorkflowQueueName("task.command.workspace.update_draft"),
-        {
-          sessionId: input.sessionId,
-          text: input.text,
-          attachments: input.attachments,
-          authSessionId: input.authSessionId,
-        },
-        { wait: false },
-      )
+      .updateDraft({
+        sessionId: input.sessionId,
+        text: input.text,
+        attachments: input.attachments,
+        authSessionId: input.authSessionId,
+      })
       .catch(() => {});
   },
 
   async changeWorkspaceModel(c: any, input: TaskWorkspaceChangeModelInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
-    await task.send(
-      taskWorkflowQueueName("task.command.workspace.change_model"),
-      { sessionId: input.sessionId, model: input.model, authSessionId: input.authSessionId },
-      { wait: false },
-    );
+    await task.changeModel({ sessionId: input.sessionId, model: input.model, authSessionId: input.authSessionId });
   },
 
   async sendWorkspaceMessage(c: any, input: TaskWorkspaceSendMessageInput): Promise<void> {

@@ -3,13 +3,7 @@ import type { FoundryAppSnapshot } from "@sandbox-agent/foundry-shared";
 import { getOrCreateGithubData, getOrCreateOrganization } from "../../handles.js";
 import { githubDataWorkflowQueueName } from "../../github-data/index.js";
 import { authSessionIndex } from "../db/schema.js";
-import {
-  assertAppOrganization,
-  buildAppSnapshot,
-  requireEligibleOrganization,
-  requireSignedInSession,
-  markOrganizationSyncStartedMutation,
-} from "../app-shell.js";
+import { assertAppOrganization, buildAppSnapshot, requireEligibleOrganization, requireSignedInSession } from "../app-shell.js";
 import { getBetterAuthService } from "../../../services/better-auth.js";
 import { refreshOrganizationSnapshotMutation } from "../actions.js";
 import { organizationWorkflowQueueName } from "../queues.js";
@@ -79,8 +73,8 @@ export const organizationGithubActions = {
     await githubData.send(githubDataWorkflowQueueName("githubData.command.syncRepos"), { label: "Reloading GitHub organization..." }, { wait: false });
   },
 
-  async adminReloadGithubRepository(c: any, input: { repoId: string }): Promise<void> {
+  async adminReloadGithubRepository(c: any, _input: { repoId: string }): Promise<void> {
     const githubData = await getOrCreateGithubData(c, c.state.organizationId);
-    await githubData.send(githubDataWorkflowQueueName("githubData.command.reloadRepository"), input, { wait: false });
+    await githubData.send(githubDataWorkflowQueueName("githubData.command.syncRepos"), { label: "Reloading repository..." }, { wait: false });
   },
 };

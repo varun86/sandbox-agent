@@ -17,8 +17,6 @@ import { getBetterAuthService } from "../../services/better-auth.js";
 import { resolveOrganizationGithubAuth } from "../../services/github-auth.js";
 import { githubRepoFullNameFromRemote } from "../../services/repo.js";
 import { taskWorkflowQueueName } from "./workflow/queue.js";
-import { expectQueueResponse } from "../../services/queue.js";
-import { userWorkflowQueueName } from "../user/workflow.js";
 import { organizationWorkflowQueueName } from "../organization/queues.js";
 
 import { task as taskTable, taskOwner, taskRuntime, taskSandboxes, taskWorkspaceSessions } from "./db/schema.js";
@@ -185,9 +183,9 @@ async function injectGitCredentials(sandbox: any, login: string, email: string, 
     "set -euo pipefail",
     `git config --global user.name ${JSON.stringify(login)}`,
     `git config --global user.email ${JSON.stringify(email)}`,
-    `git config --global credential.helper 'store --file=/home/user/.git-token'`,
-    `printf '%s\\n' ${JSON.stringify(`https://${login}:${token}@github.com`)} > /home/user/.git-token`,
-    `chmod 600 /home/user/.git-token`,
+    `git config --global credential.helper 'store --file=/home/sandbox/.git-token'`,
+    `printf '%s\\n' ${JSON.stringify(`https://${login}:${token}@github.com`)} > /home/sandbox/.git-token`,
+    `chmod 600 /home/sandbox/.git-token`,
   ];
   const result = await sandbox.runProcess({
     command: "bash",
@@ -427,17 +425,11 @@ async function upsertUserTaskState(c: any, authSessionId: string | null | undefi
   }
 
   const user = await getOrCreateUser(c, userId);
-  expectQueueResponse(
-    await user.send(
-      userWorkflowQueueName("user.command.task_state.upsert"),
-      {
-        taskId: c.state.taskId,
-        sessionId,
-        patch,
-      },
-      { wait: true, timeout: 10_000 },
-    ),
-  );
+  await user.upsertTaskState({
+    taskId: c.state.taskId,
+    sessionId,
+    patch,
+  });
 }
 
 async function deleteUserTaskState(c: any, authSessionId: string | null | undefined, sessionId: string): Promise<void> {
@@ -452,14 +444,10 @@ async function deleteUserTaskState(c: any, authSessionId: string | null | undefi
   }
 
   const user = await getOrCreateUser(c, userId);
-  await user.send(
-    userWorkflowQueueName("user.command.task_state.delete"),
-    {
-      taskId: c.state.taskId,
-      sessionId,
-    },
-    { wait: true, timeout: 10_000 },
-  );
+  await user.deleteTaskState({
+    taskId: c.state.taskId,
+    sessionId,
+  });
 }
 
 async function resolveDefaultModel(c: any, authSessionId?: string | null): Promise<string> {
@@ -937,13 +925,14 @@ async function writeSessionTranscript(c: any, sessionId: string, transcript: Arr
   });
 }
 
-async function enqueueWorkspaceRefresh(
-  c: any,
-  command: "task.command.workspace.refresh_derived" | "task.command.workspace.refresh_session_transcript",
-  body: Record<string, unknown>,
-): Promise<void> {
+function fireRefreshDerived(c: any): void {
   const self = selfTask(c);
-  await self.send(taskWorkflowQueueName(command as any), body, { wait: false });
+  void self.refreshDerived({}).catch(() => {});
+}
+
+function fireRefreshSessionTranscript(c: any, sessionId: string): void {
+  const self = selfTask(c);
+  void self.refreshSessionTranscript({ sessionId }).catch(() => {});
 }
 
 async function enqueueWorkspaceEnsureSession(c: any, sessionId: string): Promise<void> {
@@ -958,16 +947,14 @@ function pendingWorkspaceSessionStatus(record: any): "pending_provision" | "pend
 async function maybeScheduleWorkspaceRefreshes(c: any, record: any, sessions: Array<any>): Promise<void> {
   const gitState = await readCachedGitState(c);
   if (record.activeSandboxId && !gitState.updatedAt) {
-    await enqueueWorkspaceRefresh(c, "task.command.workspace.refresh_derived", {});
+    fireRefreshDerived(c);
   }
 
   for (const session of sessions) {
     if (session.closed || session.status !== "ready" || !session.sandboxSessionId || session.transcriptUpdatedAt) {
       continue;
     }
-    await enqueueWorkspaceRefresh(c, "task.command.workspace.refresh_session_transcript", {
-      sessionId: session.sandboxSessionId,
-    });
+    fireRefreshSessionTranscript(c, session.sandboxSessionId);
   }
 }
 
@@ -1097,11 +1084,28 @@ export async function buildTaskDetail(c: any, authSessionId?: string | null): Pr
     diffs: gitState.diffs,
     fileTree: gitState.fileTree,
     minutesUsed: 0,
-    sandboxes: (record.sandboxes ?? []).map((sandbox: any) => ({
-      sandboxProviderId: sandbox.sandboxProviderId,
-      sandboxId: sandbox.sandboxId,
-      cwd: sandbox.cwd ?? null,
-    })),
+    sandboxes: await Promise.all(
+      (record.sandboxes ?? []).map(async (sandbox: any) => {
+        let url: string | null = null;
+        if (sandbox.sandboxId) {
+          try {
+            const handle = getTaskSandbox(c, c.state.organizationId, sandbox.sandboxId);
+            const conn = await handle.sandboxAgentConnection();
+            if (conn?.endpoint && !conn.endpoint.startsWith("mock://")) {
+              url = conn.endpoint;
+            }
+          } catch {
+            // Sandbox may not be running
+          }
+        }
+        return {
+          sandboxProviderId: sandbox.sandboxProviderId,
+          sandboxId: sandbox.sandboxId,
+          cwd: sandbox.cwd ?? null,
+          url,
+        };
+      }),
+    ),
     activeSandboxId: record.activeSandboxId ?? null,
   };
 }
@@ -1267,9 +1271,7 @@ export async function ensureWorkspaceSession(c: any, sessionId: string, model?: 
 
   const record = await ensureWorkspaceSeeded(c);
   if (meta.sandboxSessionId && meta.status === "ready") {
-    await enqueueWorkspaceRefresh(c, "task.command.workspace.refresh_session_transcript", {
-      sessionId: meta.sandboxSessionId,
-    });
+    fireRefreshSessionTranscript(c, meta.sandboxSessionId);
     await broadcastTaskUpdate(c, { sessionId: sessionId });
     return;
   }
@@ -1299,9 +1301,7 @@ export async function ensureWorkspaceSession(c: any, sessionId: string, model?: 
       status: "ready",
       errorMessage: null,
     });
-    await enqueueWorkspaceRefresh(c, "task.command.workspace.refresh_session_transcript", {
-      sessionId: meta.sandboxSessionId ?? sessionId,
-    });
+    fireRefreshSessionTranscript(c, meta.sandboxSessionId ?? sessionId);
   } catch (error) {
     await updateSessionMeta(c, sessionId, {
       status: "error",
@@ -1506,11 +1506,9 @@ export async function syncWorkspaceSessionStatus(c: any, sessionId: string, stat
       })
       .where(eq(taskTable.id, 1))
       .run();
-    await enqueueWorkspaceRefresh(c, "task.command.workspace.refresh_session_transcript", {
-      sessionId,
-    });
+    fireRefreshSessionTranscript(c, sessionId);
     if (status !== "running") {
-      await enqueueWorkspaceRefresh(c, "task.command.workspace.refresh_derived", {});
+      fireRefreshDerived(c);
     }
     await broadcastTaskUpdate(c, { sessionId: meta.sessionId });
   }
@@ -1608,6 +1606,6 @@ export async function revertWorkspaceFile(c: any, path: string): Promise<void> {
   if (result.exitCode !== 0) {
     throw new Error(`file revert failed (${result.exitCode}): ${result.result}`);
   }
-  await enqueueWorkspaceRefresh(c, "task.command.workspace.refresh_derived", {});
+  fireRefreshDerived(c);
   await broadcastTaskUpdate(c);
 }

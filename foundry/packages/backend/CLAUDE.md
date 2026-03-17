@@ -49,6 +49,14 @@ OrganizationActor (coordinator for tasks + auth users)
 
 When adding a new index table, annotate it in the schema file with a doc comment identifying it as a coordinator index and which child actor it indexes (see existing examples).
 
+## GitHub Sync Data Model
+
+The GithubDataActor syncs **repositories** and **pull requests** from GitHub, not branches. We only need repos (to know which repos exist and their metadata) and PRs (to lazily populate virtual tasks in the sidebar). Branch data is not synced because we only create tasks from PRs or fresh user-initiated creation, never from bare branches. Generated branch names for new tasks are treated as unique enough to skip conflict detection against remote branches.
+
+Tasks are either:
+1. **Created fresh** by the user (no PR yet, branch name generated from task description)
+2. **Lazily populated from pull requests** during PR sync (virtual task entries in org tables, no actor spawned)
+
 ## Lazy Task Actor Creation — CRITICAL
 
 **Task actors must NEVER be created during GitHub sync or bulk operations.** Creating hundreds of task actors simultaneously causes OOM crashes. An org can have 200+ PRs; spawning an actor per PR kills the process.
@@ -85,6 +93,46 @@ When the user interacts with a virtual task (clicks it, creates a session):
 
 - `refreshTaskSummaryForBranchMutation` — called in bulk during sync. Must ONLY write to org local tables. Never create task actors or call task actor actions.
 - `emitPullRequestChangeEvents` in github-data — iterates all changed PRs. Must remain fire-and-forget with no actor fan-out.
+
+## Queue vs Action Decision Framework
+
+The default is a direct action. Use a queue only if the answer to one or more of these questions is **yes**.
+
+Actions are pure RPCs with no DB overhead on send — fast, but if the call fails the operation is lost. Queues persist the message to the database on send, guaranteeing it will be processed even if the target actor is busy, slow, or recovering. The tradeoff: queues add write overhead and serialize processing.
+
+### 1. Does this operation coordinate multi-step work?
+
+Does it involve external I/O (sandbox API, GitHub API, agent process management) or state machine transitions where interleaving would corrupt state? This is different from database-level serialization — a simple read-then-write on SQLite can use a transaction. The queue is for ordering operations that span DB writes + external I/O.
+
+**Queue examples:**
+- `workspace.send_message` — sends to sandbox agent, writes session status, does owner-swap. Multi-step with external I/O.
+- `push` / `sync` / `merge` — git operations in sandbox that must not interleave.
+- `createTask` — read-then-write across task index + actor creation. Returns result, so `wait: true`.
+
+**Action examples:**
+- `billing.stripe_customer.apply` — single column upsert, no external I/O.
+- `workspace.update_draft` — writes draft text, no coordination with sandbox ops.
+- `workspace.rename_task` — updates title column, queue handlers don't touch title.
+
+### 2. Must this message be processed no matter what?
+
+Is this a cross-actor fire-and-forget where the caller won't retry and data loss is unacceptable? A queue persists the message — if the target is down, it waits. An action RPC that fails is gone.
+
+**Queue examples:**
+- `audit.append` — caller must never be affected by audit failures, and audit entries must not be lost.
+- `applyTaskSummaryUpdate` — task actor pushes summary to org and moves on. Won't retry if org is busy.
+- `refreshTaskSummaryForBranch` — webhook-driven, won't be redelivered for the same event.
+
+**Action examples:**
+- `billing.invoice.upsert` — Stripe retries handle failures externally. No durability need on our side.
+- `workspace.mark_unread` — UI convenience state. Acceptable to lose on transient failure.
+- `github.webhook_receipt.record` — timestamp columns with no downstream effects.
+
+### Once on a queue: wait or fire-and-forget?
+
+If the caller needs a return value, use `wait: true`. If the UI updates via push events, use `wait: false`.
+
+Full migration plan: `QUEUE_TO_ACTION_MIGRATION.md`.
 
 ## Ownership Rules
 

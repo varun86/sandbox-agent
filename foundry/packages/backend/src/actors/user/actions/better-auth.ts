@@ -1,53 +1,71 @@
 import { asc, count as sqlCount, desc } from "drizzle-orm";
-import { applyJoinToRow, applyJoinToRows, buildWhere, columnFor, tableFor } from "../query-helpers.js";
-import {
-  createAuthRecordMutation,
-  updateAuthRecordMutation,
-  updateManyAuthRecordsMutation,
-  deleteAuthRecordMutation,
-  deleteManyAuthRecordsMutation,
-} from "../workflow.js";
+import { applyJoinToRow, applyJoinToRows, buildWhere, columnFor, materializeRow, persistInput, persistPatch, tableFor } from "../query-helpers.js";
 
-/**
- * Better Auth adapter actions — exposed as actions (not queue commands) so they
- * execute immediately without competing in the user workflow queue.
- *
- * The user actor's workflow queue is shared with profile upserts, session state,
- * and task state operations. When the queue is busy, auth operations would time
- * out (10s), causing Better Auth's parseState to throw a non-StateError which
- * redirects to ?error=please_restart_the_process.
- *
- * Auth operations are safe to run as actions because they are simple SQLite
- * reads/writes scoped to this actor instance with no cross-actor side effects.
- */
+// Exception to the CLAUDE.md queue-for-mutations rule: Better Auth adapter operations
+// use direct actions even for mutations. Better Auth runs during OAuth callbacks on the
+// HTTP request path, not through the normal organization lifecycle. Routing through the
+// queue adds multiple sequential round-trips (each with actor wake-up + step overhead)
+// that cause 30-second OAuth callbacks and proxy retry storms. These mutations are simple
+// SQLite upserts/deletes with no cross-actor coordination or broadcast side effects.
 export const betterAuthActions = {
-  // --- Mutation actions (formerly queue commands) ---
-
-  async betterAuthCreateRecord(c: any, input: { model: string; data: Record<string, unknown> }) {
-    return await createAuthRecordMutation(c, input);
+  // --- Mutation actions ---
+  async betterAuthCreateRecord(c, input: { model: string; data: Record<string, unknown> }) {
+    const table = tableFor(input.model);
+    const persisted = persistInput(input.model, input.data);
+    await c.db
+      .insert(table)
+      .values(persisted as any)
+      .run();
+    const row = await c.db
+      .select()
+      .from(table)
+      .where(buildWhere(table, [{ field: "id", value: input.data.id }])!)
+      .get();
+    return materializeRow(input.model, row);
   },
 
-  async betterAuthUpdateRecord(c: any, input: { model: string; where: any[]; update: Record<string, unknown> }) {
-    return await updateAuthRecordMutation(c, input);
+  async betterAuthUpdateRecord(c, input: { model: string; where: any[]; update: Record<string, unknown> }) {
+    const table = tableFor(input.model);
+    const predicate = buildWhere(table, input.where);
+    if (!predicate) throw new Error("betterAuthUpdateRecord requires a where clause");
+    await c.db
+      .update(table)
+      .set(persistPatch(input.model, input.update) as any)
+      .where(predicate)
+      .run();
+    return materializeRow(input.model, await c.db.select().from(table).where(predicate).get());
   },
 
-  async betterAuthUpdateManyRecords(c: any, input: { model: string; where: any[]; update: Record<string, unknown> }) {
-    return await updateManyAuthRecordsMutation(c, input);
+  async betterAuthUpdateManyRecords(c, input: { model: string; where: any[]; update: Record<string, unknown> }) {
+    const table = tableFor(input.model);
+    const predicate = buildWhere(table, input.where);
+    if (!predicate) throw new Error("betterAuthUpdateManyRecords requires a where clause");
+    await c.db
+      .update(table)
+      .set(persistPatch(input.model, input.update) as any)
+      .where(predicate)
+      .run();
+    const row = await c.db.select({ value: sqlCount() }).from(table).where(predicate).get();
+    return row?.value ?? 0;
   },
 
-  async betterAuthDeleteRecord(c: any, input: { model: string; where: any[] }) {
-    await deleteAuthRecordMutation(c, input);
-    return { ok: true };
+  async betterAuthDeleteRecord(c, input: { model: string; where: any[] }) {
+    const table = tableFor(input.model);
+    const predicate = buildWhere(table, input.where);
+    if (!predicate) throw new Error("betterAuthDeleteRecord requires a where clause");
+    await c.db.delete(table).where(predicate).run();
   },
 
-  async betterAuthDeleteManyRecords(c: any, input: { model: string; where: any[] }) {
-    return await deleteManyAuthRecordsMutation(c, input);
+  async betterAuthDeleteManyRecords(c, input: { model: string; where: any[] }) {
+    const table = tableFor(input.model);
+    const predicate = buildWhere(table, input.where);
+    if (!predicate) throw new Error("betterAuthDeleteManyRecords requires a where clause");
+    const rows = await c.db.select().from(table).where(predicate).all();
+    await c.db.delete(table).where(predicate).run();
+    return rows.length;
   },
 
   // --- Read actions ---
-
-  // Better Auth adapter action — called by the Better Auth adapter in better-auth.ts.
-  // Schema and behavior are constrained by Better Auth.
   async betterAuthFindOneRecord(c, input: { model: string; where: any[]; join?: any }) {
     const table = tableFor(input.model);
     const predicate = buildWhere(table, input.where);
@@ -55,8 +73,6 @@ export const betterAuthActions = {
     return await applyJoinToRow(c, input.model, row ?? null, input.join);
   },
 
-  // Better Auth adapter action — called by the Better Auth adapter in better-auth.ts.
-  // Schema and behavior are constrained by Better Auth.
   async betterAuthFindManyRecords(c, input: { model: string; where?: any[]; limit?: number; offset?: number; sortBy?: any; join?: any }) {
     const table = tableFor(input.model);
     const predicate = buildWhere(table, input.where);
@@ -78,8 +94,6 @@ export const betterAuthActions = {
     return await applyJoinToRows(c, input.model, rows, input.join);
   },
 
-  // Better Auth adapter action — called by the Better Auth adapter in better-auth.ts.
-  // Schema and behavior are constrained by Better Auth.
   async betterAuthCountRecords(c, input: { model: string; where?: any[] }) {
     const table = tableFor(input.model);
     const predicate = buildWhere(table, input.where);

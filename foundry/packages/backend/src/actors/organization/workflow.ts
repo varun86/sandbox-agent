@@ -17,7 +17,6 @@ import {
   applyTaskSummaryUpdateMutation,
   createTaskMutation,
   refreshTaskSummaryForBranchMutation,
-  registerTaskBranchMutation,
   removeTaskSummaryMutation,
 } from "./actions/task-mutations.js";
 import {
@@ -29,7 +28,6 @@ import {
   setOrganizationBillingPaymentMethodMutation,
   setOrganizationBillingStatusMutation,
   syncOrganizationShellFromGithubMutation,
-  updateOrganizationShellProfileMutation,
   upsertOrganizationInvoiceMutation,
 } from "./app-shell.js";
 
@@ -49,7 +47,6 @@ const COMMAND_HANDLERS: Record<OrganizationQueueName, WorkflowHandler> = {
   // Task mutations
   "organization.command.createTask": async (c, body) => createTaskMutation(c, body),
   "organization.command.materializeTask": async (c, body) => createTaskMutation(c, body),
-  "organization.command.registerTaskBranch": async (c, body) => registerTaskBranchMutation(c, body),
   "organization.command.applyTaskSummaryUpdate": async (c, body) => {
     await applyTaskSummaryUpdateMutation(c, body);
     return { ok: true };
@@ -72,20 +69,16 @@ const COMMAND_HANDLERS: Record<OrganizationQueueName, WorkflowHandler> = {
     return { ok: true };
   },
 
-  // GitHub sync mutations
+  // GitHub organization shell sync (stays on queue)
+  "organization.command.github.organization_shell.sync_from_github": async (c, body) => syncOrganizationShellFromGithubMutation(c, body),
+
+  // GitHub sync progress + webhook receipt
   "organization.command.github.sync_progress.apply": async (c, body) => {
     await applyGithubSyncProgressMutation(c, body);
     return { ok: true };
   },
   "organization.command.github.webhook_receipt.record": async (c, body) => {
     await recordGithubWebhookReceiptMutation(c, body);
-    return { ok: true };
-  },
-  "organization.command.github.organization_shell.sync_from_github": async (c, body) => syncOrganizationShellFromGithubMutation(c, body),
-
-  // Shell/profile mutations
-  "organization.command.shell.profile.update": async (c, body) => {
-    await updateOrganizationShellProfileMutation(c, body);
     return { ok: true };
   },
   "organization.command.shell.sync_started.mark": async (c, body) => {

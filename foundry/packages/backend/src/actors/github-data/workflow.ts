@@ -9,9 +9,8 @@ async function getIndexModule() {
 
 export const GITHUB_DATA_QUEUE_NAMES = [
   "githubData.command.syncRepos",
-  "githubData.command.reloadRepository",
-  "githubData.command.clearState",
   "githubData.command.handlePullRequestWebhook",
+  "githubData.command.clearState",
 ] as const;
 
 export type GithubDataQueueName = (typeof GITHUB_DATA_QUEUE_NAMES)[number];
@@ -46,23 +45,16 @@ export async function runGithubDataCommandLoop(c: any): Promise<void> {
         continue;
       }
 
-      if (msg.name === "githubData.command.reloadRepository") {
-        const { reloadRepositoryMutation } = await getIndexModule();
-        const result = await reloadRepositoryMutation(c, msg.body);
-        await msg.complete(result);
+      if (msg.name === "githubData.command.handlePullRequestWebhook") {
+        const { handlePullRequestWebhookMutation } = await getIndexModule();
+        await handlePullRequestWebhookMutation(c, msg.body);
+        await msg.complete({ ok: true });
         continue;
       }
 
       if (msg.name === "githubData.command.clearState") {
         const { clearStateMutation } = await getIndexModule();
         await clearStateMutation(c, msg.body);
-        await msg.complete({ ok: true });
-        continue;
-      }
-
-      if (msg.name === "githubData.command.handlePullRequestWebhook") {
-        const { handlePullRequestWebhookMutation } = await getIndexModule();
-        await handlePullRequestWebhookMutation(c, msg.body);
         await msg.complete({ ok: true });
         continue;
       }

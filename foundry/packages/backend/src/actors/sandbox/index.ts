@@ -13,8 +13,8 @@ import { logActorWarning, resolveErrorMessage } from "../logging.js";
 import { expectQueueResponse } from "../../services/queue.js";
 import { resolveSandboxProviderId } from "../../sandbox-config.js";
 
-const SANDBOX_REPO_CWD = "/home/user/repo";
-const DEFAULT_LOCAL_SANDBOX_IMAGE = "rivetdev/sandbox-agent:full";
+const SANDBOX_REPO_CWD = "/home/sandbox/repo";
+const DEFAULT_LOCAL_SANDBOX_IMAGE = "rivetdev/sandbox-agent:foundry-base-latest";
 const DEFAULT_LOCAL_SANDBOX_PORT = 2468;
 const dockerClient = new Dockerode({ socketPath: "/var/run/docker.sock" });
 

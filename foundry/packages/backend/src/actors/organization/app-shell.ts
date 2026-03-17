@@ -15,7 +15,7 @@ import { getActorRuntimeContext } from "../context.js";
 import { getOrCreateGithubData, getOrCreateOrganization, selfOrganization } from "../handles.js";
 import { GitHubAppError } from "../../services/app-github.js";
 import { getBetterAuthService } from "../../services/better-auth.js";
-import { repoIdFromRemote, repoLabelFromRemote } from "../../services/repo.js";
+import { repoLabelFromRemote } from "../../services/repo.js";
 import { logger } from "../../logging.js";
 import { githubDataWorkflowQueueName } from "../github-data/index.js";
 import { organizationWorkflowQueueName } from "./queues.js";
@@ -685,10 +685,7 @@ async function applySubscriptionState(
 ): Promise<void> {
   await organization.send(
     organizationWorkflowQueueName("organization.command.billing.stripe_subscription.apply"),
-    {
-      subscription,
-      fallbackPlanId,
-    },
+    { subscription, fallbackPlanId },
     { wait: true, timeout: 10_000 },
   );
 }
@@ -705,9 +702,7 @@ export const organizationAppActions = {
     if (input.planId === "free") {
       await organizationHandle.send(
         organizationWorkflowQueueName("organization.command.billing.free_plan.apply"),
-        {
-          clearSubscription: false,
-        },
+        { clearSubscription: false },
         { wait: true, timeout: 10_000 },
       );
       return {
@@ -730,9 +725,7 @@ export const organizationAppActions = {
       ).id;
       await organizationHandle.send(
         organizationWorkflowQueueName("organization.command.billing.stripe_customer.apply"),
-        {
-          customerId,
-        },
+        { customerId },
         { wait: true, timeout: 10_000 },
       );
       await upsertStripeLookupEntries(c, input.organizationId, customerId, null);
@@ -764,9 +757,7 @@ export const organizationAppActions = {
     if (completion.customerId) {
       await organizationHandle.send(
         organizationWorkflowQueueName("organization.command.billing.stripe_customer.apply"),
-        {
-          customerId: completion.customerId,
-        },
+        { customerId: completion.customerId },
         { wait: true, timeout: 10_000 },
       );
     }
@@ -780,9 +771,7 @@ export const organizationAppActions = {
     if (completion.paymentMethodLabel) {
       await organizationHandle.send(
         organizationWorkflowQueueName("organization.command.billing.payment_method.set"),
-        {
-          label: completion.paymentMethodLabel,
-        },
+        { label: completion.paymentMethodLabel },
         { wait: true, timeout: 10_000 },
       );
     }
@@ -824,9 +813,7 @@ export const organizationAppActions = {
     } else {
       await organizationHandle.send(
         organizationWorkflowQueueName("organization.command.billing.status.set"),
-        {
-          status: "scheduled_cancel",
-        },
+        { status: "scheduled_cancel" },
         { wait: true, timeout: 10_000 },
       );
     }
@@ -849,9 +836,7 @@ export const organizationAppActions = {
     } else {
       await organizationHandle.send(
         organizationWorkflowQueueName("organization.command.billing.status.set"),
-        {
-          status: "active",
-        },
+        { status: "active" },
         { wait: true, timeout: 10_000 },
       );
     }
@@ -866,9 +851,7 @@ export const organizationAppActions = {
     const organization = await getOrCreateOrganization(c, input.organizationId);
     await organization.send(
       organizationWorkflowQueueName("organization.command.billing.seat_usage.record"),
-      {
-        email: session.currentUserEmail,
-      },
+      { email: session.currentUserEmail },
       { wait: true, timeout: 10_000 },
     );
     return await buildAppSnapshot(c, input.sessionId);
@@ -893,9 +876,7 @@ export const organizationAppActions = {
         if (typeof object.customer === "string") {
           await organization.send(
             organizationWorkflowQueueName("organization.command.billing.stripe_customer.apply"),
-            {
-              customerId: object.customer,
-            },
+            { customerId: object.customer },
             { wait: true, timeout: 10_000 },
           );
         }
@@ -932,9 +913,7 @@ export const organizationAppActions = {
         const organization = await getOrCreateOrganization(c, organizationId);
         await organization.send(
           organizationWorkflowQueueName("organization.command.billing.free_plan.apply"),
-          {
-            clearSubscription: true,
-          },
+          { clearSubscription: true },
           { wait: true, timeout: 10_000 },
         );
       }
@@ -990,12 +969,7 @@ export const organizationAppActions = {
     const organization = await getOrCreateOrganization(c, organizationId);
     await organization.send(
       organizationWorkflowQueueName("organization.command.github.webhook_receipt.record"),
-      {
-        organizationId: organizationId,
-        event,
-        action: body.action ?? null,
-        receivedAt,
-      },
+      { organizationId, event, action: body.action ?? null, receivedAt },
       { wait: false },
     );
     const githubData = await getOrCreateGithubData(c, organizationId);
@@ -1013,12 +987,7 @@ export const organizationAppActions = {
       if (body.action === "deleted") {
         await githubData.send(
           githubDataWorkflowQueueName("githubData.command.clearState"),
-          {
-            connectedAccount: accountLogin,
-            installationStatus: "install_required",
-            installationId: null,
-            label: "GitHub App installation removed",
-          },
+          { connectedAccount: accountLogin, installationStatus: "install_required", installationId: null, label: "GitHub App installation removed" },
           { wait: false },
         );
       } else if (body.action === "created") {
@@ -1146,13 +1115,6 @@ export const organizationAppActions = {
             },
             { wait: false },
           );
-        }
-        if ((event === "push" || event === "create" || event === "delete") && body.repository?.clone_url) {
-          const repoId = repoIdFromRemote(body.repository.clone_url);
-          const knownRepository = await githubData.getRepository({ repoId });
-          if (knownRepository) {
-            await githubData.send(githubDataWorkflowQueueName("githubData.command.reloadRepository"), { repoId }, { wait: false });
-          }
         }
       }
       return { ok: true };

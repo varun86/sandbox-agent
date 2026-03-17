@@ -59,6 +59,19 @@ Use `pnpm` workspaces and Turborepo.
 - The dev server has debug logging enabled by default (`RIVET_LOG_LEVEL=debug`, `FOUNDRY_LOG_LEVEL=debug`) via `compose.dev.yaml`. Error stacks and timestamps are also enabled.
 - The frontend client uses JSON encoding for RivetKit in development (`import.meta.env.DEV`) for easier debugging. Production uses the default encoding.
 
+## Foundry Base Sandbox Image
+
+Local Docker sandboxes use the `rivetdev/sandbox-agent:foundry-base-latest` image by default. This image extends the sandbox-agent runtime with sudo, git, neovim, gh, node, bun, chromium, and agent-browser.
+
+- **Dockerfile:** `docker/foundry-base.Dockerfile` (builds sandbox-agent from source, x86_64 only)
+- **Publish script:** `scripts/publish-foundry-base.sh` (builds and pushes to Docker Hub `rivetdev/sandbox-agent`)
+- **Tags:** `foundry-base-<YYYYMMDD>T<HHMMSS>Z` (timestamped) + `foundry-base-latest` (rolling)
+- **Build from repo root:** `./foundry/scripts/publish-foundry-base.sh` (or `--dry-run` to skip push)
+- **Override image in dev:** set `HF_LOCAL_SANDBOX_IMAGE` in `foundry/.env` or environment. The env var is passed through `compose.dev.yaml` to the backend.
+- **Resolution order:** `config.sandboxProviders.local.image` (config.toml) > `HF_LOCAL_SANDBOX_IMAGE` (env var) > `DEFAULT_LOCAL_SANDBOX_IMAGE` constant in `packages/backend/src/actors/sandbox/index.ts`.
+- The image must be built with `--platform linux/amd64`. The Rust build is memory-intensive; Docker Desktop needs at least 8GB RAM allocated.
+- When updating the base image contents (new system packages, agent versions), rebuild and push with the publish script, then update the `foundry-base-latest` tag.
+
 ## Railway Logs
 
 - Production Foundry Railway logs can be read from a linked checkout with `railway logs --deployment --lines 200` or `railway logs <deployment-id> --deployment --lines 200`.
@@ -199,16 +212,6 @@ For all Rivet/RivetKit implementation:
    - Example: the `task` actor instance already represents `(organizationId, repoId, taskId)`, so its SQLite tables should not need those columns for primary keys.
 3. Do not use backend-global SQLite singletons; database access must go through actor `db` providers (`c.db`).
 4. The default dependency source for RivetKit is the published `rivetkit` package so monorepo installs and CI remain self-contained.
-5. When working on coordinated RivetKit changes, you may temporarily relink to a local checkout instead of the published package.
-   - Dedicated local checkout for this repo: `/Users/nathan/conductor/workspaces/task/rivet-checkout`
-   - Preferred local link target: `../rivet-checkout/rivetkit-typescript/packages/rivetkit`
-   - Sub-packages (`@rivetkit/sqlite-vfs`, etc.) resolve transitively from the RivetKit monorepo when using the local checkout.
-6. Before using a local checkout, build RivetKit in the rivet repo:
-   ```bash
-   cd ../rivet-checkout/rivetkit-typescript
-   pnpm install
-   pnpm build -F rivetkit
-   ```
 
 ## Rivet Routing
 

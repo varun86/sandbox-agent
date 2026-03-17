@@ -242,71 +242,49 @@ export async function betterAuthDeleteManyVerificationMutation(c: any, input: { 
   return rows.length;
 }
 
-/**
- * Better Auth adapter actions — exposed as actions (not queue commands) so they
- * execute immediately without competing in the organization workflow queue.
- *
- * The org actor's workflow queue is shared with GitHub sync, webhook processing,
- * task mutations, and billing operations. When the queue is busy, auth operations
- * would time out (10s), causing Better Auth's parseState to throw a non-StateError
- * which redirects to ?error=please_restart_the_process.
- *
- * Auth operations are safe to run as actions because they are simple SQLite
- * reads/writes scoped to this actor instance with no cross-actor side effects.
- */
+// Exception to the CLAUDE.md queue-for-mutations rule: Better Auth adapter operations
+// use direct actions even for mutations. Better Auth runs during OAuth callbacks on the
+// HTTP request path, not through the normal organization lifecycle. Routing through the
+// queue adds multiple sequential round-trips (each with actor wake-up + step overhead)
+// that cause 30-second OAuth callbacks and proxy retry storms. These mutations are simple
+// SQLite upserts/deletes with no cross-actor coordination or broadcast side effects.
 export const organizationBetterAuthActions = {
-  // --- Mutation actions (formerly queue commands) ---
-
+  // --- Mutation actions (called by the Better Auth adapter in better-auth.ts) ---
+  async betterAuthUpsertSessionIndex(c: any, input: { sessionId: string; sessionToken: string; userId: string }) {
+    return await betterAuthUpsertSessionIndexMutation(c, input);
+  },
+  async betterAuthDeleteSessionIndex(c: any, input: { sessionId?: string; sessionToken?: string }) {
+    await betterAuthDeleteSessionIndexMutation(c, input);
+  },
+  async betterAuthUpsertEmailIndex(c: any, input: { email: string; userId: string }) {
+    return await betterAuthUpsertEmailIndexMutation(c, input);
+  },
+  async betterAuthDeleteEmailIndex(c: any, input: { email: string }) {
+    await betterAuthDeleteEmailIndexMutation(c, input);
+  },
+  async betterAuthUpsertAccountIndex(c: any, input: { id: string; providerId: string; accountId: string; userId: string }) {
+    return await betterAuthUpsertAccountIndexMutation(c, input);
+  },
+  async betterAuthDeleteAccountIndex(c: any, input: { id?: string; providerId?: string; accountId?: string }) {
+    await betterAuthDeleteAccountIndexMutation(c, input);
+  },
   async betterAuthCreateVerification(c: any, input: { data: Record<string, unknown> }) {
     return await betterAuthCreateVerificationMutation(c, input);
   },
-
   async betterAuthUpdateVerification(c: any, input: { where: any[]; update: Record<string, unknown> }) {
     return await betterAuthUpdateVerificationMutation(c, input);
   },
-
   async betterAuthUpdateManyVerification(c: any, input: { where: any[]; update: Record<string, unknown> }) {
     return await betterAuthUpdateManyVerificationMutation(c, input);
   },
-
   async betterAuthDeleteVerification(c: any, input: { where: any[] }) {
     await betterAuthDeleteVerificationMutation(c, input);
-    return { ok: true };
   },
-
   async betterAuthDeleteManyVerification(c: any, input: { where: any[] }) {
     return await betterAuthDeleteManyVerificationMutation(c, input);
   },
 
-  async betterAuthUpsertSessionIndex(c: any, input: { sessionId: string; sessionToken: string; userId: string }) {
-    return await betterAuthUpsertSessionIndexMutation(c, input);
-  },
-
-  async betterAuthDeleteSessionIndex(c: any, input: { sessionId?: string; sessionToken?: string }) {
-    await betterAuthDeleteSessionIndexMutation(c, input);
-    return { ok: true };
-  },
-
-  async betterAuthUpsertEmailIndex(c: any, input: { email: string; userId: string }) {
-    return await betterAuthUpsertEmailIndexMutation(c, input);
-  },
-
-  async betterAuthDeleteEmailIndex(c: any, input: { email: string }) {
-    await betterAuthDeleteEmailIndexMutation(c, input);
-    return { ok: true };
-  },
-
-  async betterAuthUpsertAccountIndex(c: any, input: { id: string; providerId: string; accountId: string; userId: string }) {
-    return await betterAuthUpsertAccountIndexMutation(c, input);
-  },
-
-  async betterAuthDeleteAccountIndex(c: any, input: { id?: string; providerId?: string; accountId?: string }) {
-    await betterAuthDeleteAccountIndexMutation(c, input);
-    return { ok: true };
-  },
-
   // --- Read actions ---
-
   async betterAuthFindSessionIndex(c: any, input: { sessionId?: string; sessionToken?: string }) {
     assertAppOrganization(c);
 

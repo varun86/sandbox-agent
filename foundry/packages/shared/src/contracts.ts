@@ -135,7 +135,7 @@ export type ListTasksInput = z.infer<typeof ListTasksInputSchema>;
 
 export const RepoBranchRecordSchema = z.object({
   branchName: z.string().min(1),
-  commitSha: z.string().min(1),
+  commitSha: z.string(),
   taskId: z.string().nullable(),
   taskTitle: z.string().nullable(),
   taskStatus: TaskStatusSchema.nullable(),

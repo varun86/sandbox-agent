@@ -113,6 +113,7 @@ export interface WorkspaceSandboxSummary {
   sandboxProviderId: SandboxProviderId;
   sandboxId: string;
   cwd: string | null;
+  url: string | null;
 }
 
 /** Sidebar-level task data. Materialized in the organization actor's SQLite. */
@@ -221,6 +222,7 @@ export interface WorkspaceTask {
   diffs: Record<string, string>;
   fileTree: WorkspaceFileTreeNode[];
   minutesUsed: number;
+  sandboxes?: WorkspaceSandboxSummary[];
   activeSandboxId?: string | null;
   /** GitHub login of the current primary user (task owner). */
   primaryUserLogin?: string | null;

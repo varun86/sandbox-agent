@@ -204,6 +204,7 @@ export function createMockBackendClient(defaultOrganizationId = "default"): Back
         sandboxProviderId: "local",
         sandboxId: task.id,
         cwd: mockCwd(task.repoName, task.id),
+        url: null,
       },
     ],
     activeSandboxId: task.id,

@@ -18,6 +18,7 @@ import { organizationOnboardingActions } from "./actions/onboarding.js";
 import { organizationGithubActions } from "./actions/github.js";
 import { organizationShellActions } from "./actions/organization.js";
 import { organizationTaskActions } from "./actions/tasks.js";
+import { updateOrganizationShellProfileMutation } from "./app-shell.js";
 
 interface OrganizationState {
   organizationId: string;
@@ -168,6 +169,11 @@ export const organizationActions = {
   async getOrganizationSummary(c: any, input: OrganizationUseInput): Promise<OrganizationSummarySnapshot> {
     assertOrganization(c, input.organizationId);
     return await getOrganizationSummarySnapshot(c);
+  },
+
+  // updateShellProfile stays as a direct action — called with await from HTTP handler where the user can retry
+  async updateShellProfile(c: any, input: { displayName?: string; slug?: string; primaryDomain?: string }): Promise<void> {
+    await updateOrganizationShellProfileMutation(c, input);
   },
 };
 

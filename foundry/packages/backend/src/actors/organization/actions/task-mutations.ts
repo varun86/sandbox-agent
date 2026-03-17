@@ -35,7 +35,6 @@ interface RegisterTaskBranchCommand {
   repoId: string;
   taskId: string;
   branchName: string;
-  requireExistingRemote?: boolean;
 }
 
 function isStaleTaskReferenceError(error: unknown): boolean {
@@ -120,11 +119,6 @@ async function resolveGitHubRepository(c: any, repoId: string) {
   return await githubData.getRepository({ repoId }).catch(() => null);
 }
 
-async function listGitHubBranches(c: any, repoId: string): Promise<Array<{ branchName: string; commitSha: string }>> {
-  const githubData = getGithubData(c, c.state.organizationId);
-  return await githubData.listBranchesForRepository({ repoId }).catch(() => []);
-}
-
 async function resolveRepositoryRemoteUrl(c: any, repoId: string): Promise<string> {
   const repository = await resolveGitHubRepository(c, repoId);
   const remoteUrl = repository?.cloneUrl?.trim();
@@ -161,7 +155,6 @@ export async function createTaskMutation(c: any, cmd: CreateTaskCommand): Promis
       repoId,
       taskId,
       branchName: onBranch,
-      requireExistingRemote: true,
     });
   } else {
     const reservedBranches = await listKnownTaskBranches(c, repoId);
@@ -255,7 +248,7 @@ export async function createTaskMutation(c: any, cmd: CreateTaskCommand): Promis
   return created;
 }
 
-export async function registerTaskBranchMutation(c: any, cmd: RegisterTaskBranchCommand): Promise<{ branchName: string; headSha: string }> {
+export async function registerTaskBranchMutation(c: any, cmd: RegisterTaskBranchCommand): Promise<{ branchName: string }> {
   const branchName = cmd.branchName.trim();
   if (!branchName) {
     throw new Error("branchName is required");
@@ -284,16 +277,6 @@ export async function registerTaskBranchMutation(c: any, cmd: RegisterTaskBranch
     }
   }
 
-  const branches = await listGitHubBranches(c, cmd.repoId);
-  const branchMatch = branches.find((branch) => branch.branchName === branchName) ?? null;
-  if (cmd.requireExistingRemote && !branchMatch) {
-    throw new Error(`Remote branch not found: ${branchName}`);
-  }
-
-  const repository = await resolveGitHubRepository(c, cmd.repoId);
-  const defaultBranch = repository?.defaultBranch ?? "main";
-  const headSha = branchMatch?.commitSha ?? branches.find((branch) => branch.branchName === defaultBranch)?.commitSha ?? "";
-
   const now = Date.now();
   await c.db
     .insert(taskIndex)
@@ -313,7 +296,7 @@ export async function registerTaskBranchMutation(c: any, cmd: RegisterTaskBranch
     })
     .run();
 
-  return { branchName, headSha };
+  return { branchName };
 }
 
 export async function applyTaskSummaryUpdateMutation(c: any, input: { taskSummary: WorkspaceTaskSummary }): Promise<void> {
@@ -392,7 +375,7 @@ export async function refreshTaskSummaryForBranchMutation(
       // Best-effort notify the task actor if it exists (fire-and-forget)
       try {
         const task = getTask(c, c.state.organizationId, input.repoId, row.taskId);
-        void task.send(taskWorkflowQueueName("task.command.pull_request.sync"), { pullRequest }, { wait: false }).catch(() => {});
+        void task.syncPullRequest({ pullRequest }).catch(() => {});
       } catch {
         // Task actor doesn't exist yet — that's fine, it's virtual
       }
@@ -400,34 +383,6 @@ export async function refreshTaskSummaryForBranchMutation(
   }
 
   await refreshOrganizationSnapshotMutation(c);
-}
-
-export function sortOverviewBranches(
-  branches: Array<{
-    branchName: string;
-    commitSha: string;
-    taskId: string | null;
-    taskTitle: string | null;
-    taskStatus: TaskRecord["status"] | null;
-    pullRequest: WorkspacePullRequestSummary | null;
-    ciStatus: string | null;
-    updatedAt: number;
-  }>,
-  defaultBranch: string | null,
-) {
-  return [...branches].sort((left, right) => {
-    if (defaultBranch) {
-      if (left.branchName === defaultBranch && right.branchName !== defaultBranch) return -1;
-      if (right.branchName === defaultBranch && left.branchName !== defaultBranch) return 1;
-    }
-    if (Boolean(left.taskId) !== Boolean(right.taskId)) {
-      return left.taskId ? -1 : 1;
-    }
-    if (left.updatedAt !== right.updatedAt) {
-      return right.updatedAt - left.updatedAt;
-    }
-    return left.branchName.localeCompare(right.branchName);
-  });
 }
 
 export async function listTaskSummariesForRepo(c: any, repoId: string, includeArchived = false): Promise<TaskSummary[]> {
@@ -471,56 +426,24 @@ export async function getRepoOverviewFromOrg(c: any, repoId: string): Promise<Re
   const now = Date.now();
   const repository = await resolveGitHubRepository(c, repoId);
   const remoteUrl = await resolveRepositoryRemoteUrl(c, repoId);
-  const githubBranches = await listGitHubBranches(c, repoId).catch(() => []);
   const taskRows = await c.db.select().from(taskSummaries).where(eq(taskSummaries.repoId, repoId)).all();
 
-  const taskMetaByBranch = new Map<
-    string,
-    { taskId: string; title: string | null; status: TaskRecord["status"] | null; updatedAt: number; pullRequest: WorkspacePullRequestSummary | null }
-  >();
-  for (const row of taskRows) {
-    if (!row.branch) {
-      continue;
-    }
-    taskMetaByBranch.set(row.branch, {
-      taskId: row.taskId,
-      title: row.title ?? null,
-      status: row.status,
-      updatedAt: row.updatedAtMs,
-      pullRequest: parseJsonValue<WorkspacePullRequestSummary | null>(row.pullRequestJson, null),
-    });
-  }
-
-  const branchMap = new Map<string, { branchName: string; commitSha: string }>();
-  for (const branch of githubBranches) {
-    branchMap.set(branch.branchName, branch);
-  }
-  for (const branchName of taskMetaByBranch.keys()) {
-    if (!branchMap.has(branchName)) {
-      branchMap.set(branchName, { branchName, commitSha: "" });
-    }
-  }
-  if (repository?.defaultBranch && !branchMap.has(repository.defaultBranch)) {
-    branchMap.set(repository.defaultBranch, { branchName: repository.defaultBranch, commitSha: "" });
-  }
-
-  const branches = sortOverviewBranches(
-    [...branchMap.values()].map((branch) => {
-      const taskMeta = taskMetaByBranch.get(branch.branchName);
-      const pr = taskMeta?.pullRequest ?? null;
+  const branches = taskRows
+    .filter((row: any) => row.branch)
+    .map((row: any) => {
+      const pr = parseJsonValue<WorkspacePullRequestSummary | null>(row.pullRequestJson, null);
       return {
-        branchName: branch.branchName,
-        commitSha: branch.commitSha,
-        taskId: taskMeta?.taskId ?? null,
-        taskTitle: taskMeta?.title ?? null,
-        taskStatus: taskMeta?.status ?? null,
+        branchName: row.branch!,
+        commitSha: "",
+        taskId: row.taskId,
+        taskTitle: row.title ?? null,
+        taskStatus: row.status ?? null,
         pullRequest: pr,
         ciStatus: null,
-        updatedAt: Math.max(taskMeta?.updatedAt ?? 0, pr?.updatedAtMs ?? 0, now),
+        updatedAt: Math.max(row.updatedAtMs ?? 0, pr?.updatedAtMs ?? 0, now),
       };
-    }),
-    repository?.defaultBranch ?? null,
-  );
+    })
+    .sort((a: any, b: any) => b.updatedAt - a.updatedAt);
 
   return {
     organizationId: c.state.organizationId,

@@ -16,7 +16,6 @@ import { initBootstrapDbActivity, initCompleteActivity, initEnqueueProvisionActi
 import {
   handleArchiveActivity,
   handleAttachActivity,
-  handleGetActivity,
   handlePushActivity,
   handleSimpleCommandActivity,
   handleSwitchActivity,
@@ -25,24 +24,13 @@ import {
 } from "./commands.js";
 import {
   changeTaskOwnerManually,
-  changeWorkspaceModel,
   closeWorkspaceSession,
   createWorkspaceSession,
   ensureWorkspaceSession,
-  refreshWorkspaceDerivedState,
-  refreshWorkspaceSessionTranscript,
-  markWorkspaceUnread,
   publishWorkspacePr,
-  renameWorkspaceTask,
-  renameWorkspaceSession,
-  selectWorkspaceSession,
   revertWorkspaceFile,
   sendWorkspaceMessage,
-  setWorkspaceSessionUnread,
   stopWorkspaceSession,
-  syncTaskPullRequest,
-  syncWorkspaceSessionStatus,
-  updateWorkspaceDraft,
 } from "../workspace.js";
 
 export { taskWorkflowQueueName } from "./queue.js";
@@ -100,25 +88,6 @@ const COMMAND_HANDLERS: Record<TaskQueueName, WorkflowHandler> = {
     await killWriteDbActivity(loopCtx, msg);
   },
 
-  "task.command.get": async (loopCtx, msg) => {
-    await handleGetActivity(loopCtx, msg);
-  },
-
-  "task.command.pull_request.sync": async (loopCtx, msg) => {
-    await syncTaskPullRequest(loopCtx, msg.body?.pullRequest ?? null);
-    await msg.complete({ ok: true });
-  },
-
-  "task.command.workspace.mark_unread": async (loopCtx, msg) => {
-    await markWorkspaceUnread(loopCtx, msg.body?.authSessionId);
-    await msg.complete({ ok: true });
-  },
-
-  "task.command.workspace.rename_task": async (loopCtx, msg) => {
-    await renameWorkspaceTask(loopCtx, msg.body.value);
-    await msg.complete({ ok: true });
-  },
-
   "task.command.workspace.create_session": async (loopCtx, msg) => {
     const result = await createWorkspaceSession(loopCtx, msg.body?.model, msg.body?.authSessionId);
     await msg.complete(result);
@@ -141,31 +110,6 @@ const COMMAND_HANDLERS: Record<TaskQueueName, WorkflowHandler> = {
     await msg.complete({ ok: true });
   },
 
-  "task.command.workspace.rename_session": async (loopCtx, msg) => {
-    await renameWorkspaceSession(loopCtx, msg.body.sessionId, msg.body.title);
-    await msg.complete({ ok: true });
-  },
-
-  "task.command.workspace.select_session": async (loopCtx, msg) => {
-    await selectWorkspaceSession(loopCtx, msg.body.sessionId, msg.body?.authSessionId);
-    await msg.complete({ ok: true });
-  },
-
-  "task.command.workspace.set_session_unread": async (loopCtx, msg) => {
-    await setWorkspaceSessionUnread(loopCtx, msg.body.sessionId, msg.body.unread, msg.body?.authSessionId);
-    await msg.complete({ ok: true });
-  },
-
-  "task.command.workspace.update_draft": async (loopCtx, msg) => {
-    await updateWorkspaceDraft(loopCtx, msg.body.sessionId, msg.body.text, msg.body.attachments, msg.body?.authSessionId);
-    await msg.complete({ ok: true });
-  },
-
-  "task.command.workspace.change_model": async (loopCtx, msg) => {
-    await changeWorkspaceModel(loopCtx, msg.body.sessionId, msg.body.model, msg.body?.authSessionId);
-    await msg.complete({ ok: true });
-  },
-
   "task.command.workspace.send_message": async (loopCtx, msg) => {
     await sendWorkspaceMessage(loopCtx, msg.body.sessionId, msg.body.text, msg.body.attachments, msg.body?.authSessionId);
     await msg.complete({ ok: true });
@@ -173,21 +117,6 @@ const COMMAND_HANDLERS: Record<TaskQueueName, WorkflowHandler> = {
 
   "task.command.workspace.stop_session": async (loopCtx, msg) => {
     await stopWorkspaceSession(loopCtx, msg.body.sessionId);
-    await msg.complete({ ok: true });
-  },
-
-  "task.command.workspace.sync_session_status": async (loopCtx, msg) => {
-    await syncWorkspaceSessionStatus(loopCtx, msg.body.sessionId, msg.body.status, msg.body.at);
-    await msg.complete({ ok: true });
-  },
-
-  "task.command.workspace.refresh_derived": async (loopCtx, msg) => {
-    await refreshWorkspaceDerivedState(loopCtx);
-    await msg.complete({ ok: true });
-  },
-
-  "task.command.workspace.refresh_session_transcript": async (loopCtx, msg) => {
-    await refreshWorkspaceSessionTranscript(loopCtx, msg.body.sessionId);
     await msg.complete({ ok: true });
   },
 

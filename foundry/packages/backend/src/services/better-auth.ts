@@ -3,8 +3,6 @@ import { createAdapterFactory } from "better-auth/adapters";
 import { APP_SHELL_ORGANIZATION_ID } from "../actors/organization/constants.js";
 import { organizationKey, userKey } from "../actors/keys.js";
 import { logger } from "../logging.js";
-import { expectQueueResponse } from "./queue.js";
-import { userWorkflowQueueName } from "../actors/user/workflow.js";
 
 const AUTH_BASE_PATH = "/v1/auth";
 const SESSION_COOKIE = "better-auth.session_token";
@@ -79,33 +77,17 @@ export function initBetterAuthService(actorClient: any, options: { apiUrl: strin
   // getOrCreate is intentional here: the adapter runs during Better Auth callbacks
   // which can fire before any explicit create path. The app organization and user
   // actors must exist by the time the adapter needs them.
-  //
-  // Handles are cached to avoid redundant getOrCreate RPCs during a single OAuth
-  // callback (which calls the adapter 5-10+ times). The RivetKit handle is a
-  // lightweight proxy; caching it just avoids repeated gateway round-trips.
-  let cachedAppOrganization: any = null;
-  const appOrganization = async () => {
-    if (!cachedAppOrganization) {
-      cachedAppOrganization = await actorClient.organization.getOrCreate(organizationKey(APP_SHELL_ORGANIZATION_ID), {
-        createWithInput: APP_SHELL_ORGANIZATION_ID,
-      });
-    }
-    return cachedAppOrganization;
-  };
+  const appOrganization = () =>
+    actorClient.organization.getOrCreate(organizationKey(APP_SHELL_ORGANIZATION_ID), {
+      createWithInput: APP_SHELL_ORGANIZATION_ID,
+    });
 
   // getOrCreate is intentional: Better Auth creates user records during OAuth
   // callbacks, so the user actor must be lazily provisioned on first access.
-  const userHandleCache = new Map<string, any>();
-  const getUser = async (userId: string) => {
-    let handle = userHandleCache.get(userId);
-    if (!handle) {
-      handle = await actorClient.user.getOrCreate(userKey(userId), {
-        createWithInput: { userId },
-      });
-      userHandleCache.set(userId, handle);
-    }
-    return handle;
-  };
+  const getUser = async (userId: string) =>
+    await actorClient.user.getOrCreate(userKey(userId), {
+      createWithInput: { userId },
+    });
 
   const adapter = createAdapterFactory({
     config: {
@@ -183,91 +165,51 @@ export function initBetterAuthService(actorClient: any, options: { apiUrl: strin
         create: async ({ model, data }) => {
           const transformed = await transformInput(data, model, "create", true);
           if (model === "verification") {
-            const start = performance.now();
-            try {
-              const organization = await appOrganization();
-              const result = await organization.betterAuthCreateVerification({ data: transformed });
-              logger.info(
-                { model, identifier: transformed.identifier, durationMs: Math.round((performance.now() - start) * 100) / 100 },
-                "auth_adapter_create_verification",
-              );
-              return result;
-            } catch (error) {
-              logger.error(
-                { model, identifier: transformed.identifier, durationMs: Math.round((performance.now() - start) * 100) / 100, error: String(error) },
-                "auth_adapter_create_verification_error",
-              );
-              throw error;
-            }
+            const organization = await appOrganization();
+            return await organization.betterAuthCreateVerification({ data: transformed });
           }
 
-          const createStart = performance.now();
           const userId = await resolveUserIdForQuery(model, undefined, transformed);
           if (!userId) {
             throw new Error(`Unable to resolve auth actor for create(${model})`);
           }
 
-          try {
-            const userActor = await getUser(userId);
-            const created = await userActor.betterAuthCreateRecord({ model, data: transformed });
-            const organization = await appOrganization();
+          const userActor = await getUser(userId);
+          const created = await userActor.betterAuthCreateRecord({ model, data: transformed });
+          const organization = await appOrganization();
 
-            if (model === "user" && typeof transformed.email === "string" && transformed.email.length > 0) {
-              await organization.betterAuthUpsertEmailIndex({
-                email: transformed.email.toLowerCase(),
-                userId,
-              });
-            }
-
-            if (model === "session") {
-              await organization.betterAuthUpsertSessionIndex({
-                sessionId: String(created.id),
-                sessionToken: String(created.token),
-                userId,
-              });
-            }
-
-            if (model === "account") {
-              await organization.betterAuthUpsertAccountIndex({
-                id: String(created.id),
-                providerId: String(created.providerId),
-                accountId: String(created.accountId),
-                userId,
-              });
-            }
-
-            logger.info({ model, userId, durationMs: Math.round((performance.now() - createStart) * 100) / 100 }, "auth_adapter_create_record");
-            return (await transformOutput(created, model)) as any;
-          } catch (error) {
-            logger.error(
-              { model, userId, durationMs: Math.round((performance.now() - createStart) * 100) / 100, error: String(error) },
-              "auth_adapter_create_record_error",
-            );
-            throw error;
+          if (model === "user" && typeof transformed.email === "string" && transformed.email.length > 0) {
+            await organization.betterAuthUpsertEmailIndex({
+              email: transformed.email.toLowerCase(),
+              userId,
+            });
           }
+
+          if (model === "session") {
+            await organization.betterAuthUpsertSessionIndex({
+              sessionId: String(created.id),
+              sessionToken: String(created.token),
+              userId,
+            });
+          }
+
+          if (model === "account") {
+            await organization.betterAuthUpsertAccountIndex({
+              id: String(created.id),
+              providerId: String(created.providerId),
+              accountId: String(created.accountId),
+              userId,
+            });
+          }
+
+          return (await transformOutput(created, model)) as any;
         },
 
         findOne: async ({ model, where, join }) => {
           const transformedWhere = transformWhereClause({ model, where, action: "findOne" });
           if (model === "verification") {
-            const start = performance.now();
-            try {
-              const organization = await appOrganization();
-              const result = await organization.betterAuthFindOneVerification({ where: transformedWhere, join });
-              const identifier = transformedWhere?.find((entry: any) => entry.field === "identifier")?.value;
-              logger.info(
-                { model, identifier, found: !!result, durationMs: Math.round((performance.now() - start) * 100) / 100 },
-                "auth_adapter_find_verification",
-              );
-              return result;
-            } catch (error) {
-              const identifier = transformedWhere?.find((entry: any) => entry.field === "identifier")?.value;
-              logger.error(
-                { model, identifier, durationMs: Math.round((performance.now() - start) * 100) / 100, error: String(error) },
-                "auth_adapter_find_verification_error",
-              );
-              throw error;
-            }
+            const organization = await appOrganization();
+            return await organization.betterAuthFindOneVerification({ where: transformedWhere, join });
           }
 
           const userId = await resolveUserIdForQuery(model, transformedWhere);
@@ -429,8 +371,6 @@ export function initBetterAuthService(actorClient: any, options: { apiUrl: strin
         delete: async ({ model, where }) => {
           const transformedWhere = transformWhereClause({ model, where, action: "delete" });
           if (model === "verification") {
-            const identifier = transformedWhere?.find((entry: any) => entry.field === "identifier")?.value;
-            logger.info({ model, identifier }, "auth_adapter_delete_verification");
             const organization = await appOrganization();
             await organization.betterAuthDeleteVerification({ where: transformedWhere });
             return;
@@ -527,15 +467,6 @@ export function initBetterAuthService(actorClient: any, options: { apiUrl: strin
     secret: requireEnv("BETTER_AUTH_SECRET"),
     database: adapter,
     trustedOrigins: [stripTrailingSlash(options.appUrl), stripTrailingSlash(options.apiUrl)],
-    account: {
-      // Store OAuth state in an encrypted cookie instead of a DB verification record.
-      // The production proxy chain (Cloudflare -> Fastly -> Railway) retries the OAuth
-      // callback when it takes >10s, causing a duplicate request. With the "database"
-      // strategy the first request deletes the verification record, so the retry fails
-      // with "verification not found" -> ?error=please_restart_the_process.
-      // Cookie strategy avoids this because the state lives in the request itself.
-      storeStateStrategy: "cookie",
-    },
     session: {
       cookieCache: {
         enabled: true,
@@ -582,9 +513,7 @@ export function initBetterAuthService(actorClient: any, options: { apiUrl: strin
 
     async upsertUserProfile(userId: string, patch: Record<string, unknown>) {
       const userActor = await getUser(userId);
-      return expectQueueResponse(
-        await userActor.send(userWorkflowQueueName("user.command.profile.upsert"), { userId, patch }, { wait: true, timeout: 10_000 }),
-      );
+      return await userActor.upsertProfile({ userId, patch });
     },
 
     async setActiveOrganization(sessionId: string, activeOrganizationId: string | null) {
@@ -593,9 +522,7 @@ export function initBetterAuthService(actorClient: any, options: { apiUrl: strin
         throw new Error(`Unknown auth session ${sessionId}`);
       }
       const userActor = await getUser(authState.user.id);
-      return expectQueueResponse(
-        await userActor.send(userWorkflowQueueName("user.command.session_state.upsert"), { sessionId, activeOrganizationId }, { wait: true, timeout: 10_000 }),
-      );
+      return await userActor.upsertSessionState({ sessionId, activeOrganizationId });
     },
 
     async getAccessTokenForSession(sessionId: string) {

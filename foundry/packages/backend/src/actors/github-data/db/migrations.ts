@@ -24,6 +24,12 @@ const journal = {
       tag: "0003_sync_progress",
       breakpoints: true,
     },
+    {
+      idx: 4,
+      when: 1773993600000,
+      tag: "0004_drop_github_branches",
+      breakpoints: true,
+    },
   ],
 } as const;
 
@@ -101,6 +107,8 @@ ALTER TABLE \`github_members\` ADD \`sync_generation\` integer NOT NULL DEFAULT 
 ALTER TABLE \`github_pull_requests\` ADD \`sync_generation\` integer NOT NULL DEFAULT 0;
 --> statement-breakpoint
 ALTER TABLE \`github_branches\` ADD \`sync_generation\` integer NOT NULL DEFAULT 0;
+`,
+    m0004: `DROP TABLE IF EXISTS \`github_branches\`;
 `,
   } as const,
 };

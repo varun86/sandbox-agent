@@ -41,11 +41,6 @@ export interface GitHubRepositoryRecord {
   defaultBranch: string;
 }
 
-export interface GitHubBranchRecord {
-  name: string;
-  commitSha: string;
-}
-
 export interface GitHubMemberRecord {
   id: string;
   login: string;
@@ -402,15 +397,6 @@ export class GitHubAppClient {
     return await this.getUserRepository(accessToken, fullName);
   }
 
-  async listUserRepositoryBranches(accessToken: string, fullName: string): Promise<GitHubBranchRecord[]> {
-    return await this.listRepositoryBranches(accessToken, fullName);
-  }
-
-  async listInstallationRepositoryBranches(installationId: number, fullName: string): Promise<GitHubBranchRecord[]> {
-    const accessToken = await this.createInstallationAccessToken(installationId);
-    return await this.listRepositoryBranches(accessToken, fullName);
-  }
-
   async listOrganizationMembers(accessToken: string, organizationLogin: string): Promise<GitHubMemberRecord[]> {
     const members = await this.paginate<{
       id: number;
@@ -707,20 +693,6 @@ export class GitHubAppClient {
       items,
       nextUrl: parseNextLink(response.headers.get("link")),
     };
-  }
-
-  private async listRepositoryBranches(accessToken: string, fullName: string): Promise<GitHubBranchRecord[]> {
-    const branches = await this.paginate<{
-      name: string;
-      commit?: { sha?: string | null } | null;
-    }>(`/repos/${fullName}/branches?per_page=100`, accessToken);
-
-    return branches
-      .map((branch) => ({
-        name: branch.name?.trim() ?? "",
-        commitSha: branch.commit?.sha?.trim() ?? "",
-      }))
-      .filter((branch) => branch.name.length > 0 && branch.commitSha.length > 0);
   }
 }
 

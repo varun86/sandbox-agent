@@ -30,15 +30,6 @@ export const githubRepositories = sqliteTable("github_repositories", {
   updatedAt: integer("updated_at").notNull(),
 });
 
-export const githubBranches = sqliteTable("github_branches", {
-  branchId: text("branch_id").notNull().primaryKey(),
-  repoId: text("repo_id").notNull(),
-  branchName: text("branch_name").notNull(),
-  commitSha: text("commit_sha").notNull(),
-  syncGeneration: integer("sync_generation").notNull(),
-  updatedAt: integer("updated_at").notNull(),
-});
-
 export const githubMembers = sqliteTable("github_members", {
   memberId: text("member_id").notNull().primaryKey(),
   login: text("login").notNull(),

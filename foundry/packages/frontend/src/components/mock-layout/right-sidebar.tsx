@@ -10,6 +10,7 @@ import {
   FilePlus,
   FileX,
   FolderOpen,
+  ExternalLink,
   GitBranch,
   GitPullRequest,
   PanelRight,
@@ -128,7 +129,7 @@ export const RightSidebar = memo(function RightSidebar({
 }) {
   const [css] = useStyletron();
   const t = useFoundryTokens();
-  const [rightTab, setRightTab] = useState<"overview" | "changes" | "files">("changes");
+  const [rightTab, setRightTab] = useState<"overview" | "changes" | "files">("overview");
   const contextMenu = useContextMenu();
   const changedPaths = useMemo(() => new Set(task.fileChanges.map((file) => file.path)), [task.fileChanges]);
   const isTerminal = task.status === "archived";
@@ -643,6 +644,39 @@ export const RightSidebar = memo(function RightSidebar({
                       #{task.pullRequest.number} {task.pullRequest.title ?? ""}
                     </LabelSmall>
                   </div>
+                </div>
+              ) : null}
+              {task.sandboxes?.find((s) => s.sandboxId === task.activeSandboxId)?.url ? (
+                <div className={css({ display: "flex", flexDirection: "column", gap: "8px" })}>
+                  <LabelXSmall color={t.textTertiary} $style={{ textTransform: "uppercase", letterSpacing: "0.5px", fontWeight: 600 }}>
+                    Sandbox
+                  </LabelXSmall>
+                  <a
+                    href={task.sandboxes.find((s) => s.sandboxId === task.activeSandboxId)!.url!}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={css({
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "8px",
+                      color: t.textSecondary,
+                      textDecoration: "none",
+                      borderRadius: "6px",
+                      paddingTop: "4px",
+                      paddingRight: "8px",
+                      paddingBottom: "4px",
+                      paddingLeft: "4px",
+                      ":hover": { backgroundColor: t.interactiveHover, color: t.textPrimary },
+                    })}
+                  >
+                    <ExternalLink size={14} color={t.textTertiary} style={{ flexShrink: 0 }} />
+                    <LabelSmall
+                      color="inherit"
+                      $style={{ fontFamily: '"IBM Plex Mono", monospace', overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                    >
+                      {task.sandboxes.find((s) => s.sandboxId === task.activeSandboxId)!.url!}
+                    </LabelSmall>
+                  </a>
                 </div>
               ) : null}
             </div>

@@ -7,7 +7,6 @@ RUN npm install -g pnpm@10.28.2
 WORKDIR /workspace/quebec
 
 COPY quebec /workspace/quebec
-COPY rivet-checkout /workspace/rivet-checkout
 
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @sandbox-agent/foundry-shared build
