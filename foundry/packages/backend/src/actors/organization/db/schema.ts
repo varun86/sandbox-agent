@@ -40,6 +40,8 @@ export const taskSummaries = sqliteTable("task_summaries", {
   branch: text("branch"),
   pullRequestJson: text("pull_request_json"),
   sessionsSummaryJson: text("sessions_summary_json").notNull().default("[]"),
+  primaryUserLogin: text("primary_user_login"),
+  primaryUserAvatarUrl: text("primary_user_avatar_url"),
 });
 
 export const organizationProfile = sqliteTable(

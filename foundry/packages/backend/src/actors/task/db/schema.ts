@@ -48,6 +48,24 @@ export const taskSandboxes = sqliteTable("task_sandboxes", {
 });
 
 /**
+ * Single-row table tracking the primary user (owner) of this task.
+ * The owner's GitHub OAuth credentials are injected into the sandbox
+ * for git operations. Updated when a different user sends a message.
+ */
+export const taskOwner = sqliteTable(
+  "task_owner",
+  {
+    id: integer("id").primaryKey(),
+    primaryUserId: text("primary_user_id"),
+    primaryGithubLogin: text("primary_github_login"),
+    primaryGithubEmail: text("primary_github_email"),
+    primaryGithubAvatarUrl: text("primary_github_avatar_url"),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [check("task_owner_singleton_id_check", sql`${table.id} = 1`)],
+);
+
+/**
  * Coordinator index of workspace sessions within this task.
  * The task actor is the coordinator for sessions. Each row holds session
  * metadata, model, status, transcript, and draft state. Sessions are

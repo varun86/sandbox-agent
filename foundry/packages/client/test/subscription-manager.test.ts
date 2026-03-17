@@ -77,6 +77,8 @@ function organizationSnapshot(): OrganizationSummarySnapshot {
         pullRequest: null,
         activeSessionId: null,
         sessionsSummary: [],
+        primaryUserLogin: null,
+        primaryUserAvatarUrl: null,
       },
     ],
   };
@@ -159,6 +161,8 @@ describe("RemoteSubscriptionManager", () => {
             pullRequest: null,
             activeSessionId: null,
             sessionsSummary: [],
+            primaryUserLogin: null,
+            primaryUserAvatarUrl: null,
           },
         ],
       },

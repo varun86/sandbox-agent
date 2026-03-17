@@ -16,6 +16,12 @@ const journal = {
       tag: "0001_add_auth_and_task_tables",
       breakpoints: true,
     },
+    {
+      idx: 2,
+      when: 1773984000000,
+      tag: "0002_add_task_owner_columns",
+      breakpoints: true,
+    },
   ],
 } as const;
 
@@ -165,6 +171,10 @@ CREATE TABLE \`task_summaries\` (
 	\`pull_request_json\` text,
 	\`sessions_summary_json\` text DEFAULT '[]' NOT NULL
 );
+`,
+    m0002: `ALTER TABLE \`task_summaries\` ADD COLUMN \`primary_user_login\` text;
+--> statement-breakpoint
+ALTER TABLE \`task_summaries\` ADD COLUMN \`primary_user_avatar_url\` text;
 `,
   } as const,
 };

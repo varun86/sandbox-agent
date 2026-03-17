@@ -64,6 +64,8 @@ function taskSummaryRowFromSummary(taskSummary: WorkspaceTaskSummary) {
     branch: taskSummary.branch,
     pullRequestJson: JSON.stringify(taskSummary.pullRequest),
     sessionsSummaryJson: JSON.stringify(taskSummary.sessionsSummary),
+    primaryUserLogin: taskSummary.primaryUserLogin ?? null,
+    primaryUserAvatarUrl: taskSummary.primaryUserAvatarUrl ?? null,
   };
 }
 
@@ -78,6 +80,8 @@ export function taskSummaryFromRow(repoId: string, row: any): WorkspaceTaskSumma
     branch: row.branch ?? null,
     pullRequest: parseJsonValue<WorkspacePullRequestSummary | null>(row.pullRequestJson, null),
     sessionsSummary: parseJsonValue<WorkspaceSessionSummary[]>(row.sessionsSummaryJson, []),
+    primaryUserLogin: row.primaryUserLogin ?? null,
+    primaryUserAvatarUrl: row.primaryUserAvatarUrl ?? null,
   };
 }
 

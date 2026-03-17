@@ -1,7 +1,20 @@
-import { memo, useCallback, useMemo, useState, type MouseEvent } from "react";
+import { memo, useCallback, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useStyletron } from "baseui";
-import { LabelSmall } from "baseui/typography";
-import { Archive, ArrowUpFromLine, ChevronRight, FileCode, FilePlus, FileX, FolderOpen, GitPullRequest, PanelRight } from "lucide-react";
+import { LabelSmall, LabelXSmall } from "baseui/typography";
+import {
+  Archive,
+  ArrowUpFromLine,
+  ChevronDown,
+  ChevronRight,
+  FileCode,
+  FilePlus,
+  FileX,
+  FolderOpen,
+  GitBranch,
+  GitPullRequest,
+  PanelRight,
+  User,
+} from "lucide-react";
 
 import { useFoundryTokens } from "../../app/theme";
 import { createErrorContext } from "@sandbox-agent/foundry-shared";
@@ -99,6 +112,8 @@ export const RightSidebar = memo(function RightSidebar({
   onArchive,
   onRevertFile,
   onPublishPr,
+  onChangeOwner,
+  members,
   onToggleSidebar,
 }: {
   task: Task;
@@ -107,11 +122,13 @@ export const RightSidebar = memo(function RightSidebar({
   onArchive: () => void;
   onRevertFile: (path: string) => void;
   onPublishPr: () => void;
+  onChangeOwner: (member: { id: string; name: string; email: string }) => void;
+  members: Array<{ id: string; name: string; email: string }>;
   onToggleSidebar?: () => void;
 }) {
   const [css] = useStyletron();
   const t = useFoundryTokens();
-  const [rightTab, setRightTab] = useState<"changes" | "files">("changes");
+  const [rightTab, setRightTab] = useState<"overview" | "changes" | "files">("changes");
   const contextMenu = useContextMenu();
   const changedPaths = useMemo(() => new Set(task.fileChanges.map((file) => file.path)), [task.fileChanges]);
   const isTerminal = task.status === "archived";
@@ -125,6 +142,8 @@ export const RightSidebar = memo(function RightSidebar({
     });
     observer.observe(node);
   }, []);
+  const [ownerDropdownOpen, setOwnerDropdownOpen] = useState(false);
+  const ownerDropdownRef = useRef<HTMLDivElement>(null);
   const pullRequestUrl = task.pullRequest?.url ?? null;
 
   const copyFilePath = useCallback(async (path: string) => {
@@ -310,7 +329,7 @@ export const RightSidebar = memo(function RightSidebar({
           })}
         >
           <button
-            onClick={() => setRightTab("changes")}
+            onClick={() => setRightTab("overview")}
             className={css({
               appearance: "none",
               WebkitAppearance: "none",
@@ -319,6 +338,36 @@ export const RightSidebar = memo(function RightSidebar({
               marginRight: "0",
               marginBottom: "6px",
               marginLeft: "6px",
+              boxSizing: "border-box",
+              display: "inline-flex",
+              alignItems: "center",
+              padding: "4px 12px",
+              borderRadius: "8px",
+              cursor: "pointer",
+              fontSize: "12px",
+              fontWeight: 500,
+              lineHeight: 1,
+              whiteSpace: "nowrap",
+              color: rightTab === "overview" ? t.textPrimary : t.textSecondary,
+              backgroundColor: rightTab === "overview" ? t.interactiveHover : "transparent",
+              transitionProperty: "color, background-color",
+              transitionDuration: "200ms",
+              transitionTimingFunction: "ease",
+              ":hover": { color: t.textPrimary, backgroundColor: rightTab === "overview" ? t.interactiveHover : t.interactiveSubtle },
+            })}
+          >
+            Overview
+          </button>
+          <button
+            onClick={() => setRightTab("changes")}
+            className={css({
+              appearance: "none",
+              WebkitAppearance: "none",
+              border: "none",
+              marginTop: "6px",
+              marginRight: "0",
+              marginBottom: "6px",
+              marginLeft: "0",
               boxSizing: "border-box",
               display: "inline-flex",
               alignItems: "center",
@@ -392,7 +441,212 @@ export const RightSidebar = memo(function RightSidebar({
         </div>
 
         <ScrollBody>
-          {rightTab === "changes" ? (
+          {rightTab === "overview" ? (
+            <div className={css({ padding: "16px 14px", display: "flex", flexDirection: "column", gap: "16px" })}>
+              <div className={css({ display: "flex", flexDirection: "column", gap: "8px" })}>
+                <LabelXSmall color={t.textTertiary} $style={{ textTransform: "uppercase", letterSpacing: "0.5px", fontWeight: 600 }}>
+                  Owner
+                </LabelXSmall>
+                <div ref={ownerDropdownRef} className={css({ position: "relative" })}>
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setOwnerDropdownOpen((prev) => !prev)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") setOwnerDropdownOpen((prev) => !prev);
+                    }}
+                    className={css({
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                      paddingTop: "4px",
+                      paddingRight: "8px",
+                      paddingBottom: "4px",
+                      paddingLeft: "4px",
+                      borderRadius: "6px",
+                      cursor: "pointer",
+                      ":hover": { backgroundColor: t.interactiveHover },
+                    })}
+                  >
+                    {task.primaryUserLogin ? (
+                      <>
+                        {task.primaryUserAvatarUrl ? (
+                          <img
+                            src={task.primaryUserAvatarUrl}
+                            alt={task.primaryUserLogin}
+                            className={css({
+                              width: "28px",
+                              height: "28px",
+                              borderRadius: "50%",
+                              flexShrink: 0,
+                            })}
+                          />
+                        ) : (
+                          <div
+                            className={css({
+                              width: "28px",
+                              height: "28px",
+                              borderRadius: "50%",
+                              backgroundColor: t.surfaceElevated,
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              flexShrink: 0,
+                            })}
+                          >
+                            <User size={14} color={t.textTertiary} />
+                          </div>
+                        )}
+                        <LabelSmall color={t.textPrimary} $style={{ fontWeight: 500, flex: 1 }}>
+                          {task.primaryUserLogin}
+                        </LabelSmall>
+                      </>
+                    ) : (
+                      <>
+                        <div
+                          className={css({
+                            width: "28px",
+                            height: "28px",
+                            borderRadius: "50%",
+                            backgroundColor: t.surfaceElevated,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            flexShrink: 0,
+                          })}
+                        >
+                          <User size={14} color={t.textTertiary} />
+                        </div>
+                        <LabelSmall color={t.textTertiary} $style={{ flex: 1 }}>
+                          No owner assigned
+                        </LabelSmall>
+                      </>
+                    )}
+                    <ChevronDown size={12} color={t.textTertiary} style={{ flexShrink: 0 }} />
+                  </div>
+                  {ownerDropdownOpen ? (
+                    <>
+                      <div
+                        onClick={() => setOwnerDropdownOpen(false)}
+                        className={css({ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 99 })}
+                      />
+                      <div
+                        className={css({
+                          position: "absolute",
+                          top: "100%",
+                          left: 0,
+                          right: 0,
+                          zIndex: 100,
+                          marginTop: "4px",
+                          backgroundColor: t.surfaceElevated,
+                          borderRadius: "8px",
+                          boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+                          paddingTop: "4px",
+                          paddingBottom: "4px",
+                          maxHeight: "200px",
+                          overflowY: "auto",
+                        })}
+                      >
+                        {members.map((member) => (
+                          <div
+                            key={member.id}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => {
+                              onChangeOwner(member);
+                              setOwnerDropdownOpen(false);
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" || event.key === " ") {
+                                onChangeOwner(member);
+                                setOwnerDropdownOpen(false);
+                              }
+                            }}
+                            className={css({
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "8px",
+                              paddingTop: "6px",
+                              paddingRight: "12px",
+                              paddingBottom: "6px",
+                              paddingLeft: "12px",
+                              cursor: "pointer",
+                              fontSize: "12px",
+                              color: t.textPrimary,
+                              ":hover": { backgroundColor: t.interactiveHover },
+                            })}
+                          >
+                            <div
+                              className={css({
+                                width: "20px",
+                                height: "20px",
+                                borderRadius: "50%",
+                                backgroundColor: t.surfacePrimary,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                flexShrink: 0,
+                              })}
+                            >
+                              <User size={10} color={t.textTertiary} />
+                            </div>
+                            <span>{member.name}</span>
+                          </div>
+                        ))}
+                        {members.length === 0 ? (
+                          <div
+                            className={css({
+                              paddingTop: "8px",
+                              paddingRight: "12px",
+                              paddingBottom: "8px",
+                              paddingLeft: "12px",
+                              fontSize: "12px",
+                              color: t.textTertiary,
+                            })}
+                          >
+                            No members
+                          </div>
+                        ) : null}
+                      </div>
+                    </>
+                  ) : null}
+                </div>
+              </div>
+              <div className={css({ display: "flex", flexDirection: "column", gap: "8px" })}>
+                <LabelXSmall color={t.textTertiary} $style={{ textTransform: "uppercase", letterSpacing: "0.5px", fontWeight: 600 }}>
+                  Branch
+                </LabelXSmall>
+                <div className={css({ display: "flex", alignItems: "center", gap: "8px" })}>
+                  <GitBranch size={14} color={t.textTertiary} style={{ flexShrink: 0 }} />
+                  <LabelSmall
+                    color={t.textSecondary}
+                    $style={{ fontFamily: '"IBM Plex Mono", monospace', overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  >
+                    {task.branch ?? "No branch"}
+                  </LabelSmall>
+                </div>
+              </div>
+              <div className={css({ display: "flex", flexDirection: "column", gap: "8px" })}>
+                <LabelXSmall color={t.textTertiary} $style={{ textTransform: "uppercase", letterSpacing: "0.5px", fontWeight: 600 }}>
+                  Repository
+                </LabelXSmall>
+                <LabelSmall color={t.textSecondary}>{task.repoName}</LabelSmall>
+              </div>
+              {task.pullRequest ? (
+                <div className={css({ display: "flex", flexDirection: "column", gap: "8px" })}>
+                  <LabelXSmall color={t.textTertiary} $style={{ textTransform: "uppercase", letterSpacing: "0.5px", fontWeight: 600 }}>
+                    Pull Request
+                  </LabelXSmall>
+                  <div className={css({ display: "flex", alignItems: "center", gap: "8px" })}>
+                    <GitPullRequest size={14} color={t.textTertiary} style={{ flexShrink: 0 }} />
+                    <LabelSmall color={t.textSecondary}>
+                      #{task.pullRequest.number} {task.pullRequest.title ?? ""}
+                    </LabelSmall>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : rightTab === "changes" ? (
             <div className={css({ padding: "10px 14px", display: "flex", flexDirection: "column", gap: "2px" })}>
               {task.fileChanges.length === 0 ? (
                 <div className={css({ padding: "20px 0", textAlign: "center" })}>

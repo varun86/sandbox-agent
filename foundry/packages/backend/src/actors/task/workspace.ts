@@ -19,7 +19,7 @@ import { resolveOrganizationGithubAuth } from "../../services/github-auth.js";
 import { githubRepoFullNameFromRemote } from "../../services/repo.js";
 // organization actions called directly (no queue)
 
-import { task as taskTable, taskRuntime, taskSandboxes, taskWorkspaceSessions } from "./db/schema.js";
+import { task as taskTable, taskOwner, taskRuntime, taskSandboxes, taskWorkspaceSessions } from "./db/schema.js";
 import { getCurrentRecord } from "./workflow/common.js";
 
 function emptyGitState() {
@@ -121,6 +121,193 @@ function parseGitState(value: string | null | undefined): { fileChanges: Array<a
   } catch {
     return emptyGitState();
   }
+}
+
+async function readTaskOwner(
+  c: any,
+): Promise<{
+  primaryUserId: string | null;
+  primaryGithubLogin: string | null;
+  primaryGithubEmail: string | null;
+  primaryGithubAvatarUrl: string | null;
+} | null> {
+  const row = await c.db.select().from(taskOwner).where(eq(taskOwner.id, 1)).get();
+  if (!row) {
+    return null;
+  }
+  return {
+    primaryUserId: row.primaryUserId ?? null,
+    primaryGithubLogin: row.primaryGithubLogin ?? null,
+    primaryGithubEmail: row.primaryGithubEmail ?? null,
+    primaryGithubAvatarUrl: row.primaryGithubAvatarUrl ?? null,
+  };
+}
+
+async function upsertTaskOwner(
+  c: any,
+  owner: { primaryUserId: string; primaryGithubLogin: string; primaryGithubEmail: string; primaryGithubAvatarUrl: string | null },
+): Promise<void> {
+  const now = Date.now();
+  await c.db
+    .insert(taskOwner)
+    .values({
+      id: 1,
+      primaryUserId: owner.primaryUserId,
+      primaryGithubLogin: owner.primaryGithubLogin,
+      primaryGithubEmail: owner.primaryGithubEmail,
+      primaryGithubAvatarUrl: owner.primaryGithubAvatarUrl,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: taskOwner.id,
+      set: {
+        primaryUserId: owner.primaryUserId,
+        primaryGithubLogin: owner.primaryGithubLogin,
+        primaryGithubEmail: owner.primaryGithubEmail,
+        primaryGithubAvatarUrl: owner.primaryGithubAvatarUrl,
+        updatedAt: now,
+      },
+    })
+    .run();
+}
+
+/**
+ * Inject the user's GitHub OAuth token into the sandbox as a git credential store file.
+ * Also configures git user.name and user.email so commits are attributed correctly.
+ * The credential file is overwritten on each owner swap.
+ *
+ * Race condition note: If User A sends a message and the agent starts a long git operation,
+ * then User B triggers an owner swap, the in-flight git process still has User A's credentials
+ * (already read from the credential store). The next git operation uses User B's credentials.
+ */
+async function injectGitCredentials(sandbox: any, login: string, email: string, token: string): Promise<void> {
+  const script = [
+    "set -euo pipefail",
+    `git config --global user.name ${JSON.stringify(login)}`,
+    `git config --global user.email ${JSON.stringify(email)}`,
+    `git config --global credential.helper 'store --file=/home/user/.git-token'`,
+    `printf '%s\\n' ${JSON.stringify(`https://${login}:${token}@github.com`)} > /home/user/.git-token`,
+    `chmod 600 /home/user/.git-token`,
+  ];
+  const result = await sandbox.runProcess({
+    command: "bash",
+    args: ["-lc", script.join("; ")],
+    cwd: "/",
+    timeoutMs: 30_000,
+  });
+  if ((result.exitCode ?? 0) !== 0) {
+    logActorWarning("task", "git credential injection failed", {
+      exitCode: result.exitCode,
+      output: [result.stdout, result.stderr].filter(Boolean).join(""),
+    });
+  }
+}
+
+/**
+ * Resolves the current user's GitHub identity from their auth session.
+ * Returns null if the session is invalid or the user has no GitHub account.
+ */
+async function resolveGithubIdentity(authSessionId: string): Promise<{
+  userId: string;
+  login: string;
+  email: string;
+  avatarUrl: string | null;
+  accessToken: string;
+} | null> {
+  const authService = getBetterAuthService();
+  const authState = await authService.getAuthState(authSessionId);
+  if (!authState?.user?.id) {
+    return null;
+  }
+
+  const tokenResult = await authService.getAccessTokenForSession(authSessionId);
+  if (!tokenResult?.accessToken) {
+    return null;
+  }
+
+  const githubAccount = authState.accounts?.find((account: any) => account.providerId === "github");
+  if (!githubAccount) {
+    return null;
+  }
+
+  // Resolve the GitHub login from the API since Better Auth only stores the
+  // numeric account ID, not the login username.
+  let login = authState.user.name ?? "unknown";
+  let avatarUrl = authState.user.image ?? null;
+  try {
+    const resp = await fetch("https://api.github.com/user", {
+      headers: {
+        Authorization: `Bearer ${tokenResult.accessToken}`,
+        Accept: "application/vnd.github+json",
+      },
+    });
+    if (resp.ok) {
+      const ghUser = (await resp.json()) as { login?: string; avatar_url?: string };
+      if (ghUser.login) {
+        login = ghUser.login;
+      }
+      if (ghUser.avatar_url) {
+        avatarUrl = ghUser.avatar_url;
+      }
+    }
+  } catch (error) {
+    console.warn("resolveGithubIdentity: failed to fetch GitHub user", error);
+  }
+
+  return {
+    userId: authState.user.id,
+    login,
+    email: authState.user.email ?? `${githubAccount.accountId}@users.noreply.github.com`,
+    avatarUrl,
+    accessToken: tokenResult.accessToken,
+  };
+}
+
+/**
+ * Check if the task owner needs to swap, and if so, update the owner record
+ * and inject new git credentials into the sandbox.
+ * Returns true if an owner swap occurred.
+ */
+async function maybeSwapTaskOwner(c: any, authSessionId: string | null | undefined, sandbox: any | null): Promise<boolean> {
+  if (!authSessionId) {
+    return false;
+  }
+
+  const identity = await resolveGithubIdentity(authSessionId);
+  if (!identity) {
+    return false;
+  }
+
+  const currentOwner = await readTaskOwner(c);
+  if (currentOwner?.primaryUserId === identity.userId) {
+    return false;
+  }
+
+  await upsertTaskOwner(c, {
+    primaryUserId: identity.userId,
+    primaryGithubLogin: identity.login,
+    primaryGithubEmail: identity.email,
+    primaryGithubAvatarUrl: identity.avatarUrl,
+  });
+
+  if (sandbox) {
+    await injectGitCredentials(sandbox, identity.login, identity.email, identity.accessToken);
+  }
+
+  return true;
+}
+
+/**
+ * Manually change the task owner. Updates the owner record and broadcasts the
+ * change to subscribers. Git credentials are NOT injected here — they will be
+ * injected the next time the target user sends a message (auto-swap path).
+ */
+export async function changeTaskOwnerManually(
+  c: any,
+  input: { primaryUserId: string; primaryGithubLogin: string; primaryGithubEmail: string; primaryGithubAvatarUrl: string | null },
+): Promise<void> {
+  await upsertTaskOwner(c, input);
+  await broadcastTaskUpdate(c);
 }
 
 export function shouldMarkSessionUnreadForStatus(meta: { thinkingSinceMs?: number | null }, status: "running" | "idle" | "error"): boolean {
@@ -443,7 +630,7 @@ async function getTaskSandboxRuntime(
  */
 let sandboxRepoPrepared = false;
 
-async function ensureSandboxRepo(c: any, sandbox: any, record: any, opts?: { skipFetchIfPrepared?: boolean }): Promise<void> {
+async function ensureSandboxRepo(c: any, sandbox: any, record: any, opts?: { skipFetchIfPrepared?: boolean; authSessionId?: string | null }): Promise<void> {
   if (!record.branchName) {
     throw new Error("cannot prepare a sandbox repo before the task branch exists");
   }
@@ -487,6 +674,12 @@ async function ensureSandboxRepo(c: any, sandbox: any, record: any, opts?: { ski
 
   if ((result.exitCode ?? 0) !== 0) {
     throw new Error(`sandbox repo preparation failed (${result.exitCode ?? 1}): ${[result.stdout, result.stderr].filter(Boolean).join("")}`);
+  }
+
+  // On first repo preparation, inject the task owner's git credentials into the sandbox
+  // so that push/commit operations are authenticated and attributed to the correct user.
+  if (!sandboxRepoPrepared && opts?.authSessionId) {
+    await maybeSwapTaskOwner(c, opts.authSessionId, sandbox);
   }
 
   sandboxRepoPrepared = true;
@@ -862,6 +1055,8 @@ export async function buildTaskSummary(c: any, authSessionId?: string | null): P
   const activeSessionId =
     userTaskState.activeSessionId && sessions.some((meta) => meta.sessionId === userTaskState.activeSessionId) ? userTaskState.activeSessionId : null;
 
+  const owner = await readTaskOwner(c);
+
   return {
     id: c.state.taskId,
     repoId: c.state.repoId,
@@ -873,6 +1068,8 @@ export async function buildTaskSummary(c: any, authSessionId?: string | null): P
     pullRequest: record.pullRequest ?? null,
     activeSessionId,
     sessionsSummary: sessions.map((meta) => buildSessionSummary(meta, userTaskState.bySessionId.get(meta.sessionId))),
+    primaryUserLogin: owner?.primaryGithubLogin ?? null,
+    primaryUserAvatarUrl: owner?.primaryGithubAvatarUrl ?? null,
   };
 }
 
@@ -1212,7 +1409,14 @@ export async function sendWorkspaceMessage(c: any, sessionId: string, text: stri
   const runtime = await getTaskSandboxRuntime(c, record);
   // Skip git fetch on subsequent messages — the repo was already prepared during session
   // creation. This avoids a 5-30s network round-trip to GitHub on every prompt.
-  await ensureSandboxRepo(c, runtime.sandbox, record, { skipFetchIfPrepared: true });
+  await ensureSandboxRepo(c, runtime.sandbox, record, { skipFetchIfPrepared: true, authSessionId });
+
+  // Check if the task owner needs to swap. If a different user is sending this message,
+  // update the owner record and inject their git credentials into the sandbox.
+  const ownerSwapped = await maybeSwapTaskOwner(c, authSessionId, runtime.sandbox);
+  if (ownerSwapped) {
+    await broadcastTaskUpdate(c);
+  }
   const prompt = [text.trim(), ...attachments.map((attachment: any) => `@ ${attachment.filePath}:${attachment.lineNumber}\n${attachment.lineContent}`)].filter(
     Boolean,
   );

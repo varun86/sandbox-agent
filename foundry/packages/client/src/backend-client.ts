@@ -12,6 +12,7 @@ import type {
   TaskRecord,
   TaskSummary,
   TaskWorkspaceChangeModelInput,
+  TaskWorkspaceChangeOwnerInput,
   TaskWorkspaceCreateTaskInput,
   TaskWorkspaceCreateTaskResponse,
   TaskWorkspaceDiffInput,
@@ -110,6 +111,7 @@ interface OrganizationHandle {
   stopWorkspaceSession(input: TaskWorkspaceSessionInput & AuthSessionScopedInput): Promise<void>;
   closeWorkspaceSession(input: TaskWorkspaceSessionInput & AuthSessionScopedInput): Promise<void>;
   publishWorkspacePr(input: TaskWorkspaceSelectInput & AuthSessionScopedInput): Promise<void>;
+  changeWorkspaceTaskOwner(input: TaskWorkspaceChangeOwnerInput & AuthSessionScopedInput): Promise<void>;
   revertWorkspaceFile(input: TaskWorkspaceDiffInput & AuthSessionScopedInput): Promise<void>;
   adminReloadGithubOrganization(): Promise<void>;
   adminReloadGithubRepository(input: { repoId: string }): Promise<void>;
@@ -304,6 +306,7 @@ export interface BackendClient {
   stopWorkspaceSession(organizationId: string, input: TaskWorkspaceSessionInput): Promise<void>;
   closeWorkspaceSession(organizationId: string, input: TaskWorkspaceSessionInput): Promise<void>;
   publishWorkspacePr(organizationId: string, input: TaskWorkspaceSelectInput): Promise<void>;
+  changeWorkspaceTaskOwner(organizationId: string, input: TaskWorkspaceChangeOwnerInput): Promise<void>;
   revertWorkspaceFile(organizationId: string, input: TaskWorkspaceDiffInput): Promise<void>;
   adminReloadGithubOrganization(organizationId: string): Promise<void>;
   adminReloadGithubRepository(organizationId: string, repoId: string): Promise<void>;
@@ -1280,6 +1283,10 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
 
     async publishWorkspacePr(organizationId: string, input: TaskWorkspaceSelectInput): Promise<void> {
       await (await organization(organizationId)).publishWorkspacePr(await withAuthSessionInput(input));
+    },
+
+    async changeWorkspaceTaskOwner(organizationId: string, input: TaskWorkspaceChangeOwnerInput): Promise<void> {
+      await (await organization(organizationId)).changeWorkspaceTaskOwner(await withAuthSessionInput(input));
     },
 
     async revertWorkspaceFile(organizationId: string, input: TaskWorkspaceDiffInput): Promise<void> {

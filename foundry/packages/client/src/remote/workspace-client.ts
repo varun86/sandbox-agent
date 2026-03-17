@@ -1,6 +1,7 @@
 import type {
   TaskWorkspaceAddSessionResponse,
   TaskWorkspaceChangeModelInput,
+  TaskWorkspaceChangeOwnerInput,
   TaskWorkspaceCreateTaskInput,
   TaskWorkspaceCreateTaskResponse,
   TaskWorkspaceDiffInput,
@@ -137,6 +138,11 @@ class RemoteWorkspaceStore implements TaskWorkspaceClient {
 
   async changeModel(input: TaskWorkspaceChangeModelInput): Promise<void> {
     await this.backend.changeWorkspaceModel(this.organizationId, input);
+    await this.refresh();
+  }
+
+  async changeOwner(input: TaskWorkspaceChangeOwnerInput): Promise<void> {
+    await this.backend.changeWorkspaceTaskOwner(this.organizationId, input);
     await this.refresh();
   }
 

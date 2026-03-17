@@ -188,6 +188,8 @@ export function createMockBackendClient(defaultOrganizationId = "default"): Back
       unread: tab.unread,
       created: tab.created,
     })),
+    primaryUserLogin: null,
+    primaryUserAvatarUrl: null,
   });
 
   const buildTaskDetail = (task: TaskWorkspaceSnapshot["tasks"][number]): WorkspaceTaskDetail => ({
@@ -746,6 +748,15 @@ export function createMockBackendClient(defaultOrganizationId = "default"): Back
 
     async publishWorkspacePr(_organizationId: string, input: TaskWorkspaceSelectInput): Promise<void> {
       await workspace.publishPr(input);
+      emitOrganizationSnapshot();
+      emitTaskUpdate(input.taskId);
+    },
+
+    async changeWorkspaceTaskOwner(
+      _organizationId: string,
+      input: { repoId: string; taskId: string; targetUserId: string; targetUserName: string; targetUserEmail: string },
+    ): Promise<void> {
+      await workspace.changeOwner(input);
       emitOrganizationSnapshot();
       emitTaskUpdate(input.taskId);
     },

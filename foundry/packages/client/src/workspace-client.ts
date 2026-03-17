@@ -1,6 +1,7 @@
 import type {
   TaskWorkspaceAddSessionResponse,
   TaskWorkspaceChangeModelInput,
+  TaskWorkspaceChangeOwnerInput,
   TaskWorkspaceCreateTaskInput,
   TaskWorkspaceCreateTaskResponse,
   TaskWorkspaceDiffInput,
@@ -43,6 +44,7 @@ export interface TaskWorkspaceClient {
   closeSession(input: TaskWorkspaceSessionInput): Promise<void>;
   addSession(input: TaskWorkspaceSelectInput): Promise<TaskWorkspaceAddSessionResponse>;
   changeModel(input: TaskWorkspaceChangeModelInput): Promise<void>;
+  changeOwner(input: TaskWorkspaceChangeOwnerInput): Promise<void>;
 }
 
 export function createTaskWorkspaceClient(options: CreateTaskWorkspaceClientOptions): TaskWorkspaceClient {

@@ -745,6 +745,23 @@ export const Sidebar = memo(function Sidebar({
                               {task.title}
                             </LabelSmall>
                           </div>
+                          {task.primaryUserLogin ? (
+                            <span
+                              className={css({
+                                fontSize: "10px",
+                                fontWeight: 500,
+                                color: t.statusSuccess,
+                                whiteSpace: "nowrap",
+                                flexShrink: 0,
+                                maxWidth: "80px",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                              })}
+                              title={task.primaryUserLogin}
+                            >
+                              {task.primaryUserLogin}
+                            </span>
+                          ) : null}
                           {task.pullRequest != null ? (
                             <span className={css({ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0 })}>
                               <LabelXSmall color={t.textSecondary} $style={{ fontWeight: 600 }}>

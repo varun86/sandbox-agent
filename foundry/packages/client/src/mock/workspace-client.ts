@@ -349,7 +349,10 @@ class MockWorkspaceStore implements TaskWorkspaceClient {
 
       return {
         ...currentTask,
-        activeSessionId: currentTask.activeSessionId === input.sessionId ? (currentTask.sessions.find((candidate) => candidate.id !== input.sessionId)?.id ?? null) : currentTask.activeSessionId,
+        activeSessionId:
+          currentTask.activeSessionId === input.sessionId
+            ? (currentTask.sessions.find((candidate) => candidate.id !== input.sessionId)?.id ?? null)
+            : currentTask.activeSessionId,
         sessions: currentTask.sessions.filter((candidate) => candidate.id !== input.sessionId),
       };
     });
@@ -393,6 +396,14 @@ class MockWorkspaceStore implements TaskWorkspaceClient {
       sessions: currentTask.sessions.map((candidate) =>
         candidate.id === input.sessionId ? { ...candidate, model: input.model, agent: workspaceAgentForModel(input.model, MODEL_GROUPS) } : candidate,
       ),
+    }));
+  }
+
+  async changeOwner(input: { repoId: string; taskId: string; targetUserId: string; targetUserName: string; targetUserEmail: string }): Promise<void> {
+    this.updateTask(input.taskId, (currentTask) => ({
+      ...currentTask,
+      primaryUserLogin: input.targetUserName,
+      primaryUserAvatarUrl: null,
     }));
   }
 

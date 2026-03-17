@@ -136,6 +136,14 @@ The client subscribes to `app` always, `organization` when entering an organizat
 - Backend mutations that affect sidebar data (task title, status, branch, PR state) must push the updated summary to the parent organization actor, which broadcasts to organization subscribers.
 - Comment architecture-related code: add doc comments explaining the materialized state pattern, why deltas flow the way they do, and the relationship between parent/child actor broadcasts. New contributors should understand the data flow from comments alone.
 
+## Sandbox Architecture
+
+- Structurally, the system supports multiple sandboxes per task, but in practice there is exactly one active sandbox per task. Design features assuming one sandbox per task. If multi-sandbox is needed in the future, extend at that time.
+- Each task has a **primary user** (owner) whose GitHub OAuth credentials are injected into the sandbox for git operations. The owner swaps when a different user sends a message. See `.context/proposal-task-owner-git-auth.md` for the full design.
+- **Security: OAuth token scope.** The user's GitHub OAuth token has `repo` scope, granting full control of all private repositories the user has access to. When the user is the active task owner, their token is injected into the sandbox. This means the agent can read/write ANY repo the user has access to, not just the task's target repo. This is the standard trade-off for OAuth-based git integrations (same as GitHub Codespaces, Gitpod). The user consents to `repo` scope at sign-in time. Credential files in the sandbox are `chmod 600` and overwritten on owner swap.
+- All git operations in the sandbox must be auto-authenticated. Never configure git to prompt for credentials (no interactive `GIT_ASKPASS` prompts). Use a credential store file that is pre-populated with the active owner's token.
+- All git operation errors (push 401, clone failure, branch protection rejection) must surface in the UI with actionable context. Never silently swallow git errors.
+
 ## Git State Policy
 
 - The backend stores zero git state. No local clones, no refs, no working trees, and no git-spice.

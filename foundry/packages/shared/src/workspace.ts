@@ -128,6 +128,10 @@ export interface WorkspaceTaskSummary {
   activeSessionId: string | null;
   /** Summary of sessions — no transcript content. */
   sessionsSummary: WorkspaceSessionSummary[];
+  /** GitHub login of the current primary user (task owner). */
+  primaryUserLogin: string | null;
+  /** Avatar URL of the current primary user. */
+  primaryUserAvatarUrl: string | null;
 }
 
 /** Full task detail — only fetched when viewing a specific task. */
@@ -218,6 +222,10 @@ export interface WorkspaceTask {
   fileTree: WorkspaceFileTreeNode[];
   minutesUsed: number;
   activeSandboxId?: string | null;
+  /** GitHub login of the current primary user (task owner). */
+  primaryUserLogin?: string | null;
+  /** Avatar URL of the current primary user. */
+  primaryUserAvatarUrl?: string | null;
 }
 
 export interface WorkspaceRepo {
@@ -293,6 +301,18 @@ export interface TaskWorkspaceUpdateDraftInput extends TaskWorkspaceSessionInput
 
 export interface TaskWorkspaceSetSessionUnreadInput extends TaskWorkspaceSessionInput {
   unread: boolean;
+}
+
+export interface TaskWorkspaceChangeOwnerInput {
+  repoId: string;
+  taskId: string;
+  /** User ID of the target owner (from FoundryOrganizationMember.id). */
+  targetUserId: string;
+  /** Display name to use as fallback if GitHub login cannot be resolved. */
+  targetUserName: string;
+  /** Email to use as fallback if GitHub email cannot be resolved. */
+  targetUserEmail: string;
+  authSessionId?: string;
 }
 
 export interface TaskWorkspaceDiffInput {

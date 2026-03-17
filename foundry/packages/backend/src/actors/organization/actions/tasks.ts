@@ -10,6 +10,7 @@ import type {
   TaskRecord,
   TaskSummary,
   TaskWorkspaceChangeModelInput,
+  TaskWorkspaceChangeOwnerInput,
   TaskWorkspaceCreateTaskInput,
   TaskWorkspaceDiffInput,
   TaskWorkspaceRenameInput,
@@ -215,6 +216,16 @@ export const organizationTaskActions = {
   async publishWorkspacePr(c: any, input: TaskWorkspaceSelectInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
     void task.publishPr({}).catch(() => {});
+  },
+
+  async changeWorkspaceTaskOwner(c: any, input: TaskWorkspaceChangeOwnerInput): Promise<void> {
+    const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
+    await task.changeOwner({
+      primaryUserId: input.targetUserId,
+      primaryGithubLogin: input.targetUserName,
+      primaryGithubEmail: input.targetUserEmail,
+      primaryGithubAvatarUrl: null,
+    });
   },
 
   async revertWorkspaceFile(c: any, input: TaskWorkspaceDiffInput): Promise<void> {

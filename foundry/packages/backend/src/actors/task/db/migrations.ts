@@ -10,6 +10,12 @@ const journal = {
       tag: "0000_charming_maestro",
       breakpoints: true,
     },
+    {
+      idx: 1,
+      when: 1773984000000,
+      tag: "0001_add_task_owner",
+      breakpoints: true,
+    },
   ],
 } as const;
 
@@ -64,6 +70,16 @@ CREATE TABLE \`task_workspace_sessions\` (
 	\`thinking_since_ms\` integer,
 	\`created_at\` integer NOT NULL,
 	\`updated_at\` integer NOT NULL
+);
+`,
+    m0001: `CREATE TABLE \`task_owner\` (
+	\`id\` integer PRIMARY KEY NOT NULL,
+	\`primary_user_id\` text,
+	\`primary_github_login\` text,
+	\`primary_github_email\` text,
+	\`primary_github_avatar_url\` text,
+	\`updated_at\` integer NOT NULL,
+	CONSTRAINT "task_owner_singleton_id_check" CHECK("task_owner"."id" = 1)
 );
 `,
   } as const,

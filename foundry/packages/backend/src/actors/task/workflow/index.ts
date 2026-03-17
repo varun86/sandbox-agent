@@ -12,6 +12,7 @@ import {
   killWriteDbActivity,
 } from "./commands.js";
 import {
+  changeTaskOwnerManually,
   changeWorkspaceModel,
   closeWorkspaceSession,
   createWorkspaceSession,
@@ -173,6 +174,16 @@ export const taskCommandActions = {
 
   async renameTask(c: any, body: any) {
     await renameWorkspaceTask(c, body.value);
+    return { ok: true };
+  },
+
+  async changeOwner(c: any, body: any) {
+    await changeTaskOwnerManually(c, {
+      primaryUserId: body.primaryUserId,
+      primaryGithubLogin: body.primaryGithubLogin,
+      primaryGithubEmail: body.primaryGithubEmail,
+      primaryGithubAvatarUrl: body.primaryGithubAvatarUrl ?? null,
+    });
     return { ok: true };
   },
 

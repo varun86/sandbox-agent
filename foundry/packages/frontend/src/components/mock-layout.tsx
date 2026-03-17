@@ -42,7 +42,7 @@ import {
   type Message,
   type ModelId,
 } from "./mock-layout/view-model";
-import { activeMockOrganization, activeMockUser, useMockAppClient, useMockAppSnapshot } from "../lib/mock-app";
+import { activeMockOrganization, activeMockUser, getMockOrganizationById, useMockAppClient, useMockAppSnapshot } from "../lib/mock-app";
 import { backendClient } from "../lib/backend";
 import { subscriptionManager } from "../lib/subscription";
 import { describeTaskState, isProvisioningTaskStatus } from "../features/tasks/status";
@@ -188,6 +188,8 @@ function toTaskModel(
     fileTree: detail?.fileTree ?? [],
     minutesUsed: detail?.minutesUsed ?? 0,
     activeSandboxId: detail?.activeSandboxId ?? null,
+    primaryUserLogin: detail?.primaryUserLogin ?? summary.primaryUserLogin ?? null,
+    primaryUserAvatarUrl: detail?.primaryUserAvatarUrl ?? summary.primaryUserAvatarUrl ?? null,
   };
 }
 
@@ -264,6 +266,7 @@ interface WorkspaceActions {
   closeSession(input: { repoId: string; taskId: string; sessionId: string }): Promise<void>;
   addSession(input: { repoId: string; taskId: string; model?: string }): Promise<{ sessionId: string }>;
   changeModel(input: { repoId: string; taskId: string; sessionId: string; model: ModelId }): Promise<void>;
+  changeOwner(input: { repoId: string; taskId: string; targetUserId: string; targetUserName: string; targetUserEmail: string }): Promise<void>;
   adminReloadGithubOrganization(): Promise<void>;
   adminReloadGithubRepository(repoId: string): Promise<void>;
 }
@@ -1069,6 +1072,8 @@ const RightRail = memo(function RightRail({
   onArchive,
   onRevertFile,
   onPublishPr,
+  onChangeOwner,
+  members,
   onToggleSidebar,
 }: {
   organizationId: string;
@@ -1078,6 +1083,8 @@ const RightRail = memo(function RightRail({
   onArchive: () => void;
   onRevertFile: (path: string) => void;
   onPublishPr: () => void;
+  onChangeOwner: (member: { id: string; name: string; email: string }) => void;
+  members: Array<{ id: string; name: string; email: string }>;
   onToggleSidebar?: () => void;
 }) {
   const [css] = useStyletron();
@@ -1170,6 +1177,8 @@ const RightRail = memo(function RightRail({
           onArchive={onArchive}
           onRevertFile={onRevertFile}
           onPublishPr={onPublishPr}
+          onChangeOwner={onChangeOwner}
+          members={members}
           onToggleSidebar={onToggleSidebar}
         />
       </div>
@@ -1311,6 +1320,7 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
       closeSession: (input) => backendClient.closeWorkspaceSession(organizationId, input),
       addSession: (input) => backendClient.createWorkspaceSession(organizationId, input),
       changeModel: (input) => backendClient.changeWorkspaceModel(organizationId, input),
+      changeOwner: (input) => backendClient.changeWorkspaceTaskOwner(organizationId, input),
       adminReloadGithubOrganization: () => backendClient.adminReloadGithubOrganization(organizationId),
       adminReloadGithubRepository: (repoId) => backendClient.adminReloadGithubRepository(organizationId, repoId),
     }),
@@ -1741,6 +1751,22 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
     [tasks],
   );
 
+  const changeOwner = useCallback(
+    (member: { id: string; name: string; email: string }) => {
+      if (!activeTask) {
+        throw new Error("Cannot change owner without an active task");
+      }
+      void taskWorkspaceClient.changeOwner({
+        repoId: activeTask.repoId,
+        taskId: activeTask.id,
+        targetUserId: member.id,
+        targetUserName: member.name,
+        targetUserEmail: member.email,
+      });
+    },
+    [activeTask],
+  );
+
   const archiveTask = useCallback(() => {
     if (!activeTask) {
       throw new Error("Cannot archive without an active task");
@@ -2167,6 +2193,8 @@ export function MockLayout({ organizationId, selectedTaskId, selectedSessionId }
                 onArchive={archiveTask}
                 onRevertFile={revertFile}
                 onPublishPr={publishPr}
+                onChangeOwner={changeOwner}
+                members={getMockOrganizationById(appSnapshot, organizationId)?.members ?? []}
                 onToggleSidebar={() => setRightSidebarOpen(false)}
               />
             </div>
