@@ -228,7 +228,55 @@ export async function startBackend(options: BackendStartOptions = {}): Promise<v
     return session?.session?.id ?? null;
   };
 
+  // Deduplicate OAuth callback requests. The production proxy chain
+  // (Cloudflare -> Fastly -> Railway) retries callback requests when they take
+  // >10s. The first request deletes the verification record on success, so the
+  // retry fails with "verification not found" -> ?error=please_restart_the_process.
+  // This map tracks in-flight callbacks by state param so retries wait for and
+  // reuse the first request's response.
+  const inflightCallbacks = new Map<string, Promise<Response>>();
+
   app.all("/v1/auth/*", async (c) => {
+    const authPath = c.req.path;
+    const authMethod = c.req.method;
+    const isCallback = authPath.includes("/callback/");
+
+    // Deduplicate callback requests by OAuth state parameter
+    if (isCallback) {
+      const url = new URL(c.req.url);
+      const state = url.searchParams.get("state");
+      if (state) {
+        const existing = inflightCallbacks.get(state);
+        if (existing) {
+          logger.info({ path: authPath, state: state.slice(0, 8) + "..." }, "auth_callback_dedup");
+          const original = await existing;
+          return original.clone();
+        }
+
+        const promise = (async () => {
+          logger.info({ path: authPath, method: authMethod, state: state.slice(0, 8) + "..." }, "auth_callback_start");
+          const start = performance.now();
+          const response = await betterAuth.auth.handler(c.req.raw);
+          const durationMs = Math.round((performance.now() - start) * 100) / 100;
+          const location = response.headers.get("location");
+          logger.info({ path: authPath, status: response.status, durationMs, location: location ?? undefined }, "auth_callback_complete");
+          if (location && location.includes("error=")) {
+            logger.error({ path: authPath, status: response.status, durationMs, location }, "auth_callback_error_redirect");
+          }
+          return response;
+        })();
+
+        inflightCallbacks.set(state, promise);
+        try {
+          const response = await promise;
+          return response.clone();
+        } finally {
+          // Keep entry briefly so late retries still hit the cache
+          setTimeout(() => inflightCallbacks.delete(state), 30_000);
+        }
+      }
+    }
+
     return await betterAuth.auth.handler(c.req.raw);
   });
 
