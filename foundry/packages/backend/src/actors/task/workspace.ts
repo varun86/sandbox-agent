@@ -14,10 +14,12 @@ import { logActorWarning, resolveErrorMessage } from "../logging.js";
 import { SANDBOX_REPO_CWD } from "../sandbox/index.js";
 import { resolveSandboxProviderId } from "../../sandbox-config.js";
 import { getBetterAuthService } from "../../services/better-auth.js";
-// expectQueueResponse removed — actions return values directly
 import { resolveOrganizationGithubAuth } from "../../services/github-auth.js";
 import { githubRepoFullNameFromRemote } from "../../services/repo.js";
-// organization actions called directly (no queue)
+import { taskWorkflowQueueName } from "./workflow/queue.js";
+import { expectQueueResponse } from "../../services/queue.js";
+import { userWorkflowQueueName } from "../user/workflow.js";
+import { organizationWorkflowQueueName } from "../organization/queues.js";
 
 import { task as taskTable, taskOwner, taskRuntime, taskSandboxes, taskWorkspaceSessions } from "./db/schema.js";
 import { getCurrentRecord } from "./workflow/common.js";
@@ -123,9 +125,7 @@ function parseGitState(value: string | null | undefined): { fileChanges: Array<a
   }
 }
 
-async function readTaskOwner(
-  c: any,
-): Promise<{
+async function readTaskOwner(c: any): Promise<{
   primaryUserId: string | null;
   primaryGithubLogin: string | null;
   primaryGithubEmail: string | null;
@@ -427,11 +427,17 @@ async function upsertUserTaskState(c: any, authSessionId: string | null | undefi
   }
 
   const user = await getOrCreateUser(c, userId);
-  await user.taskStateUpsert({
-    taskId: c.state.taskId,
-    sessionId,
-    patch,
-  });
+  expectQueueResponse(
+    await user.send(
+      userWorkflowQueueName("user.command.task_state.upsert"),
+      {
+        taskId: c.state.taskId,
+        sessionId,
+        patch,
+      },
+      { wait: true, timeout: 10_000 },
+    ),
+  );
 }
 
 async function deleteUserTaskState(c: any, authSessionId: string | null | undefined, sessionId: string): Promise<void> {
@@ -446,10 +452,14 @@ async function deleteUserTaskState(c: any, authSessionId: string | null | undefi
   }
 
   const user = await getOrCreateUser(c, userId);
-  await user.taskStateDelete({
-    taskId: c.state.taskId,
-    sessionId,
-  });
+  await user.send(
+    userWorkflowQueueName("user.command.task_state.delete"),
+    {
+      taskId: c.state.taskId,
+      sessionId,
+    },
+    { wait: true, timeout: 10_000 },
+  );
 }
 
 async function resolveDefaultModel(c: any, authSessionId?: string | null): Promise<string> {
@@ -932,17 +942,13 @@ async function enqueueWorkspaceRefresh(
   command: "task.command.workspace.refresh_derived" | "task.command.workspace.refresh_session_transcript",
   body: Record<string, unknown>,
 ): Promise<void> {
-  // Call directly since we're inside the task actor (no queue needed)
-  if (command === "task.command.workspace.refresh_derived") {
-    void refreshWorkspaceDerivedState(c).catch(() => {});
-  } else {
-    void refreshWorkspaceSessionTranscript(c, body.sessionId as string).catch(() => {});
-  }
+  const self = selfTask(c);
+  await self.send(taskWorkflowQueueName(command as any), body, { wait: false });
 }
 
 async function enqueueWorkspaceEnsureSession(c: any, sessionId: string): Promise<void> {
-  // Call directly since we're inside the task actor
-  void ensureWorkspaceSession(c, sessionId).catch(() => {});
+  const self = selfTask(c);
+  await self.send(taskWorkflowQueueName("task.command.workspace.ensure_session" as any), { sessionId }, { wait: false });
 }
 
 function pendingWorkspaceSessionStatus(record: any): "pending_provision" | "pending_session_create" {
@@ -1166,7 +1172,11 @@ export async function getSessionDetail(c: any, sessionId: string, authSessionId?
  */
 export async function broadcastTaskUpdate(c: any, options?: { sessionId?: string }): Promise<void> {
   const organization = await getOrCreateOrganization(c, c.state.organizationId);
-  await organization.commandApplyTaskSummaryUpdate({ taskSummary: await buildTaskSummary(c) });
+  await organization.send(
+    organizationWorkflowQueueName("organization.command.applyTaskSummaryUpdate"),
+    { taskSummary: await buildTaskSummary(c) },
+    { wait: false },
+  );
   c.broadcast("taskUpdated", {
     type: "taskUpdated",
     detail: await buildTaskDetail(c),
@@ -1307,8 +1317,9 @@ export async function enqueuePendingWorkspaceSessions(c: any): Promise<void> {
     (row) => row.closed !== true && row.status !== "ready" && row.status !== "error",
   );
 
+  const self = selfTask(c);
   for (const row of pending) {
-    void ensureWorkspaceSession(c, row.sessionId, row.model).catch(() => {});
+    await self.send(taskWorkflowQueueName("task.command.workspace.ensure_session" as any), { sessionId: row.sessionId, model: row.model }, { wait: false });
   }
 }
 

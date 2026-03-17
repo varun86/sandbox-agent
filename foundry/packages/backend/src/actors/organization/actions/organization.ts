@@ -1,7 +1,6 @@
 import type { FoundryAppSnapshot, UpdateFoundryOrganizationProfileInput, WorkspaceModelId } from "@sandbox-agent/foundry-shared";
 import { getBetterAuthService } from "../../../services/better-auth.js";
 import { getOrCreateOrganization } from "../../handles.js";
-// actions called directly (no queue)
 import {
   assertAppOrganization,
   assertOrganizationShell,
@@ -11,7 +10,7 @@ import {
   requireEligibleOrganization,
   requireSignedInSession,
 } from "../app-shell.js";
-// org queue names removed — using direct actions
+import { organizationWorkflowQueueName } from "../queues.js";
 
 export const organizationShellActions = {
   async getAppSnapshot(c: any, input: { sessionId: string }): Promise<FoundryAppSnapshot> {
@@ -35,11 +34,15 @@ export const organizationShellActions = {
     const session = await requireSignedInSession(c, input.sessionId);
     requireEligibleOrganization(session, input.organizationId);
     const organization = await getOrCreateOrganization(c, input.organizationId);
-    await organization.commandUpdateShellProfile({
-      displayName: input.displayName,
-      slug: input.slug,
-      primaryDomain: input.primaryDomain,
-    });
+    await organization.send(
+      organizationWorkflowQueueName("organization.command.shell.profile.update"),
+      {
+        displayName: input.displayName,
+        slug: input.slug,
+        primaryDomain: input.primaryDomain,
+      },
+      { wait: true, timeout: 10_000 },
+    );
     return await buildAppSnapshot(c, input.sessionId);
   },
 

@@ -1,4 +1,16 @@
+// @ts-nocheck
+/**
+ * Task workflow — queue-based command loop.
+ *
+ * Mutations are dispatched through named queues and processed inside the
+ * workflow command loop so that every command appears in the RivetKit
+ * inspector's workflow history. Read actions remain direct (no queue).
+ *
+ * Callers send commands directly via `.send(taskWorkflowQueueName(...), ...)`.
+ */
+import { Loop } from "rivetkit/workflow";
 import { logActorWarning, resolveErrorMessage } from "../../logging.js";
+import { TASK_QUEUE_NAMES, type TaskQueueName, taskWorkflowQueueName } from "./queue.js";
 import { getCurrentRecord } from "./common.js";
 import { initBootstrapDbActivity, initCompleteActivity, initEnqueueProvisionActivity, initFailedActivity } from "./init.js";
 import {
@@ -35,241 +47,210 @@ import {
 
 export { taskWorkflowQueueName } from "./queue.js";
 
-/**
- * Task command actions — converted from queue/workflow handlers to direct actions.
- * Each export becomes an action on the task actor.
- */
-export const taskCommandActions = {
-  async initialize(c: any, body: any) {
-    await initBootstrapDbActivity(c, body);
-    await initEnqueueProvisionActivity(c, body);
-    return await getCurrentRecord(c);
+// ---------------------------------------------------------------------------
+// Workflow command loop — runs inside `run: workflow(runTaskWorkflow)`
+// ---------------------------------------------------------------------------
+
+type WorkflowHandler = (loopCtx: any, msg: any) => Promise<void>;
+
+const COMMAND_HANDLERS: Record<TaskQueueName, WorkflowHandler> = {
+  "task.command.initialize": async (loopCtx, msg) => {
+    await initBootstrapDbActivity(loopCtx, msg.body);
+    await initEnqueueProvisionActivity(loopCtx, msg.body);
+    const record = await getCurrentRecord(loopCtx);
+    await msg.complete(record);
   },
 
-  async provision(c: any, body: any) {
+  "task.command.provision": async (loopCtx, msg) => {
     try {
-      await initCompleteActivity(c, body);
-      return { ok: true };
+      await initCompleteActivity(loopCtx, msg.body);
+      await msg.complete({ ok: true });
     } catch (error) {
-      await initFailedActivity(c, error, body);
-      return { ok: false, error: resolveErrorMessage(error) };
+      await initFailedActivity(loopCtx, error, msg.body);
+      await msg.complete({ ok: false, error: resolveErrorMessage(error) });
     }
   },
 
-  async attach(c: any, body: any) {
-    // handleAttachActivity expects msg with complete — adapt
-    const result = { value: undefined as any };
-    const msg = {
-      name: "task.command.attach",
-      body,
-      complete: async (v: any) => {
-        result.value = v;
-      },
-    };
-    await handleAttachActivity(c, msg);
-    return result.value;
+  "task.command.attach": async (loopCtx, msg) => {
+    await handleAttachActivity(loopCtx, msg);
   },
 
-  async switchTask(c: any, body: any) {
-    const result = { value: undefined as any };
-    const msg = {
-      name: "task.command.switch",
-      body,
-      complete: async (v: any) => {
-        result.value = v;
-      },
-    };
-    await handleSwitchActivity(c, msg);
-    return result.value;
+  "task.command.switch": async (loopCtx, msg) => {
+    await handleSwitchActivity(loopCtx, msg);
   },
 
-  async push(c: any, body: any) {
-    const result = { value: undefined as any };
-    const msg = {
-      name: "task.command.push",
-      body,
-      complete: async (v: any) => {
-        result.value = v;
-      },
-    };
-    await handlePushActivity(c, msg);
-    return result.value;
+  "task.command.push": async (loopCtx, msg) => {
+    await handlePushActivity(loopCtx, msg);
   },
 
-  async sync(c: any, body: any) {
-    const result = { value: undefined as any };
-    const msg = {
-      name: "task.command.sync",
-      body,
-      complete: async (v: any) => {
-        result.value = v;
-      },
-    };
-    await handleSimpleCommandActivity(c, msg, "task.sync");
-    return result.value;
+  "task.command.sync": async (loopCtx, msg) => {
+    await handleSimpleCommandActivity(loopCtx, msg, "task.sync");
   },
 
-  async merge(c: any, body: any) {
-    const result = { value: undefined as any };
-    const msg = {
-      name: "task.command.merge",
-      body,
-      complete: async (v: any) => {
-        result.value = v;
-      },
-    };
-    await handleSimpleCommandActivity(c, msg, "task.merge");
-    return result.value;
+  "task.command.merge": async (loopCtx, msg) => {
+    await handleSimpleCommandActivity(loopCtx, msg, "task.merge");
   },
 
-  async archive(c: any, body: any) {
-    const result = { value: undefined as any };
-    const msg = {
-      name: "task.command.archive",
-      body,
-      complete: async (v: any) => {
-        result.value = v;
-      },
-    };
-    await handleArchiveActivity(c, msg);
-    return result.value;
+  "task.command.archive": async (loopCtx, msg) => {
+    await handleArchiveActivity(loopCtx, msg);
   },
 
-  async kill(c: any, body: any) {
-    const result = { value: undefined as any };
-    const msg = {
-      name: "task.command.kill",
-      body,
-      complete: async (v: any) => {
-        result.value = v;
-      },
-    };
-    await killDestroySandboxActivity(c);
-    await killWriteDbActivity(c, msg);
-    return result.value;
+  "task.command.kill": async (loopCtx, msg) => {
+    await killDestroySandboxActivity(loopCtx);
+    await killWriteDbActivity(loopCtx, msg);
   },
 
-  async getRecord(c: any, body: any) {
-    const result = { value: undefined as any };
-    const msg = {
-      name: "task.command.get",
-      body,
-      complete: async (v: any) => {
-        result.value = v;
-      },
-    };
-    await handleGetActivity(c, msg);
-    return result.value;
+  "task.command.get": async (loopCtx, msg) => {
+    await handleGetActivity(loopCtx, msg);
   },
 
-  async pullRequestSync(c: any, body: any) {
-    await syncTaskPullRequest(c, body?.pullRequest ?? null);
-    return { ok: true };
+  "task.command.pull_request.sync": async (loopCtx, msg) => {
+    await syncTaskPullRequest(loopCtx, msg.body?.pullRequest ?? null);
+    await msg.complete({ ok: true });
   },
 
-  async markUnread(c: any, body: any) {
-    await markWorkspaceUnread(c, body?.authSessionId);
-    return { ok: true };
+  "task.command.workspace.mark_unread": async (loopCtx, msg) => {
+    await markWorkspaceUnread(loopCtx, msg.body?.authSessionId);
+    await msg.complete({ ok: true });
   },
 
-  async renameTask(c: any, body: any) {
-    await renameWorkspaceTask(c, body.value);
-    return { ok: true };
+  "task.command.workspace.rename_task": async (loopCtx, msg) => {
+    await renameWorkspaceTask(loopCtx, msg.body.value);
+    await msg.complete({ ok: true });
   },
 
-  async changeOwner(c: any, body: any) {
-    await changeTaskOwnerManually(c, {
-      primaryUserId: body.primaryUserId,
-      primaryGithubLogin: body.primaryGithubLogin,
-      primaryGithubEmail: body.primaryGithubEmail,
-      primaryGithubAvatarUrl: body.primaryGithubAvatarUrl ?? null,
-    });
-    return { ok: true };
+  "task.command.workspace.create_session": async (loopCtx, msg) => {
+    const result = await createWorkspaceSession(loopCtx, msg.body?.model, msg.body?.authSessionId);
+    await msg.complete(result);
   },
 
-  async createSession(c: any, body: any) {
-    return await createWorkspaceSession(c, body?.model, body?.authSessionId);
-  },
-
-  async createSessionAndSend(c: any, body: any) {
+  "task.command.workspace.create_session_and_send": async (loopCtx, msg) => {
     try {
-      const created = await createWorkspaceSession(c, body?.model, body?.authSessionId);
-      await sendWorkspaceMessage(c, created.sessionId, body.text, [], body?.authSessionId);
+      const created = await createWorkspaceSession(loopCtx, msg.body?.model, msg.body?.authSessionId);
+      await sendWorkspaceMessage(loopCtx, created.sessionId, msg.body.text, [], msg.body?.authSessionId);
     } catch (error) {
       logActorWarning("task.workflow", "create_session_and_send failed", {
         error: resolveErrorMessage(error),
       });
     }
-    return { ok: true };
+    await msg.complete({ ok: true });
   },
 
-  async ensureSession(c: any, body: any) {
-    await ensureWorkspaceSession(c, body.sessionId, body?.model, body?.authSessionId);
-    return { ok: true };
+  "task.command.workspace.ensure_session": async (loopCtx, msg) => {
+    await ensureWorkspaceSession(loopCtx, msg.body.sessionId, msg.body?.model, msg.body?.authSessionId);
+    await msg.complete({ ok: true });
   },
 
-  async renameSession(c: any, body: any) {
-    await renameWorkspaceSession(c, body.sessionId, body.title);
-    return { ok: true };
+  "task.command.workspace.rename_session": async (loopCtx, msg) => {
+    await renameWorkspaceSession(loopCtx, msg.body.sessionId, msg.body.title);
+    await msg.complete({ ok: true });
   },
 
-  async selectSession(c: any, body: any) {
-    await selectWorkspaceSession(c, body.sessionId, body?.authSessionId);
-    return { ok: true };
+  "task.command.workspace.select_session": async (loopCtx, msg) => {
+    await selectWorkspaceSession(loopCtx, msg.body.sessionId, msg.body?.authSessionId);
+    await msg.complete({ ok: true });
   },
 
-  async setSessionUnread(c: any, body: any) {
-    await setWorkspaceSessionUnread(c, body.sessionId, body.unread, body?.authSessionId);
-    return { ok: true };
+  "task.command.workspace.set_session_unread": async (loopCtx, msg) => {
+    await setWorkspaceSessionUnread(loopCtx, msg.body.sessionId, msg.body.unread, msg.body?.authSessionId);
+    await msg.complete({ ok: true });
   },
 
-  async updateDraft(c: any, body: any) {
-    await updateWorkspaceDraft(c, body.sessionId, body.text, body.attachments, body?.authSessionId);
-    return { ok: true };
+  "task.command.workspace.update_draft": async (loopCtx, msg) => {
+    await updateWorkspaceDraft(loopCtx, msg.body.sessionId, msg.body.text, msg.body.attachments, msg.body?.authSessionId);
+    await msg.complete({ ok: true });
   },
 
-  async changeModel(c: any, body: any) {
-    await changeWorkspaceModel(c, body.sessionId, body.model, body?.authSessionId);
-    return { ok: true };
+  "task.command.workspace.change_model": async (loopCtx, msg) => {
+    await changeWorkspaceModel(loopCtx, msg.body.sessionId, msg.body.model, msg.body?.authSessionId);
+    await msg.complete({ ok: true });
   },
 
-  async sendMessage(c: any, body: any) {
-    await sendWorkspaceMessage(c, body.sessionId, body.text, body.attachments, body?.authSessionId);
-    return { ok: true };
+  "task.command.workspace.send_message": async (loopCtx, msg) => {
+    await sendWorkspaceMessage(loopCtx, msg.body.sessionId, msg.body.text, msg.body.attachments, msg.body?.authSessionId);
+    await msg.complete({ ok: true });
   },
 
-  async stopSession(c: any, body: any) {
-    await stopWorkspaceSession(c, body.sessionId);
-    return { ok: true };
+  "task.command.workspace.stop_session": async (loopCtx, msg) => {
+    await stopWorkspaceSession(loopCtx, msg.body.sessionId);
+    await msg.complete({ ok: true });
   },
 
-  async syncSessionStatus(c: any, body: any) {
-    await syncWorkspaceSessionStatus(c, body.sessionId, body.status, body.at);
-    return { ok: true };
+  "task.command.workspace.sync_session_status": async (loopCtx, msg) => {
+    await syncWorkspaceSessionStatus(loopCtx, msg.body.sessionId, msg.body.status, msg.body.at);
+    await msg.complete({ ok: true });
   },
 
-  async refreshDerived(c: any, _body: any) {
-    await refreshWorkspaceDerivedState(c);
-    return { ok: true };
+  "task.command.workspace.refresh_derived": async (loopCtx, msg) => {
+    await refreshWorkspaceDerivedState(loopCtx);
+    await msg.complete({ ok: true });
   },
 
-  async refreshSessionTranscript(c: any, body: any) {
-    await refreshWorkspaceSessionTranscript(c, body.sessionId);
-    return { ok: true };
+  "task.command.workspace.refresh_session_transcript": async (loopCtx, msg) => {
+    await refreshWorkspaceSessionTranscript(loopCtx, msg.body.sessionId);
+    await msg.complete({ ok: true });
   },
 
-  async closeSession(c: any, body: any) {
-    await closeWorkspaceSession(c, body.sessionId, body?.authSessionId);
-    return { ok: true };
+  "task.command.workspace.close_session": async (loopCtx, msg) => {
+    await closeWorkspaceSession(loopCtx, msg.body.sessionId, msg.body?.authSessionId);
+    await msg.complete({ ok: true });
   },
 
-  async publishPr(c: any, _body: any) {
-    await publishWorkspacePr(c);
-    return { ok: true };
+  "task.command.workspace.publish_pr": async (loopCtx, msg) => {
+    await publishWorkspacePr(loopCtx);
+    await msg.complete({ ok: true });
   },
 
-  async revertFile(c: any, body: any) {
-    await revertWorkspaceFile(c, body.path);
-    return { ok: true };
+  "task.command.workspace.revert_file": async (loopCtx, msg) => {
+    await revertWorkspaceFile(loopCtx, msg.body.path);
+    await msg.complete({ ok: true });
+  },
+
+  "task.command.workspace.change_owner": async (loopCtx, msg) => {
+    await changeTaskOwnerManually(loopCtx, {
+      primaryUserId: msg.body.primaryUserId,
+      primaryGithubLogin: msg.body.primaryGithubLogin,
+      primaryGithubEmail: msg.body.primaryGithubEmail,
+      primaryGithubAvatarUrl: msg.body.primaryGithubAvatarUrl ?? null,
+    });
+    await msg.complete({ ok: true });
   },
 };
+
+export async function runTaskWorkflow(ctx: any): Promise<void> {
+  await ctx.loop("task-command-loop", async (loopCtx: any) => {
+    const msg = await loopCtx.queue.next("next-task-command", {
+      names: [...TASK_QUEUE_NAMES],
+      completable: true,
+    });
+
+    if (!msg) {
+      return Loop.continue(undefined);
+    }
+
+    const handler = COMMAND_HANDLERS[msg.name as TaskQueueName];
+    if (!handler) {
+      logActorWarning("task.workflow", "unknown task command", { command: msg.name });
+      await msg.complete({ error: `Unknown command: ${msg.name}` }).catch(() => {});
+      return Loop.continue(undefined);
+    }
+
+    try {
+      // Wrap in a step so c.state and c.db are accessible inside mutation functions.
+      await loopCtx.step({
+        name: msg.name,
+        timeout: 10 * 60_000,
+        run: async () => handler(loopCtx, msg),
+      });
+    } catch (error) {
+      const message = resolveErrorMessage(error);
+      logActorWarning("task.workflow", "task workflow command failed", {
+        command: msg.name,
+        error: message,
+      });
+      await msg.complete({ error: message }).catch(() => {});
+    }
+
+    return Loop.continue(undefined);
+  });
+}

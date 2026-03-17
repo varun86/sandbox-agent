@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { getActorRuntimeContext } from "../../context.js";
 import { selfTask } from "../../handles.js";
 import { resolveErrorMessage } from "../../logging.js";
+import { taskWorkflowQueueName } from "./queue.js";
 import { defaultSandboxProviderId } from "../../../sandbox-config.js";
 import { task as taskTable, taskRuntime } from "../db/schema.js";
 import { TASK_ROW_ID, appendAuditLog, collectErrorMessages, resolveErrorDetail, setTaskState } from "./common.js";
@@ -72,7 +73,7 @@ export async function initEnqueueProvisionActivity(loopCtx: any, body: any): Pro
 
   const self = selfTask(loopCtx);
   try {
-    void self.provision(body).catch(() => {});
+    void self.send(taskWorkflowQueueName("task.command.provision"), body ?? {}, { wait: false }).catch(() => {});
   } catch (error) {
     logActorWarning("task.init", "background provision command failed", {
       organizationId: loopCtx.state.organizationId,

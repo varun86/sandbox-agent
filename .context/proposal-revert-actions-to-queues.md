@@ -7,10 +7,10 @@ We converted all actors from queue/workflow-based communication to direct action
 ## Reference branches
 
 - **`main`** at commit `32f3c6c3` — the original queue/workflow code BEFORE the actions refactor
-- **`queues-to-actions`** — the current refactored code using direct actions
-- **`task-owner-git-auth`** at commit `f45a4674` — the merged PR #262 that introduced the actions pattern
+- **`queues-to-actions`** — the actions refactor code with bug fixes (E2B, lazy tasks, etc.)
+- **`task-owner-git-auth`** at commit `3684e2e5` — the CURRENT branch with all work including task owner system, lazy tasks, and actions refactor
 
-Use `main` as the reference for the queue/workflow communication patterns. Use `queues-to-actions` as the reference for bug fixes and new features that MUST be preserved.
+Use `main` as the reference for the queue/workflow communication patterns. Use `task-owner-git-auth` (current HEAD) as the authoritative source for ALL features and bug fixes that MUST be preserved — it has everything from `queues-to-actions` plus the task owner system.
 
 ## What to KEEP (do NOT revert these)
 
@@ -60,6 +60,32 @@ These are bug fixes and improvements made during the actions refactor that are i
 - The audit-log actor was simplified to a single `append` action
 - Keep this simplification — audit-log doesn't need a workflow
 
+### 11. Task owner (primary user) system
+- New `task_owner` single-row table in task actor DB schema (`foundry/packages/backend/src/actors/task/db/schema.ts`) — stores `primaryUserId`, `primaryGithubLogin`, `primaryGithubEmail`, `primaryGithubAvatarUrl`
+- New migration in `foundry/packages/backend/src/actors/task/db/migrations.ts` creating the `task_owner` table
+- `primaryUserLogin` and `primaryUserAvatarUrl` columns added to org's `taskSummaries` table (`foundry/packages/backend/src/actors/organization/db/schema.ts`) + corresponding migration
+- `readTaskOwner()`, `upsertTaskOwner()` helpers in `workspace.ts`
+- `maybeSwapTaskOwner()` — called from `sendWorkspaceMessage()`, checks if a different user is sending and swaps owner + injects git credentials into sandbox
+- `changeTaskOwnerManually()` — called from the new `changeOwner` action on the task actor, updates owner without injecting credentials (credentials injected on next message from that user)
+- `injectGitCredentials()` — pushes `git config user.name/email` + credential store file into the sandbox via `runProcess`
+- `resolveGithubIdentity()` — resolves user's GitHub login/email/avatar/accessToken from their auth session
+- `buildTaskSummary()` now includes `primaryUserLogin` and `primaryUserAvatarUrl` in the summary pushed to org coordinator
+- New `changeOwner` action on task actor in `workflow/index.ts`
+- New `changeWorkspaceTaskOwner` action on org actor in `actions/tasks.ts`
+- New `TaskWorkspaceChangeOwnerInput` type in shared types (`foundry/packages/shared/src/workspace.ts`)
+- `TaskSummary` type extended with `primaryUserLogin` and `primaryUserAvatarUrl`
+
+### 12. Task owner UI
+- New "Overview" tab in right sidebar (`foundry/packages/frontend/src/components/mock-layout/right-sidebar.tsx`) — shows current owner with avatar, click to open dropdown of org members to change owner
+- `onChangeOwner` and `members` props added to `RightSidebar` component
+- Primary user login shown in green in left sidebar task items (`foundry/packages/frontend/src/components/mock-layout/sidebar.tsx`)
+- `changeWorkspaceTaskOwner` method added to backend client and workspace client interfaces
+
+### 13. Client changes for task owner
+- `changeWorkspaceTaskOwner()` added to `backend-client.ts` and all workspace client implementations (mock, remote)
+- Mock workspace client implements the owner change
+- Subscription manager test updated for new task summary shape
+
 ## What to REVERT (communication pattern only)
 
 For each actor, revert from direct action calls back to queue sends with `expectQueueResponse` / fire-and-forget patterns. The reference for the queue patterns is `main` at `32f3c6c3`.
@@ -86,6 +112,7 @@ For each actor, revert from direct action calls back to queue sends with `expect
 - Keep `requireWorkspaceTask` using `getOrCreate`
 - Keep `getTask` using `getOrCreate` with `resolveTaskRepoId`
 - Keep `getTaskIndexEntry`
+- Keep `changeWorkspaceTaskOwner` (new action — delegates to task actor's `changeOwner`)
 - Revert task actor calls from direct actions to queue sends where applicable
 
 **`actions/task-mutations.ts`:**
@@ -109,9 +136,14 @@ For each actor, revert from direct action calls back to queue sends with `expect
 **`workflow/index.ts`:**
 - Restore `taskCommandActions` as queue handlers in the workflow command loop
 - Restore `TASK_QUEUE_NAMES` and dispatch map
+- Add `changeOwner` to the queue dispatch map (new command, not in `main` — add as `task.command.changeOwner`)
 
 **`workspace.ts`:**
 - Revert sandbox/org action calls back to queue sends where they were queue-based before
+- Keep ALL task owner code: `readTaskOwner`, `upsertTaskOwner`, `maybeSwapTaskOwner`, `changeTaskOwnerManually`, `injectGitCredentials`, `resolveGithubIdentity`
+- Keep the `authSessionId` param added to `ensureSandboxRepo`
+- Keep the `maybeSwapTaskOwner` call in `sendWorkspaceMessage`
+- Keep `primaryUserLogin`/`primaryUserAvatarUrl` in `buildTaskSummary`
 
 ### 3. User actor (`foundry/packages/backend/src/actors/user/`)
 
@@ -163,3 +195,8 @@ For each actor, revert from direct action calls back to queue sends with `expect
 - [ ] No 500 errors in backend logs (except expected E2B sandbox expiry)
 - [ ] Workflow history visible in RivetKit inspector for org, task, user actors
 - [ ] CLAUDE.md constraints still documented and respected
+- [ ] Task owner shows in right sidebar "Overview" tab
+- [ ] Owner dropdown shows org members and allows switching
+- [ ] Sending a message as a different user swaps the owner
+- [ ] Primary user login shown in green on sidebar task items
+- [ ] Git credentials injected into sandbox on owner swap (check `/home/user/.git-token` exists)

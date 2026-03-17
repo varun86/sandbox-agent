@@ -1,6 +1,7 @@
 import { desc } from "drizzle-orm";
 import type { FoundryAppSnapshot } from "@sandbox-agent/foundry-shared";
 import { getOrCreateGithubData, getOrCreateOrganization } from "../../handles.js";
+import { githubDataWorkflowQueueName } from "../../github-data/index.js";
 import { authSessionIndex } from "../db/schema.js";
 import {
   assertAppOrganization,
@@ -11,6 +12,7 @@ import {
 } from "../app-shell.js";
 import { getBetterAuthService } from "../../../services/better-auth.js";
 import { refreshOrganizationSnapshotMutation } from "../actions.js";
+import { organizationWorkflowQueueName } from "../queues.js";
 
 export const organizationGithubActions = {
   async resolveAppGithubToken(
@@ -58,21 +60,27 @@ export const organizationGithubActions = {
     }
 
     const organizationHandle = await getOrCreateOrganization(c, input.organizationId);
-    await organizationHandle.commandMarkSyncStarted({ label: "Importing repository catalog..." });
-    await organizationHandle.commandBroadcastSnapshot({});
+    await organizationHandle.send(
+      organizationWorkflowQueueName("organization.command.shell.sync_started.mark"),
+      { label: "Importing repository catalog..." },
+      { wait: false },
+    );
+    await organizationHandle.send(organizationWorkflowQueueName("organization.command.snapshot.broadcast"), {}, { wait: false });
 
-    void githubData.syncRepos({ label: "Importing repository catalog..." }).catch(() => {});
+    void githubData
+      .send(githubDataWorkflowQueueName("githubData.command.syncRepos"), { label: "Importing repository catalog..." }, { wait: false })
+      .catch(() => {});
 
     return await buildAppSnapshot(c, input.sessionId);
   },
 
   async adminReloadGithubOrganization(c: any): Promise<void> {
     const githubData = await getOrCreateGithubData(c, c.state.organizationId);
-    await githubData.syncRepos({ label: "Reloading GitHub organization..." });
+    await githubData.send(githubDataWorkflowQueueName("githubData.command.syncRepos"), { label: "Reloading GitHub organization..." }, { wait: false });
   },
 
   async adminReloadGithubRepository(c: any, input: { repoId: string }): Promise<void> {
     const githubData = await getOrCreateGithubData(c, c.state.organizationId);
-    await githubData.reloadRepository(input);
+    await githubData.send(githubDataWorkflowQueueName("githubData.command.reloadRepository"), input, { wait: false });
   },
 };

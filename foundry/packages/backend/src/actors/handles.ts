@@ -79,3 +79,7 @@ export function selfUser(c: any) {
 export function selfGithubData(c: any) {
   return actorClient(c).githubData.getForId(c.actorId);
 }
+
+export function selfTaskSandbox(c: any) {
+  return actorClient(c).taskSandbox.getForId(c.actorId);
+}
