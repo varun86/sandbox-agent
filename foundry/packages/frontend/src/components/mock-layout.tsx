@@ -187,6 +187,7 @@ function toTaskModel(
     diffs: detail?.diffs ?? {},
     fileTree: detail?.fileTree ?? [],
     minutesUsed: detail?.minutesUsed ?? 0,
+    sandboxes: detail?.sandboxes ?? [],
     activeSandboxId: detail?.activeSandboxId ?? null,
     primaryUserLogin: detail?.primaryUserLogin ?? summary.primaryUserLogin ?? null,
     primaryUserAvatarUrl: detail?.primaryUserAvatarUrl ?? summary.primaryUserAvatarUrl ?? null,

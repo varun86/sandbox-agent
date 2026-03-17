@@ -21,6 +21,9 @@ RUN curl -fsSL "https://releases.rivet.dev/sandbox-agent/${SANDBOX_AGENT_VERSION
 
 ENV PATH="/root/.local/bin:${PATH}"
 ENV SANDBOX_AGENT_BIN="/root/.local/bin/sandbox-agent"
+ENV RIVET_RUNNER_VERSION_FILE=/etc/foundry/rivet-runner-version
+RUN mkdir -p /etc/foundry \
+  && date +%s > /etc/foundry/rivet-runner-version
 
 WORKDIR /app
 

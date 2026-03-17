@@ -10,7 +10,7 @@ import {
 } from "@sandbox-agent/foundry-shared";
 import { getActorRuntimeContext } from "../context.js";
 import { getOrCreateOrganization, getOrCreateTaskSandbox, getOrCreateUser, getTaskSandbox, selfTask } from "../handles.js";
-import { logActorWarning, resolveErrorMessage } from "../logging.js";
+import { logActorInfo, logActorWarning, resolveErrorMessage } from "../logging.js";
 import { SANDBOX_REPO_CWD } from "../sandbox/index.js";
 import { resolveSandboxProviderId } from "../../sandbox-config.js";
 import { getBetterAuthService } from "../../services/better-auth.js";
@@ -636,11 +636,17 @@ async function ensureSandboxRepo(c: any, sandbox: any, record: any, opts?: { ski
   // If the repo was already prepared and the caller allows skipping fetch, just return.
   // The clone, fetch, and checkout already happened on a prior call.
   if (opts?.skipFetchIfPrepared && sandboxRepoPrepared) {
+    logActorInfo("task.sandbox", "ensureSandboxRepo skipped (already prepared)");
     return;
   }
 
+  const repoStart = performance.now();
+
+  const t0 = performance.now();
   const auth = await resolveOrganizationGithubAuth(c, c.state.organizationId);
   const metadata = await getRepositoryMetadata(c);
+  logActorInfo("task.sandbox", "resolveAuth+metadata", { durationMs: Math.round(performance.now() - t0) });
+
   const baseRef = metadata.defaultBranch ?? "main";
   const sandboxRepoRoot = dirname(SANDBOX_REPO_CWD);
   const script = [
@@ -657,6 +663,8 @@ async function ensureSandboxRepo(c: any, sandbox: any, record: any, opts?: { ski
     )}; else target_ref=${JSON.stringify(baseRef)}; fi`,
     `git checkout -B ${JSON.stringify(record.branchName)} \"$target_ref\"`,
   ];
+
+  const t1 = performance.now();
   const result = await sandbox.runProcess({
     command: "bash",
     args: ["-lc", script.join("; ")],
@@ -669,6 +677,11 @@ async function ensureSandboxRepo(c: any, sandbox: any, record: any, opts?: { ski
       : undefined,
     timeoutMs: 5 * 60_000,
   });
+  logActorInfo("task.sandbox", "git clone/fetch/checkout", {
+    branch: record.branchName,
+    repo: metadata.remoteUrl,
+    durationMs: Math.round(performance.now() - t1),
+  });
 
   if ((result.exitCode ?? 0) !== 0) {
     throw new Error(`sandbox repo preparation failed (${result.exitCode ?? 1}): ${[result.stdout, result.stderr].filter(Boolean).join("")}`);
@@ -677,10 +690,13 @@ async function ensureSandboxRepo(c: any, sandbox: any, record: any, opts?: { ski
   // On first repo preparation, inject the task owner's git credentials into the sandbox
   // so that push/commit operations are authenticated and attributed to the correct user.
   if (!sandboxRepoPrepared && opts?.authSessionId) {
+    const t2 = performance.now();
     await maybeSwapTaskOwner(c, opts.authSessionId, sandbox);
+    logActorInfo("task.sandbox", "maybeSwapTaskOwner", { durationMs: Math.round(performance.now() - t2) });
   }
 
   sandboxRepoPrepared = true;
+  logActorInfo("task.sandbox", "ensureSandboxRepo complete", { totalDurationMs: Math.round(performance.now() - repoStart) });
 }
 
 async function executeInSandbox(
@@ -1264,6 +1280,7 @@ export async function createWorkspaceSession(c: any, model?: string, authSession
 }
 
 export async function ensureWorkspaceSession(c: any, sessionId: string, model?: string, authSessionId?: string): Promise<void> {
+  const ensureStart = performance.now();
   const meta = await readSessionMeta(c, sessionId);
   if (!meta || meta.closed) {
     return;
@@ -1283,10 +1300,18 @@ export async function ensureWorkspaceSession(c: any, sessionId: string, model?: 
   });
 
   try {
+    const t0 = performance.now();
     const runtime = await getTaskSandboxRuntime(c, record);
+    logActorInfo("task.session", "getTaskSandboxRuntime", { sessionId, durationMs: Math.round(performance.now() - t0) });
+
+    const t1 = performance.now();
     await ensureSandboxRepo(c, runtime.sandbox, record);
+    logActorInfo("task.session", "ensureSandboxRepo", { sessionId, durationMs: Math.round(performance.now() - t1) });
+
     const resolvedModel = model ?? meta.model ?? (await resolveDefaultModel(c, authSessionId));
     const resolvedAgent = await resolveSandboxAgentForModel(c, resolvedModel);
+
+    const t2 = performance.now();
     await runtime.sandbox.createSession({
       id: meta.sandboxSessionId ?? sessionId,
       agent: resolvedAgent,
@@ -1295,12 +1320,14 @@ export async function ensureWorkspaceSession(c: any, sessionId: string, model?: 
         cwd: runtime.cwd,
       },
     });
+    logActorInfo("task.session", "createSession", { sessionId, agent: resolvedAgent, model: resolvedModel, durationMs: Math.round(performance.now() - t2) });
 
     await updateSessionMeta(c, sessionId, {
       sandboxSessionId: meta.sandboxSessionId ?? sessionId,
       status: "ready",
       errorMessage: null,
     });
+    logActorInfo("task.session", "ensureWorkspaceSession complete", { sessionId, totalDurationMs: Math.round(performance.now() - ensureStart) });
     fireRefreshSessionTranscript(c, meta.sandboxSessionId ?? sessionId);
   } catch (error) {
     await updateSessionMeta(c, sessionId, {
@@ -1415,12 +1442,19 @@ export async function changeWorkspaceModel(c: any, sessionId: string, model: str
 }
 
 export async function sendWorkspaceMessage(c: any, sessionId: string, text: string, attachments: Array<any>, authSessionId?: string): Promise<void> {
+  const sendStart = performance.now();
   const meta = requireSendableSessionMeta(await readSessionMeta(c, sessionId), sessionId);
   const record = await ensureWorkspaceSeeded(c);
+
+  const t0 = performance.now();
   const runtime = await getTaskSandboxRuntime(c, record);
+  logActorInfo("task.message", "getTaskSandboxRuntime", { sessionId, durationMs: Math.round(performance.now() - t0) });
+
+  const t1 = performance.now();
   // Skip git fetch on subsequent messages — the repo was already prepared during session
   // creation. This avoids a 5-30s network round-trip to GitHub on every prompt.
   await ensureSandboxRepo(c, runtime.sandbox, record, { skipFetchIfPrepared: true, authSessionId });
+  logActorInfo("task.message", "ensureSandboxRepo", { sessionId, durationMs: Math.round(performance.now() - t1) });
 
   // Check if the task owner needs to swap. If a different user is sending this message,
   // update the owner record and inject their git credentials into the sandbox.
@@ -1450,10 +1484,12 @@ export async function sendWorkspaceMessage(c: any, sessionId: string, text: stri
   await syncWorkspaceSessionStatus(c, meta.sandboxSessionId, "running", Date.now());
 
   try {
+    const t2 = performance.now();
     await runtime.sandbox.sendPrompt({
       sessionId: meta.sandboxSessionId,
       prompt: prompt.join("\n\n"),
     });
+    logActorInfo("task.message", "sendPrompt", { sessionId, durationMs: Math.round(performance.now() - t2) });
     await syncWorkspaceSessionStatus(c, meta.sandboxSessionId, "idle", Date.now());
   } catch (error) {
     await updateSessionMeta(c, sessionId, {
@@ -1463,6 +1499,7 @@ export async function sendWorkspaceMessage(c: any, sessionId: string, text: stri
     await syncWorkspaceSessionStatus(c, meta.sandboxSessionId, "error", Date.now());
     throw error;
   }
+  logActorInfo("task.message", "sendWorkspaceMessage complete", { sessionId, totalDurationMs: Math.round(performance.now() - sendStart) });
 }
 
 export async function stopWorkspaceSession(c: any, sessionId: string): Promise<void> {

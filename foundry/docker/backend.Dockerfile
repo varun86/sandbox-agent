@@ -19,6 +19,7 @@ RUN pnpm --filter @sandbox-agent/foundry-backend deploy --prod /out
 FROM oven/bun:1.2 AS runtime
 ENV NODE_ENV=production
 ENV HOME=/home/task
+ENV RIVET_RUNNER_VERSION_FILE=/etc/foundry/rivet-runner-version
 WORKDIR /app
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -31,6 +32,8 @@ RUN addgroup --system --gid 1001 task \
   && adduser --system --uid 1001 --home /home/task --ingroup task task \
   && mkdir -p /home/task \
   && chown -R task:task /home/task /app
+RUN mkdir -p /etc/foundry \
+  && date +%s > /etc/foundry/rivet-runner-version
 COPY --from=build /out ./
 USER task
 EXPOSE 7741

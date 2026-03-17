@@ -22,6 +22,16 @@ export function resolveErrorStack(error: unknown): string | undefined {
   return undefined;
 }
 
+export function logActorInfo(scope: string, message: string, context?: Record<string, unknown>): void {
+  logger.info(
+    {
+      scope,
+      ...(context ?? {}),
+    },
+    message,
+  );
+}
+
 export function logActorWarning(scope: string, message: string, context?: Record<string, unknown>): void {
   logger.warn(
     {

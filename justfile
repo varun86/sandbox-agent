@@ -186,4 +186,3 @@ foundry-format:
 [group('foundry')]
 foundry-docker-build tag='foundry:local':
 	docker build -f foundry/docker/backend.Dockerfile -t {{tag}} .
-

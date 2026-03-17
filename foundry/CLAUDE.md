@@ -72,6 +72,26 @@ Local Docker sandboxes use the `rivetdev/sandbox-agent:foundry-base-latest` imag
 - The image must be built with `--platform linux/amd64`. The Rust build is memory-intensive; Docker Desktop needs at least 8GB RAM allocated.
 - When updating the base image contents (new system packages, agent versions), rebuild and push with the publish script, then update the `foundry-base-latest` tag.
 
+## Production GitHub App + OAuth App
+
+Foundry uses two separate GitHub entities in production:
+
+- **OAuth App** (`GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`) — handles "Sign in with GitHub" via Better Auth. This is a standard OAuth App.
+- **GitHub App** (`GITHUB_APP_ID` / `GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET` / `GITHUB_APP_PRIVATE_KEY`) — handles webhooks, installation tokens for repo access, and GitHub API sync (repos, PRs). Must be manually installed on each org.
+
+Key env vars and where they connect:
+
+- `GITHUB_REDIRECT_URI` — OAuth callback, must point to `https://api.sandboxagent.dev/v1/auth/callback/github`
+- `GITHUB_WEBHOOK_SECRET` — must match the secret configured on the GitHub App's Webhook settings page exactly. Mismatches cause silent 500s on webhook delivery (signature verification fails inside the actor, surfaced as a generic RivetKit `internal_error`).
+- `BETTER_AUTH_URL` — must be the **API** URL (`https://api.sandboxagent.dev`), not the frontend URL. Better Auth uses this internally for sign-out and session management calls.
+- `APP_URL` — the **frontend** URL (`https://foundry.sandboxagent.dev`).
+
+Troubleshooting:
+
+- **"GitHub App not installed"** — The GitHub App must be manually installed on each org. Sign-in does not auto-install it. Go to the GitHub App settings → Install App tab. The sign-in flow can only detect existing installations, not create them.
+- **Webhooks not arriving** — Check the GitHub App → Advanced tab for delivery history. If deliveries show 500, the webhook secret likely doesn't match `GITHUB_WEBHOOK_SECRET`. Test with: `echo -n '{"test":true}' | openssl dgst -sha256 -hmac "$SECRET"` and curl the endpoint with the computed signature.
+- **Deleting all actors wipes GitHub App installation state.** After a full actor reset, you must trigger a webhook (e.g. redeliver from GitHub App Advanced tab, or re-install the app) to repopulate installation records.
+
 ## Railway Logs
 
 - Production Foundry Railway logs can be read from a linked checkout with `railway logs --deployment --lines 200` or `railway logs <deployment-id> --deployment --lines 200`.
