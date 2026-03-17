@@ -1926,7 +1926,7 @@ export class SandboxAgent {
 
   buildDesktopStreamWebSocketUrl(options: ProcessTerminalWebSocketUrlOptions = {}): string {
     return toWebSocketUrl(
-      this.buildUrl(`${API_PREFIX}/desktop/stream/ws`, {
+      this.buildUrl(`${API_PREFIX}/desktop/stream/signaling`, {
         access_token: options.accessToken ?? this.token,
       }),
     );

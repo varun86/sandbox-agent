@@ -235,7 +235,7 @@ pub fn build_router_with_state(shared: Arc<AppState>) -> (Router, Arc<AppState>)
         )
         .route("/desktop/stream/start", post(post_v1_desktop_stream_start))
         .route("/desktop/stream/stop", post(post_v1_desktop_stream_stop))
-        .route("/desktop/stream/ws", get(get_v1_desktop_stream_ws))
+        .route("/desktop/stream/signaling", get(get_v1_desktop_stream_ws))
         .route("/agents", get(get_v1_agents))
         .route("/agents/:agent", get(get_v1_agent))
         .route("/agents/:agent/install", post(post_v1_agent_install))
@@ -1181,7 +1181,7 @@ async fn delete_v1_desktop_recording(
 async fn post_v1_desktop_stream_start(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<DesktopStreamStatusResponse>, ApiError> {
-    Ok(Json(state.desktop_runtime().start_streaming().await))
+    Ok(Json(state.desktop_runtime().start_streaming().await?))
 }
 
 /// Stop desktop streaming.
@@ -1201,13 +1201,14 @@ async fn post_v1_desktop_stream_stop(
     Ok(Json(state.desktop_runtime().stop_streaming().await))
 }
 
-/// Open a desktop websocket streaming session.
+/// Open a desktop WebRTC signaling session.
 ///
-/// Upgrades the connection to a websocket that streams JPEG desktop frames and
-/// accepts mouse and keyboard control frames.
+/// Upgrades the connection to a WebSocket used for WebRTC signaling between
+/// the browser client and the desktop streaming process. Also accepts mouse
+/// and keyboard input frames as a fallback transport.
 #[utoipa::path(
     get,
-    path = "/v1/desktop/stream/ws",
+    path = "/v1/desktop/stream/signaling",
     tag = "v1",
     params(
         ("access_token" = Option<String>, Query, description = "Bearer token alternative for WS auth")
@@ -2451,46 +2452,6 @@ enum TerminalClientFrame {
     Close,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-enum DesktopStreamClientFrame {
-    MoveMouse {
-        x: i32,
-        y: i32,
-    },
-    MouseDown {
-        #[serde(default)]
-        x: Option<i32>,
-        #[serde(default)]
-        y: Option<i32>,
-        #[serde(default)]
-        button: Option<DesktopMouseButton>,
-    },
-    MouseUp {
-        #[serde(default)]
-        x: Option<i32>,
-        #[serde(default)]
-        y: Option<i32>,
-        #[serde(default)]
-        button: Option<DesktopMouseButton>,
-    },
-    Scroll {
-        x: i32,
-        y: i32,
-        #[serde(default)]
-        delta_x: Option<i32>,
-        #[serde(default)]
-        delta_y: Option<i32>,
-    },
-    KeyDown {
-        key: String,
-    },
-    KeyUp {
-        key: String,
-    },
-    Close,
-}
-
 async fn process_terminal_ws_session(
     mut socket: WebSocket,
     runtime: Arc<ProcessRuntime>,
@@ -2603,131 +2564,115 @@ async fn process_terminal_ws_session(
     }
 }
 
-async fn desktop_stream_ws_session(mut socket: WebSocket, desktop_runtime: Arc<DesktopRuntime>) {
-    let display_info = match desktop_runtime.display_info().await {
-        Ok(info) => info,
-        Err(err) => {
-            let _ = send_ws_error(&mut socket, &err.to_error_info().message).await;
-            let _ = socket.close().await;
+/// WebRTC signaling proxy session.
+///
+/// Proxies the WebSocket bidirectionally between the browser client and neko's
+/// internal WebSocket endpoint. All neko signaling messages (SDP offers/answers,
+/// ICE candidates, system events) are relayed transparently.
+async fn desktop_stream_ws_session(mut client_ws: WebSocket, desktop_runtime: Arc<DesktopRuntime>) {
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
+
+    // Get neko's internal WS URL from the streaming manager.
+    let neko_ws_url = match desktop_runtime.streaming_manager().neko_ws_url().await {
+        Some(url) => url,
+        None => {
+            let _ = send_ws_error(&mut client_ws, "streaming process is not available").await;
+            let _ = client_ws.close().await;
             return;
         }
     };
 
-    if send_ws_json(
-        &mut socket,
-        json!({
-            "type": "ready",
-            "width": display_info.resolution.width,
-            "height": display_info.resolution.height,
-        }),
-    )
-    .await
-    .is_err()
-    {
-        return;
-    }
+    // Create a fresh neko login session for this connection.
+    // Each proxy connection gets its own neko session to avoid conflicts
+    // when multiple clients connect (neko sends signal/close to shared sessions).
+    let session_cookie = desktop_runtime
+        .streaming_manager()
+        .create_neko_session()
+        .await;
 
-    let mut frame_tick = tokio::time::interval(Duration::from_millis(100));
+    // Build a WS request with the neko session cookie for authentication.
+    let ws_req = {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut req = neko_ws_url
+            .into_client_request()
+            .expect("valid neko WS URL");
+        if let Some(ref cookie) = session_cookie {
+            req.headers_mut()
+                .insert("Cookie", cookie.parse().expect("valid cookie header"));
+        }
+        req
+    };
 
+    // Connect to neko's internal WebSocket.
+    let (neko_ws, _) = match tokio_tungstenite::connect_async(ws_req).await {
+        Ok(conn) => conn,
+        Err(err) => {
+            let _ = send_ws_error(
+                &mut client_ws,
+                &format!("failed to connect to streaming process: {err}"),
+            )
+            .await;
+            let _ = client_ws.close().await;
+            return;
+        }
+    };
+
+    let (mut neko_sink, mut neko_stream) = neko_ws.split();
+
+    // Relay messages bidirectionally between client and neko.
     loop {
         tokio::select! {
-            ws_in = socket.recv() => {
-                match ws_in {
+            // Client → Neko (signaling passthrough; input goes via WebRTC data channel)
+            client_msg = client_ws.recv() => {
+                match client_msg {
                     Some(Ok(Message::Text(text))) => {
-                        match serde_json::from_str::<DesktopStreamClientFrame>(&text) {
-                            Ok(DesktopStreamClientFrame::MoveMouse { x, y }) => {
-                                if let Err(err) = desktop_runtime
-                                    .move_mouse(DesktopMouseMoveRequest { x, y })
-                                    .await
-                                {
-                                    let _ = send_ws_error(&mut socket, &err.to_error_info().message).await;
-                                }
-                            }
-                            Ok(DesktopStreamClientFrame::MouseDown { x, y, button }) => {
-                                if let Err(err) = desktop_runtime
-                                    .mouse_down(DesktopMouseDownRequest { x, y, button })
-                                    .await
-                                {
-                                    let _ = send_ws_error(&mut socket, &err.to_error_info().message).await;
-                                }
-                            }
-                            Ok(DesktopStreamClientFrame::MouseUp { x, y, button }) => {
-                                if let Err(err) = desktop_runtime
-                                    .mouse_up(DesktopMouseUpRequest { x, y, button })
-                                    .await
-                                {
-                                    let _ = send_ws_error(&mut socket, &err.to_error_info().message).await;
-                                }
-                            }
-                            Ok(DesktopStreamClientFrame::Scroll { x, y, delta_x, delta_y }) => {
-                                if let Err(err) = desktop_runtime
-                                    .scroll_mouse(DesktopMouseScrollRequest {
-                                        x,
-                                        y,
-                                        delta_x,
-                                        delta_y,
-                                    })
-                                    .await
-                                {
-                                    let _ = send_ws_error(&mut socket, &err.to_error_info().message).await;
-                                }
-                            }
-                            Ok(DesktopStreamClientFrame::KeyDown { key }) => {
-                                if let Err(err) = desktop_runtime
-                                    .key_down(DesktopKeyboardDownRequest { key })
-                                    .await
-                                {
-                                    let _ = send_ws_error(&mut socket, &err.to_error_info().message).await;
-                                }
-                            }
-                            Ok(DesktopStreamClientFrame::KeyUp { key }) => {
-                                if let Err(err) = desktop_runtime
-                                    .key_up(DesktopKeyboardUpRequest { key })
-                                    .await
-                                {
-                                    let _ = send_ws_error(&mut socket, &err.to_error_info().message).await;
-                                }
-                            }
-                            Ok(DesktopStreamClientFrame::Close) => {
-                                let _ = socket.close().await;
-                                break;
-                            }
-                            Err(err) => {
-                                let _ = send_ws_error(&mut socket, &format!("invalid desktop stream frame: {err}")).await;
-                            }
-                        }
-                    }
-                    Some(Ok(Message::Ping(payload))) => {
-                        let _ = socket.send(Message::Pong(payload)).await;
-                    }
-                    Some(Ok(Message::Close(_))) | None => break,
-                    Some(Ok(Message::Binary(_))) | Some(Ok(Message::Pong(_))) => {}
-                    Some(Err(_)) => break,
-                }
-            }
-            _ = frame_tick.tick() => {
-                let frame = desktop_runtime
-                    .screenshot(DesktopScreenshotQuery {
-                        format: Some(DesktopScreenshotFormat::Jpeg),
-                        quality: Some(60),
-                        scale: Some(1.0),
-                    })
-                    .await;
-                match frame {
-                    Ok(frame) => {
-                        if socket.send(Message::Binary(frame.bytes.into())).await.is_err() {
+                        if neko_sink.send(TungsteniteMessage::Text(text.into())).await.is_err() {
                             break;
                         }
                     }
-                    Err(err) => {
-                        let _ = send_ws_error(&mut socket, &err.to_error_info().message).await;
-                        let _ = socket.close().await;
-                        break;
+                    Some(Ok(Message::Binary(data))) => {
+                        if neko_sink.send(TungsteniteMessage::Binary(data.into())).await.is_err() {
+                            break;
+                        }
                     }
+                    Some(Ok(Message::Ping(payload))) => {
+                        let _ = client_ws.send(Message::Pong(payload)).await;
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Pong(_))) => {}
+                    Some(Err(_)) => break,
+                }
+            }
+            // Neko → Client
+            neko_msg = neko_stream.next() => {
+                match neko_msg {
+                    Some(Ok(TungsteniteMessage::Text(text))) => {
+                        if client_ws.send(Message::Text(text.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(TungsteniteMessage::Binary(data))) => {
+                        if client_ws.send(Message::Binary(data.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(TungsteniteMessage::Ping(payload))) => {
+                        if neko_sink.send(TungsteniteMessage::Pong(payload.clone())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(TungsteniteMessage::Close(_))) | None => break,
+                    Some(Ok(TungsteniteMessage::Pong(_))) => {}
+                    Some(Ok(TungsteniteMessage::Frame(_))) => {}
+                    Some(Err(_)) => break,
                 }
             }
         }
     }
+
+    let _ = neko_sink.close().await;
+    let _ = client_ws.close().await;
 }
 
 async fn send_ws_json(socket: &mut WebSocket, payload: Value) -> Result<(), ()> {

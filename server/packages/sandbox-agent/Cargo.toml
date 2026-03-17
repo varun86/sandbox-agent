@@ -41,6 +41,7 @@ base64.workspace = true
 toml_edit.workspace = true
 tar.workspace = true
 zip.workspace = true
+tokio-tungstenite = "0.24"
 tempfile = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]

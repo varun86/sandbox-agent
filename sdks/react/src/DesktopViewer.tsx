@@ -6,7 +6,7 @@ import type { DesktopMouseButton, DesktopStreamErrorStatus, DesktopStreamReadySt
 
 type ConnectionState = "connecting" | "ready" | "closed" | "error";
 
-export type DesktopViewerClient = Pick<SandboxAgent, "startDesktopStream" | "stopDesktopStream" | "connectDesktopStream">;
+export type DesktopViewerClient = Pick<SandboxAgent, "connectDesktopStream">;
 
 export interface DesktopViewerProps {
   client: DesktopViewerClient;
@@ -51,7 +51,7 @@ const viewportStyle: CSSProperties = {
   background: "radial-gradient(circle at top, rgba(14, 165, 233, 0.18), transparent 45%), linear-gradient(180deg, #0f172a 0%, #111827 100%)",
 };
 
-const imageBaseStyle: CSSProperties = {
+const videoBaseStyle: CSSProperties = {
   display: "block",
   width: "100%",
   height: "100%",
@@ -78,112 +78,96 @@ const getStatusColor = (state: ConnectionState): string => {
 
 export const DesktopViewer = ({ client, className, style, imageStyle, height = 480, onConnect, onDisconnect, onError }: DesktopViewerProps) => {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const sessionRef = useRef<ReturnType<DesktopViewerClient["connectDesktopStream"]> | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [statusMessage, setStatusMessage] = useState("Starting desktop stream...");
-  const [frameUrl, setFrameUrl] = useState<string | null>(null);
+  const [hasVideo, setHasVideo] = useState(false);
   const [resolution, setResolution] = useState<{ width: number; height: number } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    let lastObjectUrl: string | null = null;
-    let session: ReturnType<DesktopViewerClient["connectDesktopStream"]> | null = null;
 
     setConnectionState("connecting");
-    setStatusMessage("Starting desktop stream...");
+    setStatusMessage("Connecting to desktop stream...");
     setResolution(null);
+    setHasVideo(false);
 
-    const connect = async () => {
-      try {
-        await client.startDesktopStream();
-        if (cancelled) {
-          return;
-        }
+    const session = client.connectDesktopStream();
+    sessionRef.current = session;
 
-        session = client.connectDesktopStream();
-        sessionRef.current = session;
-        session.onReady((status) => {
-          if (cancelled) {
-            return;
-          }
-          setConnectionState("ready");
-          setStatusMessage("Desktop stream connected.");
-          setResolution({ width: status.width, height: status.height });
-          onConnect?.(status);
-        });
-        session.onFrame((frame) => {
-          if (cancelled) {
-            return;
-          }
-          const nextUrl = URL.createObjectURL(new Blob([frame.slice().buffer], { type: "image/jpeg" }));
-          setFrameUrl((current) => {
-            if (current) {
-              URL.revokeObjectURL(current);
-            }
-            return nextUrl;
-          });
-          if (lastObjectUrl) {
-            URL.revokeObjectURL(lastObjectUrl);
-          }
-          lastObjectUrl = nextUrl;
-        });
-        session.onError((error) => {
-          if (cancelled) {
-            return;
-          }
-          setConnectionState("error");
-          setStatusMessage(error instanceof Error ? error.message : error.message);
-          onError?.(error);
-        });
-        session.onClose(() => {
-          if (cancelled) {
-            return;
-          }
-          setConnectionState((current) => (current === "error" ? current : "closed"));
-          setStatusMessage((current) => (current === "Desktop stream connected." ? "Desktop stream disconnected." : current));
-          onDisconnect?.();
-        });
-      } catch (error) {
-        if (cancelled) {
-          return;
-        }
-        const nextError = error instanceof Error ? error : new Error("Failed to initialize desktop stream.");
-        setConnectionState("error");
-        setStatusMessage(nextError.message);
-        onError?.(nextError);
+    session.onReady((status) => {
+      if (cancelled) return;
+      setConnectionState("ready");
+      setStatusMessage("Desktop stream connected.");
+      setResolution({ width: status.width, height: status.height });
+      onConnect?.(status);
+    });
+    session.onTrack((stream) => {
+      if (cancelled) return;
+      const video = videoRef.current;
+      if (video) {
+        video.srcObject = stream;
+        void video.play().catch(() => undefined);
+        setHasVideo(true);
       }
-    };
-
-    void connect();
+    });
+    session.onError((error) => {
+      if (cancelled) return;
+      setConnectionState("error");
+      setStatusMessage(error instanceof Error ? error.message : error.message);
+      onError?.(error);
+    });
+    session.onDisconnect(() => {
+      if (cancelled) return;
+      setConnectionState((current) => (current === "error" ? current : "closed"));
+      setStatusMessage((current) => (current === "Desktop stream connected." ? "Desktop stream disconnected." : current));
+      onDisconnect?.();
+    });
 
     return () => {
       cancelled = true;
-      session?.close();
+      session.close();
       sessionRef.current = null;
-      void client.stopDesktopStream().catch(() => undefined);
-      setFrameUrl((current) => {
-        if (current) {
-          URL.revokeObjectURL(current);
-        }
-        return null;
-      });
-      if (lastObjectUrl) {
-        URL.revokeObjectURL(lastObjectUrl);
+      const video = videoRef.current;
+      if (video) {
+        video.srcObject = null;
       }
+      setHasVideo(false);
     };
   }, [client, onConnect, onDisconnect, onError]);
 
   const scalePoint = (clientX: number, clientY: number) => {
-    const wrapper = wrapperRef.current;
-    if (!wrapper || !resolution) {
+    const video = videoRef.current;
+    if (!video || !resolution) {
       return null;
     }
-    const rect = wrapper.getBoundingClientRect();
+    const rect = video.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) {
       return null;
     }
-    const x = Math.max(0, Math.min(resolution.width, ((clientX - rect.left) / rect.width) * resolution.width));
-    const y = Math.max(0, Math.min(resolution.height, ((clientY - rect.top) / rect.height) * resolution.height));
+    // The video uses objectFit: "contain", so we need to compute the actual
+    // rendered content area within the <video> element to map coordinates
+    // accurately (ignoring letterbox bars).
+    const videoAspect = resolution.width / resolution.height;
+    const elemAspect = rect.width / rect.height;
+    let renderW: number;
+    let renderH: number;
+    if (elemAspect > videoAspect) {
+      // Pillarboxed (black bars on left/right)
+      renderH = rect.height;
+      renderW = rect.height * videoAspect;
+    } else {
+      // Letterboxed (black bars on top/bottom)
+      renderW = rect.width;
+      renderH = rect.width / videoAspect;
+    }
+    const offsetX = (rect.width - renderW) / 2;
+    const offsetY = (rect.height - renderH) / 2;
+    const relX = clientX - rect.left - offsetX;
+    const relY = clientY - rect.top - offsetY;
+    const x = Math.max(0, Math.min(resolution.width, (relX / renderW) * resolution.width));
+    const y = Math.max(0, Math.min(resolution.height, (relY / renderH) * resolution.height));
     return {
       x: Math.round(x),
       y: Math.round(y),
@@ -212,7 +196,7 @@ export const DesktopViewer = ({ client, className, style, imageStyle, height = 4
     <div className={className} style={{ ...shellStyle, ...style }}>
       <div style={statusBarStyle}>
         <span style={{ color: getStatusColor(connectionState) }}>{statusMessage}</span>
-        <span style={hintStyle}>{resolution ? `${resolution.width}×${resolution.height}` : "Awaiting frames"}</span>
+        <span style={hintStyle}>{resolution ? `${resolution.width}×${resolution.height}` : "Awaiting stream"}</span>
       </div>
       <div
         ref={wrapperRef}
@@ -226,8 +210,14 @@ export const DesktopViewer = ({ client, className, style, imageStyle, height = 4
           }
           withSession((session) => session.moveMouse(point.x, point.y));
         }}
+        onContextMenu={(event) => {
+          event.preventDefault();
+        }}
         onMouseDown={(event) => {
           event.preventDefault();
+          // preventDefault on mousedown suppresses the default focus behavior,
+          // so we must explicitly focus the wrapper to receive keyboard events.
+          wrapperRef.current?.focus();
           const point = scalePoint(event.clientX, event.clientY);
           withSession((session) => session.mouseDown(buttonFromMouseEvent(event), point?.x, point?.y));
         }}
@@ -244,13 +234,25 @@ export const DesktopViewer = ({ client, className, style, imageStyle, height = 4
           withSession((session) => session.scroll(point.x, point.y, Math.round(event.deltaX), Math.round(event.deltaY)));
         }}
         onKeyDown={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
           withSession((session) => session.keyDown(event.key));
         }}
         onKeyUp={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
           withSession((session) => session.keyUp(event.key));
         }}
       >
-        {frameUrl ? <img alt="Desktop stream" draggable={false} src={frameUrl} style={{ ...imageBaseStyle, ...imageStyle }} /> : null}
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          tabIndex={-1}
+          draggable={false}
+          style={{ ...videoBaseStyle, ...imageStyle, display: hasVideo ? "block" : "none", pointerEvents: "none" }}
+        />
       </div>
     </div>
   );

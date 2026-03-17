@@ -87,7 +87,7 @@
           },
           {
             "group": "System",
-            "pages": ["file-system", "processes"]
+            "pages": ["file-system", "processes", "computer-use", "common-software"]
           },
           {
             "group": "Orchestration",

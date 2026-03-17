@@ -8,7 +8,7 @@ export default defineConfig(({ command }) => ({
     port: 5173,
     proxy: {
       "/v1": {
-        target: "http://localhost:2468",
+        target: process.env.SANDBOX_AGENT_URL || "http://localhost:2468",
         changeOrigin: true,
         ws: true,
       },
