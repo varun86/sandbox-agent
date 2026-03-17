@@ -476,6 +476,9 @@ export function initBetterAuthService(actorClient: any, options: { apiUrl: strin
         strategy: "compact",
       },
     },
+    onAPIError: {
+      errorURL: stripTrailingSlash(options.appUrl) + "/signin",
+    },
     socialProviders: {
       github: {
         clientId: requireEnv("GITHUB_CLIENT_ID"),
