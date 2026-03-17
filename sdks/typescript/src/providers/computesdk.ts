@@ -1,14 +1,19 @@
-import { compute } from "computesdk";
+import { compute, type CreateSandboxOptions } from "computesdk";
 import type { SandboxProvider } from "./types.ts";
 import { DEFAULT_AGENTS, SANDBOX_AGENT_INSTALL_SCRIPT } from "./shared.ts";
 
 const DEFAULT_AGENT_PORT = 3000;
 
+type ComputeCreateOverrides = Partial<CreateSandboxOptions>;
+
 export interface ComputeSdkProviderOptions {
-  create?: {
-    envs?: Record<string, string>;
-  };
+  create?: ComputeCreateOverrides | (() => ComputeCreateOverrides | Promise<ComputeCreateOverrides>);
   agentPort?: number;
+}
+
+async function resolveCreateOptions(value: ComputeSdkProviderOptions["create"]): Promise<ComputeCreateOverrides> {
+  if (!value) return {};
+  return typeof value === "function" ? await value() : value;
 }
 
 export function computesdk(options: ComputeSdkProviderOptions = {}): SandboxProvider {
@@ -17,9 +22,10 @@ export function computesdk(options: ComputeSdkProviderOptions = {}): SandboxProv
   return {
     name: "computesdk",
     async create(): Promise<string> {
-      const envs = options.create?.envs;
+      const createOpts = await resolveCreateOptions(options.create);
       const sandbox = await compute.sandbox.create({
-        envs: envs && Object.keys(envs).length > 0 ? envs : undefined,
+        ...createOpts,
+        envs: createOpts.envs && Object.keys(createOpts.envs).length > 0 ? createOpts.envs : undefined,
       });
 
       const run = async (cmd: string, runOptions?: { background?: boolean }) => {

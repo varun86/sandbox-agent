@@ -16,6 +16,19 @@ const e2bMocks = vi.hoisted(() => {
   };
 });
 
+const modalMocks = vi.hoisted(() => ({
+  appsFromName: vi.fn(),
+  imageFromRegistry: vi.fn(),
+  secretFromObject: vi.fn(),
+  sandboxCreate: vi.fn(),
+  sandboxFromId: vi.fn(),
+}));
+
+const computeSdkMocks = vi.hoisted(() => ({
+  create: vi.fn(),
+  getById: vi.fn(),
+}));
+
 vi.mock("@e2b/code-interpreter", () => ({
   NotFoundError: e2bMocks.MockNotFoundError,
   Sandbox: {
@@ -24,7 +37,30 @@ vi.mock("@e2b/code-interpreter", () => ({
   },
 }));
 
+vi.mock("modal", () => ({
+  ModalClient: class MockModalClient {
+    apps = { fromName: modalMocks.appsFromName };
+    images = { fromRegistry: modalMocks.imageFromRegistry };
+    secrets = { fromObject: modalMocks.secretFromObject };
+    sandboxes = {
+      create: modalMocks.sandboxCreate,
+      fromId: modalMocks.sandboxFromId,
+    };
+  },
+}));
+
+vi.mock("computesdk", () => ({
+  compute: {
+    sandbox: {
+      create: computeSdkMocks.create,
+      getById: computeSdkMocks.getById,
+    },
+  },
+}));
+
 import { e2b } from "../src/providers/e2b.ts";
+import { modal } from "../src/providers/modal.ts";
+import { computesdk } from "../src/providers/computesdk.ts";
 
 function createFetch(): typeof fetch {
   return async () => new Response(null, { status: 200 });
@@ -55,6 +91,26 @@ function createMockSandbox() {
     },
   };
 }
+
+function createMockModalImage() {
+  return {
+    dockerfileCommands: vi.fn(function dockerfileCommands() {
+      return this;
+    }),
+  };
+}
+
+beforeEach(() => {
+  e2bMocks.betaCreate.mockReset();
+  e2bMocks.connect.mockReset();
+  modalMocks.appsFromName.mockReset();
+  modalMocks.imageFromRegistry.mockReset();
+  modalMocks.secretFromObject.mockReset();
+  modalMocks.sandboxCreate.mockReset();
+  modalMocks.sandboxFromId.mockReset();
+  computeSdkMocks.create.mockReset();
+  computeSdkMocks.getById.mockReset();
+});
 
 describe("SandboxAgent provider lifecycle", () => {
   it("reconnects an existing sandbox before ensureServer", async () => {
@@ -124,11 +180,6 @@ describe("SandboxAgent provider lifecycle", () => {
 });
 
 describe("e2b provider", () => {
-  beforeEach(() => {
-    e2bMocks.betaCreate.mockReset();
-    e2bMocks.connect.mockReset();
-  });
-
   it("creates sandboxes with betaCreate, autoPause, and the default timeout", async () => {
     const sandbox = createMockSandbox();
     e2bMocks.betaCreate.mockResolvedValue(sandbox);
@@ -189,5 +240,110 @@ describe("e2b provider", () => {
     const provider = e2b();
 
     await expect(provider.reconnect?.("missing-sandbox")).rejects.toBeInstanceOf(SandboxDestroyedError);
+  });
+
+  it("passes a configured template to betaCreate", async () => {
+    const sandbox = createMockSandbox();
+    e2bMocks.betaCreate.mockResolvedValue(sandbox);
+
+    const provider = e2b({
+      template: "my-template",
+      create: { envs: { ANTHROPIC_API_KEY: "test" } },
+    });
+
+    await provider.create();
+
+    expect(e2bMocks.betaCreate).toHaveBeenCalledWith(
+      "my-template",
+      expect.objectContaining({
+        allowInternetAccess: true,
+        envs: { ANTHROPIC_API_KEY: "test" },
+        timeoutMs: 3_600_000,
+      }),
+    );
+  });
+
+  it("accepts legacy create.template values from plain JavaScript", async () => {
+    const sandbox = createMockSandbox();
+    e2bMocks.betaCreate.mockResolvedValue(sandbox);
+
+    const provider = e2b({
+      create: { template: "legacy-template" } as never,
+    });
+
+    await provider.create();
+
+    expect(e2bMocks.betaCreate).toHaveBeenCalledWith(
+      "legacy-template",
+      expect.objectContaining({
+        allowInternetAccess: true,
+        timeoutMs: 3_600_000,
+      }),
+    );
+  });
+});
+
+describe("modal provider", () => {
+  it("uses the configured base image when building the sandbox image", async () => {
+    const app = { appId: "app-123" };
+    const image = createMockModalImage();
+    const sandbox = {
+      sandboxId: "sbx-modal",
+      exec: vi.fn(),
+    };
+
+    modalMocks.appsFromName.mockResolvedValue(app);
+    modalMocks.imageFromRegistry.mockReturnValue(image);
+    modalMocks.sandboxCreate.mockResolvedValue(sandbox);
+
+    const provider = modal({
+      image: "python:3.12-slim",
+      create: {
+        appName: "custom-app",
+        secrets: { OPENAI_API_KEY: "test" },
+      },
+    });
+
+    await expect(provider.create()).resolves.toBe("sbx-modal");
+
+    expect(modalMocks.appsFromName).toHaveBeenCalledWith("custom-app", { createIfMissing: true });
+    expect(modalMocks.imageFromRegistry).toHaveBeenCalledWith("python:3.12-slim");
+    expect(image.dockerfileCommands).toHaveBeenCalled();
+    expect(modalMocks.sandboxCreate).toHaveBeenCalledWith(
+      app,
+      image,
+      expect.objectContaining({
+        encryptedPorts: [3000],
+        memoryMiB: 2048,
+      }),
+    );
+  });
+});
+
+describe("computesdk provider", () => {
+  it("passes image and template options through to compute.sandbox.create", async () => {
+    const sandbox = {
+      sandboxId: "sbx-compute",
+      runCommand: vi.fn(async () => ({ exitCode: 0, stderr: "" })),
+    };
+    computeSdkMocks.create.mockResolvedValue(sandbox);
+
+    const provider = computesdk({
+      create: {
+        envs: { ANTHROPIC_API_KEY: "test" },
+        image: "ghcr.io/example/sandbox-agent:latest",
+        templateId: "tmpl-123",
+      },
+    });
+
+    await expect(provider.create()).resolves.toBe("sbx-compute");
+
+    expect(computeSdkMocks.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        envs: { ANTHROPIC_API_KEY: "test" },
+        image: "ghcr.io/example/sandbox-agent:latest",
+        templateId: "tmpl-123",
+      }),
+    );
   });
 });

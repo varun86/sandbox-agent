@@ -11,7 +11,7 @@ type DaytonaCreateOverrides = Partial<DaytonaCreateParams>;
 
 export interface DaytonaProviderOptions {
   create?: DaytonaCreateOverrides | (() => DaytonaCreateOverrides | Promise<DaytonaCreateOverrides>);
-  image?: string;
+  image?: DaytonaCreateParams["image"];
   agentPort?: number;
   previewTtlSeconds?: number;
   deleteTimeoutSeconds?: number;

@@ -5,10 +5,11 @@ import { detectAgent } from "@sandbox-agent/example-shared";
 const envs: Record<string, string> = {};
 if (process.env.ANTHROPIC_API_KEY) envs.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 if (process.env.OPENAI_API_KEY) envs.OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const template = process.env.E2B_TEMPLATE;
 
 const client = await SandboxAgent.start({
   // ✨ NEW ✨
-  sandbox: e2b({ create: { envs } }),
+  sandbox: e2b({ template, create: { envs } }),
 });
 
 const session = await client.createSession({

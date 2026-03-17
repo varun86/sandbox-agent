@@ -8,10 +8,12 @@ const DEFAULT_TIMEOUT_MS = 3_600_000;
 
 type E2BCreateOverrides = Omit<Partial<SandboxBetaCreateOpts>, "timeoutMs" | "autoPause">;
 type E2BConnectOverrides = Omit<Partial<SandboxConnectOpts>, "timeoutMs">;
+type E2BTemplateOverride = string | (() => string | Promise<string>);
 
 export interface E2BProviderOptions {
   create?: E2BCreateOverrides | (() => E2BCreateOverrides | Promise<E2BCreateOverrides>);
   connect?: E2BConnectOverrides | ((sandboxId: string) => E2BConnectOverrides | Promise<E2BConnectOverrides>);
+  template?: E2BTemplateOverride;
   agentPort?: number;
   timeoutMs?: number;
   autoPause?: boolean;
@@ -28,6 +30,11 @@ async function resolveOptions(value: E2BProviderOptions["create"] | E2BProviderO
   return value;
 }
 
+async function resolveTemplate(value: E2BTemplateOverride | undefined): Promise<string | undefined> {
+  if (!value) return undefined;
+  return typeof value === "function" ? await value() : value;
+}
+
 export function e2b(options: E2BProviderOptions = {}): SandboxProvider {
   const agentPort = options.agentPort ?? DEFAULT_AGENT_PORT;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -37,8 +44,16 @@ export function e2b(options: E2BProviderOptions = {}): SandboxProvider {
     name: "e2b",
     async create(): Promise<string> {
       const createOpts = await resolveOptions(options.create);
+      const rawTemplate = typeof createOpts.template === "string" ? createOpts.template : undefined;
+      const restCreateOpts = { ...createOpts };
+      delete restCreateOpts.template;
+      const template = (await resolveTemplate(options.template)) ?? rawTemplate;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const sandbox = await Sandbox.betaCreate({ allowInternetAccess: true, ...createOpts, timeoutMs, autoPause } as any);
+      const sandbox = template
+        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await Sandbox.betaCreate(template, { allowInternetAccess: true, ...restCreateOpts, timeoutMs, autoPause } as any)
+        : // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await Sandbox.betaCreate({ allowInternetAccess: true, ...restCreateOpts, timeoutMs, autoPause } as any);
 
       await sandbox.commands.run(`curl -fsSL ${SANDBOX_AGENT_INSTALL_SCRIPT} | sh`).then((r) => {
         if (r.exitCode !== 0) throw new Error(`e2b install failed:\n${r.stderr}`);
