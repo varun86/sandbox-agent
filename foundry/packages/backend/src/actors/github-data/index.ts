@@ -1,15 +1,17 @@
 // @ts-nocheck
 import { eq, inArray } from "drizzle-orm";
-import { actor } from "rivetkit";
+import { actor, queue } from "rivetkit";
+import { workflow, Loop } from "rivetkit/workflow";
 import type { FoundryOrganization } from "@sandbox-agent/foundry-shared";
 import { getActorRuntimeContext } from "../context.js";
 import { getOrCreateOrganization, getTask } from "../handles.js";
+import { logActorWarning, resolveErrorMessage } from "../logging.js";
+import { taskWorkflowQueueName } from "../task/workflow/queue.js";
 import { repoIdFromRemote } from "../../services/repo.js";
 import { resolveOrganizationGithubAuth } from "../../services/github-auth.js";
-// actions called directly (no queue)
+import { organizationWorkflowQueueName } from "../organization/queues.js";
 import { githubDataDb } from "./db/db.js";
 import { githubBranches, githubMembers, githubMeta, githubPullRequests, githubRepositories } from "./db/schema.js";
-// workflow.ts is no longer used — commands are actions now
 
 const META_ROW_ID = 1;
 const SYNC_REPOSITORY_BATCH_SIZE = 10;
@@ -74,7 +76,19 @@ interface ClearStateInput {
   label: string;
 }
 
-// sendOrganizationCommand removed — org actions called directly
+// Queue names for github-data actor
+export const GITHUB_DATA_QUEUE_NAMES = [
+  "githubData.command.syncRepos",
+  "githubData.command.handlePullRequestWebhook",
+  "githubData.command.clearState",
+  "githubData.command.reloadRepository",
+] as const;
+
+type GithubDataQueueName = (typeof GITHUB_DATA_QUEUE_NAMES)[number];
+
+export function githubDataWorkflowQueueName(name: GithubDataQueueName): GithubDataQueueName {
+  return name;
+}
 
 interface PullRequestWebhookInput {
   connectedAccount: string;
@@ -209,18 +223,22 @@ async function writeMeta(c: any, patch: Partial<GithubMetaState>) {
 async function publishSyncProgress(c: any, patch: Partial<GithubMetaState>): Promise<GithubMetaState> {
   const meta = await writeMeta(c, patch);
   const organization = await getOrCreateOrganization(c, c.state.organizationId);
-  await organization.commandApplyGithubSyncProgress({
-    connectedAccount: meta.connectedAccount,
-    installationStatus: meta.installationStatus,
-    installationId: meta.installationId,
-    syncStatus: meta.syncStatus,
-    lastSyncLabel: meta.lastSyncLabel,
-    lastSyncAt: meta.lastSyncAt,
-    syncGeneration: meta.syncGeneration,
-    syncPhase: meta.syncPhase,
-    processedRepositoryCount: meta.processedRepositoryCount,
-    totalRepositoryCount: meta.totalRepositoryCount,
-  });
+  await organization.send(
+    organizationWorkflowQueueName("organization.command.github.sync_progress.apply"),
+    {
+      connectedAccount: meta.connectedAccount,
+      installationStatus: meta.installationStatus,
+      installationId: meta.installationId,
+      syncStatus: meta.syncStatus,
+      lastSyncLabel: meta.lastSyncLabel,
+      lastSyncAt: meta.lastSyncAt,
+      syncGeneration: meta.syncGeneration,
+      syncPhase: meta.syncPhase,
+      processedRepositoryCount: meta.processedRepositoryCount,
+      totalRepositoryCount: meta.totalRepositoryCount,
+    },
+    { wait: false },
+  );
   return meta;
 }
 
@@ -424,7 +442,13 @@ async function refreshTaskSummaryForBranch(c: any, repoId: string, branchName: s
     return;
   }
   const organization = await getOrCreateOrganization(c, c.state.organizationId);
-  void organization.commandRefreshTaskSummaryForBranch({ repoId, branchName, pullRequest, repoName: repositoryRecord.fullName ?? undefined }).catch(() => {});
+  void organization
+    .send(
+      organizationWorkflowQueueName("organization.command.refreshTaskSummaryForBranch"),
+      { repoId, branchName, pullRequest, repoName: repositoryRecord.fullName ?? undefined },
+      { wait: false },
+    )
+    .catch(() => {});
 }
 
 async function emitPullRequestChangeEvents(c: any, beforeRows: any[], afterRows: any[]) {
@@ -472,7 +496,7 @@ async function autoArchiveTaskForClosedPullRequest(c: any, row: any) {
   }
   try {
     const task = getTask(c, c.state.organizationId, row.repoId, match.taskId);
-    void task.archive({ reason: `PR ${String(row.state).toLowerCase()}` }).catch(() => {});
+    void task.send(taskWorkflowQueueName("task.command.archive"), { reason: `PR ${String(row.state).toLowerCase()}` }, { wait: false }).catch(() => {});
   } catch {
     // Best-effort only. Task summary refresh will still clear the PR state.
   }
@@ -877,8 +901,79 @@ export async function fullSyncError(c: any, error: unknown): Promise<void> {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Workflow command loop
+// ---------------------------------------------------------------------------
+
+type GithubDataWorkflowHandler = (loopCtx: any, body: any) => Promise<any>;
+
+const GITHUB_DATA_COMMAND_HANDLERS: Record<GithubDataQueueName, GithubDataWorkflowHandler> = {
+  "githubData.command.syncRepos": async (c, body) => {
+    try {
+      await runFullSync(c, body);
+      return { ok: true };
+    } catch (error) {
+      try {
+        await fullSyncError(c, error);
+      } catch {
+        /* best effort */
+      }
+      throw error;
+    }
+  },
+  "githubData.command.handlePullRequestWebhook": async (c, body) => {
+    await handlePullRequestWebhookMutation(c, body);
+    return { ok: true };
+  },
+  "githubData.command.clearState": async (c, body) => {
+    await clearStateMutation(c, body);
+    return { ok: true };
+  },
+  "githubData.command.reloadRepository": async (c, body) => reloadRepositoryMutation(c, body),
+};
+
+async function runGithubDataWorkflow(ctx: any): Promise<void> {
+  await ctx.loop("github-data-command-loop", async (loopCtx: any) => {
+    const msg = await loopCtx.queue.next("next-github-data-command", {
+      names: [...GITHUB_DATA_QUEUE_NAMES],
+      completable: true,
+    });
+
+    if (!msg) {
+      return Loop.continue(undefined);
+    }
+
+    const handler = GITHUB_DATA_COMMAND_HANDLERS[msg.name as GithubDataQueueName];
+    if (!handler) {
+      logActorWarning("github-data", "unknown github-data command", { command: msg.name });
+      await msg.complete({ error: `Unknown command: ${msg.name}` }).catch(() => {});
+      return Loop.continue(undefined);
+    }
+
+    try {
+      // Wrap in a step so c.state and c.db are accessible inside mutation functions.
+      const result = await loopCtx.step({
+        name: msg.name,
+        timeout: 10 * 60_000,
+        run: async () => handler(loopCtx, msg.body),
+      });
+      await msg.complete(result);
+    } catch (error) {
+      const message = resolveErrorMessage(error);
+      logActorWarning("github-data", "github-data workflow command failed", {
+        command: msg.name,
+        error: message,
+      });
+      await msg.complete({ error: message }).catch(() => {});
+    }
+
+    return Loop.continue(undefined);
+  });
+}
+
 export const githubData = actor({
   db: githubDataDb,
+  queues: Object.fromEntries(GITHUB_DATA_QUEUE_NAMES.map((name) => [name, queue()])),
   options: {
     name: "GitHub Data",
     icon: "github",
@@ -945,35 +1040,8 @@ export const githubData = actor({
         }))
         .sort((left, right) => left.branchName.localeCompare(right.branchName));
     },
-
-    async syncRepos(c, body: any) {
-      try {
-        await runFullSync(c, body);
-        return { ok: true };
-      } catch (error) {
-        try {
-          await fullSyncError(c, error);
-        } catch {
-          /* best effort */
-        }
-        throw error;
-      }
-    },
-
-    async reloadRepository(c, body: { repoId: string }) {
-      return await reloadRepositoryMutation(c, body);
-    },
-
-    async clearState(c, body: any) {
-      await clearStateMutation(c, body);
-      return { ok: true };
-    },
-
-    async handlePullRequestWebhook(c, body: any) {
-      await handlePullRequestWebhookMutation(c, body);
-      return { ok: true };
-    },
   },
+  run: workflow(runGithubDataWorkflow),
 });
 
 export async function reloadRepositoryMutation(c: any, input: { repoId: string }) {

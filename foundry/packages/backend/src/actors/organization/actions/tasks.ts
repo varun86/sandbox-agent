@@ -25,6 +25,8 @@ import { getActorRuntimeContext } from "../../context.js";
 import { getOrCreateAuditLog, getOrCreateTask, getTask as getTaskHandle } from "../../handles.js";
 import { defaultSandboxProviderId } from "../../../sandbox-config.js";
 import { logActorWarning, resolveErrorMessage } from "../../logging.js";
+import { taskWorkflowQueueName } from "../../task/workflow/queue.js";
+import { expectQueueResponse } from "../../../services/queue.js";
 import { taskIndex, taskSummaries } from "../db/schema.js";
 import {
   createTaskMutation,
@@ -131,11 +133,15 @@ export const organizationTaskActions = {
 
     const task = await requireWorkspaceTask(c, input.repoId, created.taskId);
     void task
-      .createSessionAndSend({
-        model: input.model,
-        text: input.task,
-        authSessionId: input.authSessionId,
-      })
+      .send(
+        taskWorkflowQueueName("task.command.workspace.create_session_and_send"),
+        {
+          model: input.model,
+          text: input.task,
+          authSessionId: input.authSessionId,
+        },
+        { wait: false },
+      )
       .catch(() => {});
 
     return { taskId: created.taskId };
@@ -143,94 +149,132 @@ export const organizationTaskActions = {
 
   async markWorkspaceUnread(c: any, input: TaskWorkspaceSelectInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
-    await task.markUnread({ authSessionId: input.authSessionId });
+    await task.send(taskWorkflowQueueName("task.command.workspace.mark_unread"), { authSessionId: input.authSessionId }, { wait: false });
   },
 
   async renameWorkspaceTask(c: any, input: TaskWorkspaceRenameInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
-    await task.renameTask({ value: input.value });
+    await task.send(taskWorkflowQueueName("task.command.workspace.rename_task"), { value: input.value }, { wait: false });
   },
 
   async createWorkspaceSession(c: any, input: TaskWorkspaceSelectInput & { model?: string }): Promise<{ sessionId: string }> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
-    return await task.createSession({
-      ...(input.model ? { model: input.model } : {}),
-      ...(input.authSessionId ? { authSessionId: input.authSessionId } : {}),
-    });
+    return expectQueueResponse(
+      await task.send(
+        taskWorkflowQueueName("task.command.workspace.create_session"),
+        {
+          ...(input.model ? { model: input.model } : {}),
+          ...(input.authSessionId ? { authSessionId: input.authSessionId } : {}),
+        },
+        { wait: true, timeout: 10_000 },
+      ),
+    );
   },
 
   async renameWorkspaceSession(c: any, input: TaskWorkspaceRenameSessionInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
-    await task.renameSession({ sessionId: input.sessionId, title: input.title, authSessionId: input.authSessionId });
+    await task.send(
+      taskWorkflowQueueName("task.command.workspace.rename_session"),
+      { sessionId: input.sessionId, title: input.title, authSessionId: input.authSessionId },
+      { wait: false },
+    );
   },
 
   async selectWorkspaceSession(c: any, input: TaskWorkspaceSessionInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
-    await task.selectSession({ sessionId: input.sessionId, authSessionId: input.authSessionId });
+    await task.send(
+      taskWorkflowQueueName("task.command.workspace.select_session"),
+      { sessionId: input.sessionId, authSessionId: input.authSessionId },
+      { wait: false },
+    );
   },
 
   async setWorkspaceSessionUnread(c: any, input: TaskWorkspaceSetSessionUnreadInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
-    await task.setSessionUnread({ sessionId: input.sessionId, unread: input.unread, authSessionId: input.authSessionId });
+    await task.send(
+      taskWorkflowQueueName("task.command.workspace.set_session_unread"),
+      { sessionId: input.sessionId, unread: input.unread, authSessionId: input.authSessionId },
+      { wait: false },
+    );
   },
 
   async updateWorkspaceDraft(c: any, input: TaskWorkspaceUpdateDraftInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
     void task
-      .updateDraft({
-        sessionId: input.sessionId,
-        text: input.text,
-        attachments: input.attachments,
-        authSessionId: input.authSessionId,
-      })
+      .send(
+        taskWorkflowQueueName("task.command.workspace.update_draft"),
+        {
+          sessionId: input.sessionId,
+          text: input.text,
+          attachments: input.attachments,
+          authSessionId: input.authSessionId,
+        },
+        { wait: false },
+      )
       .catch(() => {});
   },
 
   async changeWorkspaceModel(c: any, input: TaskWorkspaceChangeModelInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
-    await task.changeModel({ sessionId: input.sessionId, model: input.model, authSessionId: input.authSessionId });
+    await task.send(
+      taskWorkflowQueueName("task.command.workspace.change_model"),
+      { sessionId: input.sessionId, model: input.model, authSessionId: input.authSessionId },
+      { wait: false },
+    );
   },
 
   async sendWorkspaceMessage(c: any, input: TaskWorkspaceSendMessageInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
     void task
-      .sendMessage({
-        sessionId: input.sessionId,
-        text: input.text,
-        attachments: input.attachments,
-        authSessionId: input.authSessionId,
-      })
+      .send(
+        taskWorkflowQueueName("task.command.workspace.send_message"),
+        {
+          sessionId: input.sessionId,
+          text: input.text,
+          attachments: input.attachments,
+          authSessionId: input.authSessionId,
+        },
+        { wait: false },
+      )
       .catch(() => {});
   },
 
   async stopWorkspaceSession(c: any, input: TaskWorkspaceSessionInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
-    void task.stopSession({ sessionId: input.sessionId, authSessionId: input.authSessionId }).catch(() => {});
+    void task
+      .send(taskWorkflowQueueName("task.command.workspace.stop_session"), { sessionId: input.sessionId, authSessionId: input.authSessionId }, { wait: false })
+      .catch(() => {});
   },
 
   async closeWorkspaceSession(c: any, input: TaskWorkspaceSessionInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
-    void task.closeSession({ sessionId: input.sessionId, authSessionId: input.authSessionId }).catch(() => {});
+    void task
+      .send(taskWorkflowQueueName("task.command.workspace.close_session"), { sessionId: input.sessionId, authSessionId: input.authSessionId }, { wait: false })
+      .catch(() => {});
   },
 
   async publishWorkspacePr(c: any, input: TaskWorkspaceSelectInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
-    void task.publishPr({}).catch(() => {});
+    void task.send(taskWorkflowQueueName("task.command.workspace.publish_pr"), {}, { wait: false }).catch(() => {});
   },
 
   async changeWorkspaceTaskOwner(c: any, input: TaskWorkspaceChangeOwnerInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
-    await task.changeOwner({
-      primaryUserId: input.targetUserId,
-      primaryGithubLogin: input.targetUserName,
-      primaryGithubEmail: input.targetUserEmail,
-      primaryGithubAvatarUrl: null,
-    });
+    await task.send(
+      taskWorkflowQueueName("task.command.workspace.change_owner"),
+      {
+        primaryUserId: input.targetUserId,
+        primaryGithubLogin: input.targetUserName,
+        primaryGithubEmail: input.targetUserEmail,
+        primaryGithubAvatarUrl: null,
+      },
+      { wait: false },
+    );
   },
 
   async revertWorkspaceFile(c: any, input: TaskWorkspaceDiffInput): Promise<void> {
     const task = await requireWorkspaceTask(c, input.repoId, input.taskId);
-    void task.revertFile(input).catch(() => {});
+    void task.send(taskWorkflowQueueName("task.command.workspace.revert_file"), input, { wait: false }).catch(() => {});
   },
 
   async getRepoOverview(c: any, input: RepoOverviewInput): Promise<RepoOverview> {
@@ -250,7 +294,9 @@ export const organizationTaskActions = {
   async switchTask(c: any, input: { repoId: string; taskId: string }): Promise<SwitchResult> {
     const h = getTaskHandle(c, c.state.organizationId, input.repoId, input.taskId);
     const record = await h.get();
-    const switched = await h.switchTask({});
+    const switched = expectQueueResponse<{ switchTarget: string | null }>(
+      await h.send(taskWorkflowQueueName("task.command.switch"), {}, { wait: true, timeout: 10_000 }),
+    );
     return {
       organizationId: c.state.organizationId,
       taskId: input.taskId,
@@ -288,42 +334,42 @@ export const organizationTaskActions = {
     assertOrganization(c, input.organizationId);
 
     const h = getTaskHandle(c, c.state.organizationId, input.repoId, input.taskId);
-    return await h.attach({ reason: input.reason });
+    return expectQueueResponse(await h.send(taskWorkflowQueueName("task.command.attach"), { reason: input.reason }, { wait: true, timeout: 10_000 }));
   },
 
   async pushTask(c: any, input: TaskProxyActionInput): Promise<void> {
     assertOrganization(c, input.organizationId);
 
     const h = getTaskHandle(c, c.state.organizationId, input.repoId, input.taskId);
-    void h.push({ reason: input.reason }).catch(() => {});
+    void h.send(taskWorkflowQueueName("task.command.push"), { reason: input.reason }, { wait: false }).catch(() => {});
   },
 
   async syncTask(c: any, input: TaskProxyActionInput): Promise<void> {
     assertOrganization(c, input.organizationId);
 
     const h = getTaskHandle(c, c.state.organizationId, input.repoId, input.taskId);
-    void h.sync({ reason: input.reason }).catch(() => {});
+    void h.send(taskWorkflowQueueName("task.command.sync"), { reason: input.reason }, { wait: false }).catch(() => {});
   },
 
   async mergeTask(c: any, input: TaskProxyActionInput): Promise<void> {
     assertOrganization(c, input.organizationId);
 
     const h = getTaskHandle(c, c.state.organizationId, input.repoId, input.taskId);
-    void h.merge({ reason: input.reason }).catch(() => {});
+    void h.send(taskWorkflowQueueName("task.command.merge"), { reason: input.reason }, { wait: false }).catch(() => {});
   },
 
   async archiveTask(c: any, input: TaskProxyActionInput): Promise<void> {
     assertOrganization(c, input.organizationId);
 
     const h = getTaskHandle(c, c.state.organizationId, input.repoId, input.taskId);
-    void h.archive({ reason: input.reason }).catch(() => {});
+    void h.send(taskWorkflowQueueName("task.command.archive"), { reason: input.reason }, { wait: false }).catch(() => {});
   },
 
   async killTask(c: any, input: TaskProxyActionInput): Promise<void> {
     assertOrganization(c, input.organizationId);
 
     const h = getTaskHandle(c, c.state.organizationId, input.repoId, input.taskId);
-    void h.kill({ reason: input.reason }).catch(() => {});
+    void h.send(taskWorkflowQueueName("task.command.kill"), { reason: input.reason }, { wait: false }).catch(() => {});
   },
 
   async getRepositoryMetadata(c: any, input: { repoId: string }): Promise<{ defaultBranch: string | null; fullName: string | null; remoteUrl: string }> {

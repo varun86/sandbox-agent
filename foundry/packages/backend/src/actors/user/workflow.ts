@@ -1,7 +1,44 @@
+// @ts-nocheck
+/**
+ * User workflow — queue-based command loop.
+ *
+ * Auth mutation commands are dispatched through named queues and processed
+ * inside the workflow command loop for observability and replay semantics.
+ */
 import { eq, count as sqlCount, and } from "drizzle-orm";
+import { Loop } from "rivetkit/workflow";
 import { DEFAULT_WORKSPACE_MODEL_ID } from "@sandbox-agent/foundry-shared";
+import { logActorWarning, resolveErrorMessage } from "../logging.js";
+import { selfUser } from "../handles.js";
+import { expectQueueResponse } from "../../services/queue.js";
 import { authUsers, sessionState, userProfiles, userTaskState } from "./db/schema.js";
 import { buildWhere, columnFor, materializeRow, persistInput, persistPatch, tableFor } from "./query-helpers.js";
+
+// ---------------------------------------------------------------------------
+// Queue names
+// ---------------------------------------------------------------------------
+
+export const USER_QUEUE_NAMES = [
+  "user.command.auth.create",
+  "user.command.auth.update",
+  "user.command.auth.update_many",
+  "user.command.auth.delete",
+  "user.command.auth.delete_many",
+  "user.command.profile.upsert",
+  "user.command.session_state.upsert",
+  "user.command.task_state.upsert",
+  "user.command.task_state.delete",
+] as const;
+
+export type UserQueueName = (typeof USER_QUEUE_NAMES)[number];
+
+export function userWorkflowQueueName(name: UserQueueName): UserQueueName {
+  return name;
+}
+
+// ---------------------------------------------------------------------------
+// Mutation functions
+// ---------------------------------------------------------------------------
 
 export async function createAuthRecordMutation(c: any, input: { model: string; data: Record<string, unknown> }) {
   const table = tableFor(input.model);
@@ -194,4 +231,67 @@ export async function deleteTaskStateMutation(c: any, input: { taskId: string; s
     return;
   }
   await c.db.delete(userTaskState).where(eq(userTaskState.taskId, input.taskId)).run();
+}
+
+// ---------------------------------------------------------------------------
+// Workflow command loop
+// ---------------------------------------------------------------------------
+
+type WorkflowHandler = (loopCtx: any, body: any) => Promise<any>;
+
+const COMMAND_HANDLERS: Record<UserQueueName, WorkflowHandler> = {
+  "user.command.auth.create": async (c, body) => createAuthRecordMutation(c, body),
+  "user.command.auth.update": async (c, body) => updateAuthRecordMutation(c, body),
+  "user.command.auth.update_many": async (c, body) => updateManyAuthRecordsMutation(c, body),
+  "user.command.auth.delete": async (c, body) => {
+    await deleteAuthRecordMutation(c, body);
+    return { ok: true };
+  },
+  "user.command.auth.delete_many": async (c, body) => deleteManyAuthRecordsMutation(c, body),
+  "user.command.profile.upsert": async (c, body) => upsertUserProfileMutation(c, body),
+  "user.command.session_state.upsert": async (c, body) => upsertSessionStateMutation(c, body),
+  "user.command.task_state.upsert": async (c, body) => upsertTaskStateMutation(c, body),
+  "user.command.task_state.delete": async (c, body) => {
+    await deleteTaskStateMutation(c, body);
+    return { ok: true };
+  },
+};
+
+export async function runUserWorkflow(ctx: any): Promise<void> {
+  await ctx.loop("user-command-loop", async (loopCtx: any) => {
+    const msg = await loopCtx.queue.next("next-user-command", {
+      names: [...USER_QUEUE_NAMES],
+      completable: true,
+    });
+
+    if (!msg) {
+      return Loop.continue(undefined);
+    }
+
+    const handler = COMMAND_HANDLERS[msg.name as UserQueueName];
+    if (!handler) {
+      logActorWarning("user", "unknown user command", { command: msg.name });
+      await msg.complete({ error: `Unknown command: ${msg.name}` }).catch(() => {});
+      return Loop.continue(undefined);
+    }
+
+    try {
+      // Wrap in a step so c.state and c.db are accessible inside mutation functions.
+      const result = await loopCtx.step({
+        name: msg.name,
+        timeout: 60_000,
+        run: async () => handler(loopCtx, msg.body),
+      });
+      await msg.complete(result);
+    } catch (error) {
+      const message = resolveErrorMessage(error);
+      logActorWarning("user", "user workflow command failed", {
+        command: msg.name,
+        error: message,
+      });
+      await msg.complete({ error: message }).catch(() => {});
+    }
+
+    return Loop.continue(undefined);
+  });
 }

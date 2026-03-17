@@ -1,4 +1,6 @@
-import { actor } from "rivetkit";
+// @ts-nocheck
+import { actor, queue } from "rivetkit";
+import { workflow, Loop } from "rivetkit/workflow";
 import { e2b, sandboxActor } from "rivetkit/sandbox";
 import { existsSync } from "node:fs";
 import Dockerode from "dockerode";
@@ -6,7 +8,9 @@ import { DEFAULT_WORKSPACE_MODEL_GROUPS, workspaceModelGroupsFromSandboxAgents, 
 import { SandboxAgent } from "sandbox-agent";
 import { getActorRuntimeContext } from "../context.js";
 import { organizationKey } from "../keys.js";
+import { selfTaskSandbox } from "../handles.js";
 import { logActorWarning, resolveErrorMessage } from "../logging.js";
+import { expectQueueResponse } from "../../services/queue.js";
 import { resolveSandboxProviderId } from "../../sandbox-config.js";
 
 const SANDBOX_REPO_CWD = "/home/user/repo";
@@ -293,34 +297,163 @@ async function listWorkspaceModelGroupsForSandbox(c: any): Promise<WorkspaceMode
 
 const baseActions = baseTaskSandbox.config.actions as Record<string, (c: any, ...args: any[]) => Promise<any>>;
 
+// ---------------------------------------------------------------------------
+// Queue names for sandbox actor
+// ---------------------------------------------------------------------------
+
+const SANDBOX_QUEUE_NAMES = [
+  "sandbox.command.createSession",
+  "sandbox.command.resumeOrCreateSession",
+  "sandbox.command.destroySession",
+  "sandbox.command.createProcess",
+  "sandbox.command.stopProcess",
+  "sandbox.command.killProcess",
+  "sandbox.command.deleteProcess",
+] as const;
+
+type SandboxQueueName = (typeof SANDBOX_QUEUE_NAMES)[number];
+
+function sandboxWorkflowQueueName(name: SandboxQueueName): SandboxQueueName {
+  return name;
+}
+
+// ---------------------------------------------------------------------------
+// Mutation handlers — executed inside the workflow command loop
+// ---------------------------------------------------------------------------
+
+async function createSessionMutation(c: any, request: any): Promise<any> {
+  const session = await baseActions.createSession(c, request);
+  const sessionId = typeof request?.id === "string" && request.id.length > 0 ? request.id : session?.id;
+  const modeId = modeIdForAgent(request?.agent);
+  if (sessionId && modeId) {
+    try {
+      await baseActions.rawSendSessionMethod(c, sessionId, "session/set_mode", { modeId });
+    } catch {
+      // Session mode updates are best-effort.
+    }
+  }
+  return sanitizeActorResult(session);
+}
+
+async function resumeOrCreateSessionMutation(c: any, request: any): Promise<any> {
+  return sanitizeActorResult(await baseActions.resumeOrCreateSession(c, request));
+}
+
+async function destroySessionMutation(c: any, sessionId: string): Promise<any> {
+  return sanitizeActorResult(await baseActions.destroySession(c, sessionId));
+}
+
+async function createProcessMutation(c: any, request: any): Promise<any> {
+  const created = await baseActions.createProcess(c, request);
+  await broadcastProcesses(c, baseActions);
+  return created;
+}
+
+async function runProcessMutation(c: any, request: any): Promise<any> {
+  const result = await baseActions.runProcess(c, request);
+  await broadcastProcesses(c, baseActions);
+  return result;
+}
+
+async function stopProcessMutation(c: any, processId: string, query?: any): Promise<any> {
+  const stopped = await baseActions.stopProcess(c, processId, query);
+  await broadcastProcesses(c, baseActions);
+  return stopped;
+}
+
+async function killProcessMutation(c: any, processId: string, query?: any): Promise<any> {
+  const killed = await baseActions.killProcess(c, processId, query);
+  await broadcastProcesses(c, baseActions);
+  return killed;
+}
+
+async function deleteProcessMutation(c: any, processId: string): Promise<void> {
+  await baseActions.deleteProcess(c, processId);
+  await broadcastProcesses(c, baseActions);
+}
+
+// ---------------------------------------------------------------------------
+// Workflow command loop
+// ---------------------------------------------------------------------------
+
+type SandboxWorkflowHandler = (loopCtx: any, body: any) => Promise<any>;
+
+const SANDBOX_COMMAND_HANDLERS: Record<SandboxQueueName, SandboxWorkflowHandler> = {
+  "sandbox.command.createSession": async (c, body) => createSessionMutation(c, body),
+  "sandbox.command.resumeOrCreateSession": async (c, body) => resumeOrCreateSessionMutation(c, body),
+  "sandbox.command.destroySession": async (c, body) => destroySessionMutation(c, body?.sessionId),
+  "sandbox.command.createProcess": async (c, body) => createProcessMutation(c, body),
+  "sandbox.command.stopProcess": async (c, body) => stopProcessMutation(c, body?.processId, body?.query),
+  "sandbox.command.killProcess": async (c, body) => killProcessMutation(c, body?.processId, body?.query),
+  "sandbox.command.deleteProcess": async (c, body) => {
+    await deleteProcessMutation(c, body?.processId);
+    return { ok: true };
+  },
+};
+
+async function runSandboxWorkflow(ctx: any): Promise<void> {
+  await ctx.loop("sandbox-command-loop", async (loopCtx: any) => {
+    const msg = await loopCtx.queue.next("next-sandbox-command", {
+      names: [...SANDBOX_QUEUE_NAMES],
+      completable: true,
+    });
+
+    if (!msg) {
+      return Loop.continue(undefined);
+    }
+
+    const handler = SANDBOX_COMMAND_HANDLERS[msg.name as SandboxQueueName];
+    if (!handler) {
+      logActorWarning("taskSandbox", "unknown sandbox command", { command: msg.name });
+      await msg.complete({ error: `Unknown command: ${msg.name}` }).catch(() => {});
+      return Loop.continue(undefined);
+    }
+
+    try {
+      // Wrap in a step so c.state and c.db are accessible inside mutation functions.
+      const result = await loopCtx.step({
+        name: msg.name,
+        timeout: 10 * 60_000,
+        run: async () => handler(loopCtx, msg.body),
+      });
+      try {
+        await msg.complete(result);
+      } catch (completeError) {
+        logActorWarning("taskSandbox", "sandbox workflow failed completing response", {
+          command: msg.name,
+          error: resolveErrorMessage(completeError),
+        });
+      }
+    } catch (error) {
+      const message = resolveErrorMessage(error);
+      logActorWarning("taskSandbox", "sandbox workflow command failed", {
+        command: msg.name,
+        error: message,
+      });
+      await msg.complete({ error: message }).catch(() => {});
+    }
+
+    return Loop.continue(undefined);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Actor definition
+// ---------------------------------------------------------------------------
+
 export const taskSandbox = actor({
   ...baseTaskSandbox.config,
+  queues: Object.fromEntries(SANDBOX_QUEUE_NAMES.map((name) => [name, queue()])),
   options: {
     ...baseTaskSandbox.config.options,
     actionTimeout: 10 * 60_000,
   },
   actions: {
     ...baseActions,
-    async createSession(c: any, request: any): Promise<any> {
-      const session = await baseActions.createSession(c, request);
-      const sessionId = typeof request?.id === "string" && request.id.length > 0 ? request.id : session?.id;
-      const modeId = modeIdForAgent(request?.agent);
-      if (sessionId && modeId) {
-        try {
-          await baseActions.rawSendSessionMethod(c, sessionId, "session/set_mode", { modeId });
-        } catch {
-          // Session mode updates are best-effort.
-        }
-      }
-      return sanitizeActorResult(session);
-    },
 
+    // Read actions — direct (no queue)
     async resumeSession(c: any, sessionId: string): Promise<any> {
       return sanitizeActorResult(await baseActions.resumeSession(c, sessionId));
-    },
-
-    async resumeOrCreateSession(c: any, request: any): Promise<any> {
-      return sanitizeActorResult(await baseActions.resumeOrCreateSession(c, request));
     },
 
     async getSession(c: any, sessionId: string): Promise<any> {
@@ -329,24 +462,6 @@ export const taskSandbox = actor({
 
     async listSessions(c: any, query?: any): Promise<any> {
       return sanitizeActorResult(await baseActions.listSessions(c, query));
-    },
-
-    async destroySession(c: any, sessionId: string): Promise<any> {
-      return sanitizeActorResult(await baseActions.destroySession(c, sessionId));
-    },
-
-    async sendPrompt(c: any, request: { sessionId: string; prompt: string }): Promise<any> {
-      const text = typeof request?.prompt === "string" ? request.prompt.trim() : "";
-      if (!text) {
-        return null;
-      }
-
-      const session = await baseActions.resumeSession(c, request.sessionId);
-      if (!session || typeof session.prompt !== "function") {
-        throw new Error(`session '${request.sessionId}' not found`);
-      }
-
-      return sanitizeActorResult(await session.prompt([{ type: "text", text }]));
     },
 
     async listProcesses(c: any): Promise<any> {
@@ -360,35 +475,6 @@ export const taskSandbox = actor({
         });
         return { processes: [] };
       }
-    },
-
-    async createProcess(c: any, request: any): Promise<any> {
-      const created = await baseActions.createProcess(c, request);
-      await broadcastProcesses(c, baseActions);
-      return created;
-    },
-
-    async runProcess(c: any, request: any): Promise<any> {
-      const result = await baseActions.runProcess(c, request);
-      await broadcastProcesses(c, baseActions);
-      return result;
-    },
-
-    async stopProcess(c: any, processId: string, query?: any): Promise<any> {
-      const stopped = await baseActions.stopProcess(c, processId, query);
-      await broadcastProcesses(c, baseActions);
-      return stopped;
-    },
-
-    async killProcess(c: any, processId: string, query?: any): Promise<any> {
-      const killed = await baseActions.killProcess(c, processId, query);
-      await broadcastProcesses(c, baseActions);
-      return killed;
-    },
-
-    async deleteProcess(c: any, processId: string): Promise<void> {
-      await baseActions.deleteProcess(c, processId);
-      await broadcastProcesses(c, baseActions);
     },
 
     async sandboxAgentConnection(c: any): Promise<{ endpoint: string; token?: string }> {
@@ -445,7 +531,73 @@ export const taskSandbox = actor({
     async repoCwd(): Promise<{ cwd: string }> {
       return { cwd: SANDBOX_REPO_CWD };
     },
+
+    // Long-running action — kept as direct action to avoid blocking the
+    // workflow loop (prompt responses can take minutes).
+    async sendPrompt(c: any, request: { sessionId: string; prompt: string }): Promise<any> {
+      const text = typeof request?.prompt === "string" ? request.prompt.trim() : "";
+      if (!text) {
+        return null;
+      }
+
+      const session = await baseActions.resumeSession(c, request.sessionId);
+      if (!session || typeof session.prompt !== "function") {
+        throw new Error(`session '${request.sessionId}' not found`);
+      }
+
+      return sanitizeActorResult(await session.prompt([{ type: "text", text }]));
+    },
+
+    // Mutation actions — self-send to queue for workflow history
+    async createSession(c: any, request: any): Promise<any> {
+      const self = selfTaskSandbox(c);
+      return expectQueueResponse(await self.send(sandboxWorkflowQueueName("sandbox.command.createSession"), request ?? {}, { wait: true, timeout: 10_000 }));
+    },
+
+    async resumeOrCreateSession(c: any, request: any): Promise<any> {
+      const self = selfTaskSandbox(c);
+      return expectQueueResponse(
+        await self.send(sandboxWorkflowQueueName("sandbox.command.resumeOrCreateSession"), request ?? {}, { wait: true, timeout: 10_000 }),
+      );
+    },
+
+    async destroySession(c: any, sessionId: string): Promise<any> {
+      const self = selfTaskSandbox(c);
+      return expectQueueResponse(await self.send(sandboxWorkflowQueueName("sandbox.command.destroySession"), { sessionId }, { wait: true, timeout: 10_000 }));
+    },
+
+    async createProcess(c: any, request: any): Promise<any> {
+      const self = selfTaskSandbox(c);
+      return expectQueueResponse(await self.send(sandboxWorkflowQueueName("sandbox.command.createProcess"), request ?? {}, { wait: true, timeout: 10_000 }));
+    },
+
+    // runProcess kept as direct action — response can exceed 128KB queue limit
+    async runProcess(c: any, request: any): Promise<any> {
+      const result = await baseActions.runProcess(c, request);
+      await broadcastProcesses(c, baseActions);
+      return result;
+    },
+
+    async stopProcess(c: any, processId: string, query?: any): Promise<any> {
+      const self = selfTaskSandbox(c);
+      return expectQueueResponse(
+        await self.send(sandboxWorkflowQueueName("sandbox.command.stopProcess"), { processId, query }, { wait: true, timeout: 10_000 }),
+      );
+    },
+
+    async killProcess(c: any, processId: string, query?: any): Promise<any> {
+      const self = selfTaskSandbox(c);
+      return expectQueueResponse(
+        await self.send(sandboxWorkflowQueueName("sandbox.command.killProcess"), { processId, query }, { wait: true, timeout: 10_000 }),
+      );
+    },
+
+    async deleteProcess(c: any, processId: string): Promise<void> {
+      const self = selfTaskSandbox(c);
+      await self.send(sandboxWorkflowQueueName("sandbox.command.deleteProcess"), { processId }, { wait: false });
+    },
   },
+  run: workflow(runSandboxWorkflow),
 });
 
 export { SANDBOX_REPO_CWD };

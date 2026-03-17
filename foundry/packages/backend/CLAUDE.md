@@ -198,6 +198,80 @@ curl -s -X POST 'http://127.0.0.1:6420/gateway/<actor-id>/inspector/action/<acti
 - `GET /inspector/queue` is reliable for checking pending messages.
 - `GET /inspector/state` is reliable for checking actor state.
 
+## Inbox & Notification System
+
+The user actor owns two per-user systems: a **task feed** (sidebar ordering) and **notifications** (discrete events). These are distinct concepts that share a common "bump" mechanism.
+
+### Core distinction: bumps vs. notifications
+
+A **bump** updates the task's position in the user's sidebar feed. A **notification** is a discrete event entry shown in the notification panel. Every notification also triggers a bump, but not every bump creates a notification.
+
+| Event | Bumps task? | Creates notification? |
+|-------|-------------|----------------------|
+| User sends a message | Yes | No |
+| User opens/clicks a task | Yes | No |
+| User creates a session | Yes | No |
+| Agent finishes responding | Yes | Yes |
+| PR review requested | Yes | Yes |
+| PR merged | Yes | Yes |
+| PR comment added | Yes | Yes |
+| Agent error/needs input | Yes | Yes |
+
+### Recipient resolution
+
+Notifications and bumps go to the **task owner** only. Each task has exactly one owner at a time (the user who last sent a message or explicitly took ownership). This is an acceptable race condition — it rarely makes sense for two users to work on the same task simultaneously, and ownership transfer is explicit.
+
+The system supports multiplayer (multiple users can view the same task), but the notification/bump target is always the single current owner. Each user has their own independent notification and unread state on their own user actor.
+
+### Tables (on user actor)
+
+Two new tables:
+
+- **`userTaskFeed`** — one row per task. Tracks `bumpedAtMs` and `bumpReason` for sidebar sort order. Does NOT denormalize task content (title, repo, etc.) — the frontend queries the org actor for task content and uses the feed only for ordering/filtering.
+- **`userNotifications`** — discrete notification entries with `type`, `message`, `read` state, and optional `sessionId`. Retention: notifications are retained for a configurable number of days after being marked read, then cleaned up.
+
+### Queue commands (user actor workflow)
+
+- `user.bump_task` — upserts `userTaskFeed` row, no notification created. Used for user-initiated actions (send message, open task, create session).
+- `user.notify` — inserts `userNotifications` row AND upserts `userTaskFeed` (auto-bump). Used for system events (agent finished, PR review requested).
+- `user.mark_read` — marks notifications read for a given `(taskId, sessionId?)`. Also updates `userTaskState.unread` for the session.
+
+### Data flow
+
+Task actor (or org actor) resolves the current task owner, then sends to the owner's user actor queue:
+1. `user.notify(...)` for notification-worthy events (auto-bumps the feed)
+2. `user.bump_task(...)` for non-notification bumps (send message, open task)
+
+The user actor processes the queue message, writes to its local tables, and broadcasts a `userFeedUpdated` event to connected clients.
+
+### Sidebar architecture change
+
+The left sidebar changes from showing the repo/PR tree to showing **recent tasks** ordered by `userTaskFeed.bumpedAtMs`. Two new buttons at the top of the sidebar:
+- **All Repositories** — navigates to a page showing the current repo + PR list (preserving existing functionality)
+- **Notifications** — navigates to a page showing the full notification list
+
+The sidebar reads from two sources:
+- **User actor** (`userTaskFeed`) — provides sort order and "which tasks are relevant to this user"
+- **Org actor** (`taskSummaries`) — provides task content (title, status, branch, PR state, session summaries)
+
+The frontend merges these: org snapshot gives task data, user feed gives sort order. Uses the existing subscription system (`useSubscription`) for both initial state fetch and streaming updates.
+
+### `updatedAtMs` column semantics
+
+The org actor's `taskSummaries.updatedAtMs` and the user actor's `userTaskFeed.bumpedAtMs` serve different purposes:
+- `taskSummaries.updatedAtMs` — updated by task actor push. Reflects the last time the task's global state changed (any mutation, any user). Used for "All Repositories" / "All Tasks" views.
+- `userTaskFeed.bumpedAtMs` — updated by bump/notify commands. Reflects the last time this specific user's attention was drawn to this task. Used for the per-user sidebar sort.
+
+Add doc comments on both columns clarifying the update source.
+
+### Unread semantics
+
+Each user has independent unread state. The existing `userTaskState` table tracks per-`(taskId, sessionId)` unread state. When the user clicks a session:
+1. `userTaskState.unread` is set to 0 for that session
+2. All `userNotifications` rows matching `(taskId, sessionId)` are marked `read = 1`
+
+These two unread systems must stay in sync via the `user.mark_read` queue command.
+
 ## Maintenance
 
 - Keep this file up to date whenever actor ownership, hierarchy, or lifecycle responsibilities change.

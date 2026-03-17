@@ -28,7 +28,10 @@ export const TASK_QUEUE_NAMES = [
   "task.command.workspace.close_session",
   "task.command.workspace.publish_pr",
   "task.command.workspace.revert_file",
+  "task.command.workspace.change_owner",
 ] as const;
+
+export type TaskQueueName = (typeof TASK_QUEUE_NAMES)[number];
 
 export function taskWorkflowQueueName(name: string): string {
   return name;

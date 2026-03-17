@@ -1,11 +1,11 @@
 import { betterAuth } from "better-auth";
 import { createAdapterFactory } from "better-auth/adapters";
 import { APP_SHELL_ORGANIZATION_ID } from "../actors/organization/constants.js";
-// organization actions are called directly (no queue)
-// user actor actions are called directly (no queue)
 import { organizationKey, userKey } from "../actors/keys.js";
 import { logger } from "../logging.js";
-// expectQueueResponse removed — actions return values directly
+import { expectQueueResponse } from "./queue.js";
+import { userWorkflowQueueName } from "../actors/user/workflow.js";
+import { organizationWorkflowQueueName } from "../actors/organization/queues.js";
 
 const AUTH_BASE_PATH = "/v1/auth";
 const SESSION_COOKIE = "better-auth.session_token";
@@ -61,8 +61,6 @@ function resolveRouteUserId(organization: any, resolved: any): string | null {
   }
   return null;
 }
-
-// sendOrganizationCommand removed — org actions are called directly
 
 export interface BetterAuthService {
   auth: any;
@@ -162,9 +160,9 @@ export function initBetterAuthService(actorClient: any, options: { apiUrl: strin
         return null;
       };
 
-      const ensureOrganizationVerification = async (actionName: string, payload: Record<string, unknown>) => {
+      const ensureOrganizationVerification = async (queueName: string, payload: Record<string, unknown>) => {
         const organization = await appOrganization();
-        return await (organization as any)[actionName](payload);
+        return expectQueueResponse(await organization.send(organizationWorkflowQueueName(queueName as any), payload, { wait: true, timeout: 10_000 }));
       };
 
       return {
@@ -175,7 +173,7 @@ export function initBetterAuthService(actorClient: any, options: { apiUrl: strin
         create: async ({ model, data }) => {
           const transformed = await transformInput(data, model, "create", true);
           if (model === "verification") {
-            return await ensureOrganizationVerification("commandBetterAuthVerificationCreate", { data: transformed });
+            return await ensureOrganizationVerification("organization.command.better_auth.verification.create", { data: transformed });
           }
 
           const userId = await resolveUserIdForQuery(model, undefined, transformed);
@@ -184,31 +182,51 @@ export function initBetterAuthService(actorClient: any, options: { apiUrl: strin
           }
 
           const userActor = await getUser(userId);
-          const created = await userActor.authCreate({ model, data: transformed });
+          const created = expectQueueResponse(
+            await userActor.send(userWorkflowQueueName("user.command.auth.create"), { model, data: transformed }, { wait: true, timeout: 10_000 }),
+          );
           const organization = await appOrganization();
 
           if (model === "user" && typeof transformed.email === "string" && transformed.email.length > 0) {
-            await organization.commandBetterAuthEmailIndexUpsert({
-              email: transformed.email.toLowerCase(),
-              userId,
-            });
+            expectQueueResponse(
+              await organization.send(
+                organizationWorkflowQueueName("organization.command.better_auth.email_index.upsert"),
+                {
+                  email: transformed.email.toLowerCase(),
+                  userId,
+                },
+                { wait: true, timeout: 10_000 },
+              ),
+            );
           }
 
           if (model === "session") {
-            await organization.commandBetterAuthSessionIndexUpsert({
-              sessionId: String(created.id),
-              sessionToken: String(created.token),
-              userId,
-            });
+            expectQueueResponse(
+              await organization.send(
+                organizationWorkflowQueueName("organization.command.better_auth.session_index.upsert"),
+                {
+                  sessionId: String(created.id),
+                  sessionToken: String(created.token),
+                  userId,
+                },
+                { wait: true, timeout: 10_000 },
+              ),
+            );
           }
 
           if (model === "account") {
-            await organization.commandBetterAuthAccountIndexUpsert({
-              id: String(created.id),
-              providerId: String(created.providerId),
-              accountId: String(created.accountId),
-              userId,
-            });
+            expectQueueResponse(
+              await organization.send(
+                organizationWorkflowQueueName("organization.command.better_auth.account_index.upsert"),
+                {
+                  id: String(created.id),
+                  providerId: String(created.providerId),
+                  accountId: String(created.accountId),
+                  userId,
+                },
+                { wait: true, timeout: 10_000 },
+              ),
+            );
           }
 
           return (await transformOutput(created, model)) as any;
@@ -291,7 +309,7 @@ export function initBetterAuthService(actorClient: any, options: { apiUrl: strin
           const transformedWhere = transformWhereClause({ model, where, action: "update" });
           const transformedUpdate = (await transformInput(update as Record<string, unknown>, model, "update", true)) as Record<string, unknown>;
           if (model === "verification") {
-            return await ensureOrganizationVerification("commandBetterAuthVerificationUpdate", {
+            return await ensureOrganizationVerification("organization.command.better_auth.verification.update", {
               where: transformedWhere,
               update: transformedUpdate,
             });
@@ -311,38 +329,66 @@ export function initBetterAuthService(actorClient: any, options: { apiUrl: strin
                 : model === "session"
                   ? await userActor.betterAuthFindOneRecord({ model, where: transformedWhere })
                   : null;
-          const updated = await userActor.authUpdate({ model, where: transformedWhere, update: transformedUpdate });
+          const updated = expectQueueResponse(
+            await userActor.send(
+              userWorkflowQueueName("user.command.auth.update"),
+              { model, where: transformedWhere, update: transformedUpdate },
+              { wait: true, timeout: 10_000 },
+            ),
+          );
           const organization = await appOrganization();
 
           if (model === "user" && updated) {
             if (before?.email && before.email !== updated.email) {
-              await organization.commandBetterAuthEmailIndexDelete({
-                email: before.email.toLowerCase(),
-              });
+              await organization.send(
+                organizationWorkflowQueueName("organization.command.better_auth.email_index.delete"),
+                {
+                  email: before.email.toLowerCase(),
+                },
+                { wait: true, timeout: 10_000 },
+              );
             }
             if (updated.email) {
-              await organization.commandBetterAuthEmailIndexUpsert({
-                email: updated.email.toLowerCase(),
-                userId,
-              });
+              expectQueueResponse(
+                await organization.send(
+                  organizationWorkflowQueueName("organization.command.better_auth.email_index.upsert"),
+                  {
+                    email: updated.email.toLowerCase(),
+                    userId,
+                  },
+                  { wait: true, timeout: 10_000 },
+                ),
+              );
             }
           }
 
           if (model === "session" && updated) {
-            await organization.commandBetterAuthSessionIndexUpsert({
-              sessionId: String(updated.id),
-              sessionToken: String(updated.token),
-              userId,
-            });
+            expectQueueResponse(
+              await organization.send(
+                organizationWorkflowQueueName("organization.command.better_auth.session_index.upsert"),
+                {
+                  sessionId: String(updated.id),
+                  sessionToken: String(updated.token),
+                  userId,
+                },
+                { wait: true, timeout: 10_000 },
+              ),
+            );
           }
 
           if (model === "account" && updated) {
-            await organization.commandBetterAuthAccountIndexUpsert({
-              id: String(updated.id),
-              providerId: String(updated.providerId),
-              accountId: String(updated.accountId),
-              userId,
-            });
+            expectQueueResponse(
+              await organization.send(
+                organizationWorkflowQueueName("organization.command.better_auth.account_index.upsert"),
+                {
+                  id: String(updated.id),
+                  providerId: String(updated.providerId),
+                  accountId: String(updated.accountId),
+                  userId,
+                },
+                { wait: true, timeout: 10_000 },
+              ),
+            );
           }
 
           return updated ? ((await transformOutput(updated, model)) as any) : null;
@@ -352,7 +398,7 @@ export function initBetterAuthService(actorClient: any, options: { apiUrl: strin
           const transformedWhere = transformWhereClause({ model, where, action: "updateMany" });
           const transformedUpdate = (await transformInput(update as Record<string, unknown>, model, "update", true)) as Record<string, unknown>;
           if (model === "verification") {
-            return await ensureOrganizationVerification("commandBetterAuthVerificationUpdateMany", {
+            return await ensureOrganizationVerification("organization.command.better_auth.verification.update_many", {
               where: transformedWhere,
               update: transformedUpdate,
             });
@@ -364,14 +410,24 @@ export function initBetterAuthService(actorClient: any, options: { apiUrl: strin
           }
 
           const userActor = await getUser(userId);
-          return await userActor.authUpdateMany({ model, where: transformedWhere, update: transformedUpdate });
+          return expectQueueResponse(
+            await userActor.send(
+              userWorkflowQueueName("user.command.auth.update_many"),
+              { model, where: transformedWhere, update: transformedUpdate },
+              { wait: true, timeout: 10_000 },
+            ),
+          );
         },
 
         delete: async ({ model, where }) => {
           const transformedWhere = transformWhereClause({ model, where, action: "delete" });
           if (model === "verification") {
             const organization = await appOrganization();
-            await organization.commandBetterAuthVerificationDelete({ where: transformedWhere });
+            await organization.send(
+              organizationWorkflowQueueName("organization.command.better_auth.verification.delete"),
+              { where: transformedWhere },
+              { wait: true, timeout: 10_000 },
+            );
             return;
           }
 
@@ -383,34 +439,46 @@ export function initBetterAuthService(actorClient: any, options: { apiUrl: strin
           const userActor = await getUser(userId);
           const organization = await appOrganization();
           const before = await userActor.betterAuthFindOneRecord({ model, where: transformedWhere });
-          await userActor.authDelete({ model, where: transformedWhere });
+          await userActor.send(userWorkflowQueueName("user.command.auth.delete"), { model, where: transformedWhere }, { wait: true, timeout: 10_000 });
 
           if (model === "session" && before) {
-            await organization.commandBetterAuthSessionIndexDelete({
-              sessionId: before.id,
-              sessionToken: before.token,
-            });
+            await organization.send(
+              organizationWorkflowQueueName("organization.command.better_auth.session_index.delete"),
+              {
+                sessionId: before.id,
+                sessionToken: before.token,
+              },
+              { wait: true, timeout: 10_000 },
+            );
           }
 
           if (model === "account" && before) {
-            await organization.commandBetterAuthAccountIndexDelete({
-              id: before.id,
-              providerId: before.providerId,
-              accountId: before.accountId,
-            });
+            await organization.send(
+              organizationWorkflowQueueName("organization.command.better_auth.account_index.delete"),
+              {
+                id: before.id,
+                providerId: before.providerId,
+                accountId: before.accountId,
+              },
+              { wait: true, timeout: 10_000 },
+            );
           }
 
           if (model === "user" && before?.email) {
-            await organization.commandBetterAuthEmailIndexDelete({
-              email: before.email.toLowerCase(),
-            });
+            await organization.send(
+              organizationWorkflowQueueName("organization.command.better_auth.email_index.delete"),
+              {
+                email: before.email.toLowerCase(),
+              },
+              { wait: true, timeout: 10_000 },
+            );
           }
         },
 
         deleteMany: async ({ model, where }) => {
           const transformedWhere = transformWhereClause({ model, where, action: "deleteMany" });
           if (model === "verification") {
-            return await ensureOrganizationVerification("commandBetterAuthVerificationDeleteMany", { where: transformedWhere });
+            return await ensureOrganizationVerification("organization.command.better_auth.verification.delete_many", { where: transformedWhere });
           }
 
           if (model === "session") {
@@ -421,12 +489,18 @@ export function initBetterAuthService(actorClient: any, options: { apiUrl: strin
             const userActor = await getUser(userId);
             const organization = await appOrganization();
             const sessions = await userActor.betterAuthFindManyRecords({ model, where: transformedWhere, limit: 5000 });
-            const deleted = await userActor.authDeleteMany({ model, where: transformedWhere });
+            const deleted = expectQueueResponse(
+              await userActor.send(userWorkflowQueueName("user.command.auth.delete_many"), { model, where: transformedWhere }, { wait: true, timeout: 10_000 }),
+            );
             for (const session of sessions) {
-              await organization.commandBetterAuthSessionIndexDelete({
-                sessionId: session.id,
-                sessionToken: session.token,
-              });
+              await organization.send(
+                organizationWorkflowQueueName("organization.command.better_auth.session_index.delete"),
+                {
+                  sessionId: session.id,
+                  sessionToken: session.token,
+                },
+                { wait: true, timeout: 10_000 },
+              );
             }
             return deleted;
           }
@@ -437,7 +511,9 @@ export function initBetterAuthService(actorClient: any, options: { apiUrl: strin
           }
 
           const userActor = await getUser(userId);
-          const deleted = await userActor.authDeleteMany({ model, where: transformedWhere });
+          const deleted = expectQueueResponse(
+            await userActor.send(userWorkflowQueueName("user.command.auth.delete_many"), { model, where: transformedWhere }, { wait: true, timeout: 10_000 }),
+          );
           return deleted;
         },
 
@@ -509,7 +585,9 @@ export function initBetterAuthService(actorClient: any, options: { apiUrl: strin
 
     async upsertUserProfile(userId: string, patch: Record<string, unknown>) {
       const userActor = await getUser(userId);
-      return await userActor.profileUpsert({ userId, patch });
+      return expectQueueResponse(
+        await userActor.send(userWorkflowQueueName("user.command.profile.upsert"), { userId, patch }, { wait: true, timeout: 10_000 }),
+      );
     },
 
     async setActiveOrganization(sessionId: string, activeOrganizationId: string | null) {
@@ -518,7 +596,9 @@ export function initBetterAuthService(actorClient: any, options: { apiUrl: strin
         throw new Error(`Unknown auth session ${sessionId}`);
       }
       const userActor = await getUser(authState.user.id);
-      return await userActor.sessionStateUpsert({ sessionId, activeOrganizationId });
+      return expectQueueResponse(
+        await userActor.send(userWorkflowQueueName("user.command.session_state.upsert"), { sessionId, activeOrganizationId }, { wait: true, timeout: 10_000 }),
+      );
     },
 
     async getAccessTokenForSession(sessionId: string) {

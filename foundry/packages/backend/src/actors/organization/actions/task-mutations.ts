@@ -17,6 +17,8 @@ import { deriveFallbackTitle, resolveCreateFlowDecision } from "../../../service
 // actions return directly (no queue response unwrapping)
 import { isActorNotFoundError, logActorWarning, resolveErrorMessage } from "../../logging.js";
 import { defaultSandboxProviderId } from "../../../sandbox-config.js";
+import { taskWorkflowQueueName } from "../../task/workflow/queue.js";
+import { expectQueueResponse } from "../../../services/queue.js";
 import { taskIndex, taskSummaries } from "../db/schema.js";
 import { refreshOrganizationSnapshotMutation } from "../actions.js";
 
@@ -202,12 +204,18 @@ export async function createTaskMutation(c: any, cmd: CreateTaskCommand): Promis
     throw error;
   }
 
-  const created = await taskHandle.initialize({
-    sandboxProviderId: cmd.sandboxProviderId,
-    branchName: initialBranchName,
-    title: initialTitle,
-    task: cmd.task,
-  });
+  const created = expectQueueResponse<TaskRecord>(
+    await taskHandle.send(
+      taskWorkflowQueueName("task.command.initialize"),
+      {
+        sandboxProviderId: cmd.sandboxProviderId,
+        branchName: initialBranchName,
+        title: initialTitle,
+        task: cmd.task,
+      },
+      { wait: true, timeout: 10_000 },
+    ),
+  );
 
   try {
     await upsertTaskSummary(c, await taskHandle.getTaskSummary({}));
@@ -384,7 +392,7 @@ export async function refreshTaskSummaryForBranchMutation(
       // Best-effort notify the task actor if it exists (fire-and-forget)
       try {
         const task = getTask(c, c.state.organizationId, input.repoId, row.taskId);
-        void task.pullRequestSync({ pullRequest }).catch(() => {});
+        void task.send(taskWorkflowQueueName("task.command.pull_request.sync"), { pullRequest }, { wait: false }).catch(() => {});
       } catch {
         // Task actor doesn't exist yet — that's fine, it's virtual
       }
