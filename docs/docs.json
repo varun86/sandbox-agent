@@ -2,14 +2,10 @@
   "$schema": "https://mintlify.com/docs.json",
   "theme": "willow",
   "name": "Sandbox Agent SDK",
-  "appearance": {
-    "default": "dark",
-    "strict": true
-  },
   "colors": {
     "primary": "#ff4f00",
-    "light": "#ff4f00",
-    "dark": "#ff4f00"
+    "light": "#ff6a2a",
+    "dark": "#cc3f00"
   },
   "favicon": "/favicon.svg",
   "logo": {
@@ -36,6 +32,7 @@
         "href": "https://discord.gg/auCecybynK"
       },
       {
+        "label": "GitHub",
         "type": "github",
         "href": "https://github.com/rivet-dev/sandbox-agent"
       }
@@ -127,5 +124,6 @@
         ]
       }
     ]
-  }
+  },
+  "styles": ["/theme.css"]
 }
