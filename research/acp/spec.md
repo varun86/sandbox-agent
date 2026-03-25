@@ -233,8 +233,6 @@ Non-ACP endpoints retained in v1:
 - `GET /v1/health`
 - `GET /v1/agents` (capabilities + install status)
 - `POST /v1/agents/{agent}/install`
-- `GET /v1/sessions`
-- `GET /v1/sessions/{id}`
 - `GET /v1/fs/file`
 - `PUT /v1/fs/file`
 - `POST /v1/fs/upload-batch`

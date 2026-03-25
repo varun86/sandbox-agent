@@ -101,25 +101,23 @@ Each session tracks:
 ### Lifecycle
 
 ```
-POST /v1/sessions/{sessionId}     Create session, auto-install agent
+POST /v1/acp/{serverId}?agent=... initialize ACP server, auto-install agent
         ↓
-POST /v1/sessions/{id}/messages   Spawn agent subprocess, stream output
-POST /v1/sessions/{id}/messages/stream   Post and stream a single turn
+POST /v1/acp/{serverId}           session/new
+POST /v1/acp/{serverId}           session/prompt
         ↓
-GET /v1/sessions/{id}/events      Poll for new events (offset-based)
-GET /v1/sessions/{id}/events/sse  Subscribe to SSE stream
+GET /v1/acp/{serverId}            Subscribe to ACP SSE stream
         ↓
-POST .../questions/{id}/reply     Answer agent question
-POST .../permissions/{id}/reply   Grant/deny permission request
+JSON-RPC response envelopes       Answer questions / reply to permissions
         ↓
-(agent process terminates)        Session marked as ended
+DELETE /v1/acp/{serverId}         Close ACP server
 ```
 
 ### Event Streaming
 
-- Events are stored in memory per session and assigned a monotonically increasing `id`.
-- `/events` returns a slice of events by offset/limit.
-- `/events/sse` streams new events from the same offset semantics.
+- ACP envelopes are stored in memory per server and assigned a monotonically increasing SSE `id`.
+- `GET /v1/acp/{serverId}` replays buffered envelopes and then streams live updates.
+- Clients continue turns by POSTing ACP JSON-RPC requests to the same server id.
 
 When a message is sent:
 

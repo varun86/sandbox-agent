@@ -49,7 +49,7 @@ Returned `AgentModelsResponse` with full model list including variants.
 ### Session Creation with Variant
 
 ```
-POST /v1/sessions
+legacy session create endpoint
 ```
 
 Body included `variant: Option<String>` to select a specific model variant at session creation time.

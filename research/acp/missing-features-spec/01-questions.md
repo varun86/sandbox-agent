@@ -59,11 +59,11 @@ struct PendingQuestion {
 }
 ```
 
-## v1 HTTP Endpoints (from `router.rs`)
+## Legacy Session REST Endpoints (from `router.rs`)
 
 ```
-POST /v1/sessions/{session_id}/questions/{question_id}/reply   -> 204 No Content
-POST /v1/sessions/{session_id}/questions/{question_id}/reject   -> 204 No Content
+session question reply endpoint   -> 204 No Content
+session question reject endpoint  -> 204 No Content
 ```
 
 ### `reply_question` handler
@@ -122,7 +122,7 @@ Key flow:
 
 1. Agent emits `question.requested` event with `QuestionEventData { status: Requested, question_id, prompt, options }`
 2. Client renders question UI
-3. Client calls `POST /v1/sessions/{id}/questions/{qid}/reply` with `{ answers: [["selected"]] }` or `POST .../reject`
+3. Client calls the legacy session question reply or reject endpoint with `{ answers: [["selected"]] }`
 4. System emits `question.resolved` event with `QuestionEventData { status: Answered, response: Some("...") }` or `{ status: Rejected }`
 
 ## v1 Agent Capability

@@ -15,6 +15,7 @@ import { daytona } from "../src/providers/daytona.ts";
 import { vercel } from "../src/providers/vercel.ts";
 import { modal } from "../src/providers/modal.ts";
 import { computesdk } from "../src/providers/computesdk.ts";
+import { sprites } from "../src/providers/sprites.ts";
 import { prepareMockAgentDataHome } from "./helpers/mock-agent.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -47,7 +48,7 @@ function isModuleAvailable(name: string): boolean {
     _require.resolve(name);
     return true;
   } catch {
-    return false;
+    return existsSync(resolve(__dirname, "../node_modules", ...name.split("/"), "package.json"));
   }
 }
 
@@ -69,6 +70,8 @@ interface ProviderEntry {
   name: string;
   /** Human-readable reasons this provider can't run, or empty if ready. */
   skipReasons: string[];
+  /** Human-readable reasons session tests can't run, or empty if ready. */
+  sessionSkipReasons?: string[];
   /** Return a fresh provider instance for a single test. */
   createProvider: () => SandboxProvider;
   /** Optional per-provider setup (e.g. create temp dirs). Returns cleanup fn. */
@@ -79,6 +82,8 @@ interface ProviderEntry {
   startTimeoutMs?: number;
   /** Some providers (e.g. local) can verify the sandbox is gone after destroy. */
   canVerifyDestroyedSandbox?: boolean;
+  /** Working directory to use for createSession/prompt tests. */
+  sessionCwd?: string;
   /**
    * Whether session tests (createSession, prompt) should run.
    * The mock agent only works with local provider (requires mock-acp process binary).
@@ -90,6 +95,10 @@ interface ProviderEntry {
 function missingEnvVars(...vars: string[]): string[] {
   const missing = vars.filter((v) => !process.env[v]);
   return missing.length > 0 ? [`missing env: ${missing.join(", ")}`] : [];
+}
+
+function missingAnyEnvVars(...vars: string[]): string[] {
+  return vars.some((v) => Boolean(process.env[v])) ? [] : [`missing env: one of ${vars.join(", ")}`];
 }
 
 function missingModules(...modules: string[]): string[] {
@@ -116,6 +125,7 @@ function buildProviders(): ProviderEntry[] {
       skipReasons: [],
       agent: "mock",
       canVerifyDestroyedSandbox: true,
+      sessionCwd: process.cwd(),
       sessionTestsEnabled: true,
       setup() {
         dataHome = mkdtempSync(join(tmpdir(), "sdk-provider-local-"));
@@ -165,7 +175,6 @@ function buildProviders(): ProviderEntry[] {
   }
 
   // --- e2b ---
-  // Session tests disabled: see docker comment above (ACP protocol mismatch).
   {
     entries.push({
       name: "e2b",
@@ -173,7 +182,9 @@ function buildProviders(): ProviderEntry[] {
       agent: "claude",
       startTimeoutMs: 300_000,
       canVerifyDestroyedSandbox: false,
-      sessionTestsEnabled: false,
+      sessionSkipReasons: missingEnvVars("ANTHROPIC_API_KEY"),
+      sessionCwd: "/home/user",
+      sessionTestsEnabled: true,
       createProvider() {
         return e2b({
           create: { envs: collectApiKeys() },
@@ -183,7 +194,6 @@ function buildProviders(): ProviderEntry[] {
   }
 
   // --- daytona ---
-  // Session tests disabled: see docker comment above (ACP protocol mismatch).
   {
     entries.push({
       name: "daytona",
@@ -191,7 +201,9 @@ function buildProviders(): ProviderEntry[] {
       agent: "claude",
       startTimeoutMs: 300_000,
       canVerifyDestroyedSandbox: false,
-      sessionTestsEnabled: false,
+      sessionSkipReasons: missingEnvVars("ANTHROPIC_API_KEY"),
+      sessionCwd: "/home/sandbox",
+      sessionTestsEnabled: true,
       createProvider() {
         return daytona({
           create: { envVars: collectApiKeys() },
@@ -201,7 +213,6 @@ function buildProviders(): ProviderEntry[] {
   }
 
   // --- vercel ---
-  // Session tests disabled: see docker comment above (ACP protocol mismatch).
   {
     entries.push({
       name: "vercel",
@@ -219,7 +230,6 @@ function buildProviders(): ProviderEntry[] {
   }
 
   // --- modal ---
-  // Session tests disabled: see docker comment above (ACP protocol mismatch).
   {
     entries.push({
       name: "modal",
@@ -227,9 +237,12 @@ function buildProviders(): ProviderEntry[] {
       agent: "claude",
       startTimeoutMs: 300_000,
       canVerifyDestroyedSandbox: false,
-      sessionTestsEnabled: false,
+      sessionSkipReasons: missingEnvVars("ANTHROPIC_API_KEY"),
+      sessionCwd: "/root",
+      sessionTestsEnabled: true,
       createProvider() {
         return modal({
+          image: process.env.SANDBOX_AGENT_MODAL_IMAGE,
           create: { secrets: collectApiKeys() },
         });
       },
@@ -237,7 +250,6 @@ function buildProviders(): ProviderEntry[] {
   }
 
   // --- computesdk ---
-  // Session tests disabled: see docker comment above (ACP protocol mismatch).
   {
     entries.push({
       name: "computesdk",
@@ -249,6 +261,28 @@ function buildProviders(): ProviderEntry[] {
       createProvider() {
         return computesdk({
           create: { envs: collectApiKeys() },
+        });
+      },
+    });
+  }
+
+  // --- sprites ---
+  {
+    entries.push({
+      name: "sprites",
+      skipReasons: [...missingAnyEnvVars("SPRITES_API_KEY", "SPRITE_TOKEN", "SPRITES_TOKEN"), ...missingModules("@fly/sprites")],
+      agent: "claude",
+      startTimeoutMs: 300_000,
+      canVerifyDestroyedSandbox: false,
+      sessionSkipReasons: missingEnvVars("ANTHROPIC_API_KEY"),
+      sessionCwd: "/home/sprite",
+      sessionTestsEnabled: true,
+      createProvider() {
+        return sprites({
+          token: process.env.SPRITES_API_KEY ?? process.env.SPRITE_TOKEN ?? process.env.SPRITES_TOKEN,
+          env: collectApiKeys(),
+          installAgents: ["claude"],
+          serviceStartDuration: "10m",
         });
       },
     });
@@ -375,7 +409,7 @@ function providerSuite(entry: ProviderEntry) {
 
     // -- session tests (require working agent) --
 
-    const sessionIt = entry.sessionTestsEnabled ? it : it.skip;
+    const sessionIt = entry.sessionTestsEnabled && (entry.sessionSkipReasons?.length ?? 0) === 0 ? it : it.skip;
 
     sessionIt(
       "creates sessions with persisted sandboxId",
@@ -383,7 +417,7 @@ function providerSuite(entry: ProviderEntry) {
         const persist = new InMemorySessionPersistDriver();
         sdk = await SandboxAgent.start({ sandbox: entry.createProvider(), persist });
 
-        const session = await sdk.createSession({ agent: entry.agent });
+        const session = await sdk.createSession({ agent: entry.agent, cwd: entry.sessionCwd });
         const record = await persist.getSession(session.id);
 
         expect(record?.sandboxId).toBe(sdk.sandboxId);
@@ -396,7 +430,7 @@ function providerSuite(entry: ProviderEntry) {
       async () => {
         sdk = await SandboxAgent.start({ sandbox: entry.createProvider() });
 
-        const session = await sdk.createSession({ agent: entry.agent });
+        const session = await sdk.createSession({ agent: entry.agent, cwd: entry.sessionCwd });
         const events: unknown[] = [];
         const off = session.onEvent((event) => {
           events.push(event);

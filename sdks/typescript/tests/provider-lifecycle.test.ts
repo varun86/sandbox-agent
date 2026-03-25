@@ -29,6 +29,12 @@ const computeSdkMocks = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
+const spritesMocks = vi.hoisted(() => ({
+  createSprite: vi.fn(),
+  getSprite: vi.fn(),
+  deleteSprite: vi.fn(),
+}));
+
 vi.mock("@e2b/code-interpreter", () => ({
   NotFoundError: e2bMocks.MockNotFoundError,
   Sandbox: {
@@ -58,9 +64,26 @@ vi.mock("computesdk", () => ({
   },
 }));
 
+vi.mock("@fly/sprites", () => ({
+  SpritesClient: class MockSpritesClient {
+    readonly token: string;
+    readonly baseURL: string;
+
+    constructor(token: string, options: { baseURL?: string } = {}) {
+      this.token = token;
+      this.baseURL = options.baseURL ?? "https://api.sprites.dev";
+    }
+
+    createSprite = spritesMocks.createSprite;
+    getSprite = spritesMocks.getSprite;
+    deleteSprite = spritesMocks.deleteSprite;
+  },
+}));
+
 import { e2b } from "../src/providers/e2b.ts";
 import { modal } from "../src/providers/modal.ts";
 import { computesdk } from "../src/providers/computesdk.ts";
+import { sprites } from "../src/providers/sprites.ts";
 
 function createFetch(): typeof fetch {
   return async () => new Response(null, { status: 200 });
@@ -110,6 +133,9 @@ beforeEach(() => {
   modalMocks.sandboxFromId.mockReset();
   computeSdkMocks.create.mockReset();
   computeSdkMocks.getById.mockReset();
+  spritesMocks.createSprite.mockReset();
+  spritesMocks.getSprite.mockReset();
+  spritesMocks.deleteSprite.mockReset();
 });
 
 describe("SandboxAgent provider lifecycle", () => {
@@ -308,7 +334,7 @@ describe("modal provider", () => {
 
     expect(modalMocks.appsFromName).toHaveBeenCalledWith("custom-app", { createIfMissing: true });
     expect(modalMocks.imageFromRegistry).toHaveBeenCalledWith("python:3.12-slim");
-    expect(image.dockerfileCommands).toHaveBeenCalled();
+    expect(image.dockerfileCommands).not.toHaveBeenCalled();
     expect(modalMocks.sandboxCreate).toHaveBeenCalledWith(
       app,
       image,
@@ -345,5 +371,141 @@ describe("computesdk provider", () => {
         templateId: "tmpl-123",
       }),
     );
+  });
+});
+
+describe("sprites provider", () => {
+  it("creates a sprite, installs sandbox-agent, and configures the managed service", async () => {
+    const sprite = {
+      name: "sprite-1",
+      execFile: vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 })),
+    };
+    spritesMocks.createSprite.mockResolvedValue(sprite);
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ state: { status: "stopped" } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const provider = sprites({
+      token: "sprite-token",
+      create: {
+        name: "sprite-1",
+      },
+      env: {
+        OPENAI_API_KEY: "test'value",
+      },
+    });
+
+    await expect(provider.create()).resolves.toBe("sprite-1");
+
+    expect(spritesMocks.createSprite).toHaveBeenCalledWith("sprite-1", undefined);
+    expect(sprite.execFile).not.toHaveBeenCalled();
+
+    const putCall = fetchMock.mock.calls.find(([url, init]) => String(url).includes("/services/sandbox-agent") && init?.method === "PUT");
+    expect(putCall).toBeDefined();
+    expect(String(putCall?.[0])).toContain("/v1/sprites/sprite-1/services/sandbox-agent");
+    expect(putCall?.[1]?.headers).toMatchObject({
+      Authorization: "Bearer sprite-token",
+      "Content-Type": "application/json",
+    });
+    const serviceRequest = JSON.parse(String(putCall?.[1]?.body)) as { args: string[] };
+    expect(serviceRequest.args[1]).toContain("exec npx -y @sandbox-agent/cli@0.5.0-rc.2 server --no-token --host 0.0.0.0 --port 8080");
+    expect(serviceRequest.args[1]).toContain("OPENAI_API_KEY='test'\\''value'");
+  });
+
+  it("optionally installs agents through npx when requested", async () => {
+    const sprite = {
+      name: "sprite-1",
+      execFile: vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 })),
+    };
+    spritesMocks.createSprite.mockResolvedValue(sprite);
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ state: { status: "stopped" } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const provider = sprites({
+      token: "sprite-token",
+      create: { name: "sprite-1" },
+      env: { OPENAI_API_KEY: "test" },
+      installAgents: ["claude", "codex"],
+    });
+
+    await provider.create();
+
+    expect(sprite.execFile).toHaveBeenCalledWith("bash", ["-lc", "npx -y @sandbox-agent/cli@0.5.0-rc.2 install-agent claude"], {
+      env: { OPENAI_API_KEY: "test" },
+    });
+    expect(sprite.execFile).toHaveBeenCalledWith("bash", ["-lc", "npx -y @sandbox-agent/cli@0.5.0-rc.2 install-agent codex"], {
+      env: { OPENAI_API_KEY: "test" },
+    });
+  });
+
+  it("returns the sprite URL and provider token for authenticated access", async () => {
+    spritesMocks.getSprite.mockResolvedValue({
+      name: "sprite-1",
+      url: "https://sprite-1.sprites.app",
+    });
+
+    const provider = sprites({
+      token: "sprite-token",
+    });
+
+    await expect(provider.getUrl?.("sprite-1")).resolves.toBe("https://sprite-1.sprites.app");
+    await expect((provider as SandboxProvider & { getToken: (sandboxId: string) => Promise<string> }).getToken("sprite-1")).resolves.toBe("sprite-token");
+  });
+
+  it("maps missing reconnect targets to SandboxDestroyedError", async () => {
+    spritesMocks.getSprite.mockRejectedValue(new Error("Sprite not found: missing-sprite"));
+    const provider = sprites({
+      token: "sprite-token",
+    });
+
+    await expect(provider.reconnect?.("missing-sprite")).rejects.toBeInstanceOf(SandboxDestroyedError);
+  });
+
+  it("skips starting the service when the desired service is already running", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            cmd: "bash",
+            args: ["-lc", "exec npx -y @sandbox-agent/cli@0.5.0-rc.2 server --no-token --host 0.0.0.0 --port 8080"],
+            http_port: 8080,
+            state: { status: "running" },
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            cmd: "bash",
+            args: ["-lc", "exec npx -y @sandbox-agent/cli@0.5.0-rc.2 server --no-token --host 0.0.0.0 --port 8080"],
+            http_port: 8080,
+            state: { status: "running" },
+          }),
+          { status: 200 },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const provider = sprites({
+      token: "sprite-token",
+    });
+
+    await provider.ensureServer?.("sprite-1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.every(([, init]) => init?.method === "GET")).toBe(true);
   });
 });

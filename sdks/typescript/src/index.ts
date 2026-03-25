@@ -147,3 +147,9 @@ export type {
   SandboxAgentSpawnLogMode,
   SandboxAgentSpawnOptions,
 } from "./spawn.ts";
+
+export type {
+  SpritesProviderOptions,
+  SpritesCreateOverrides,
+  SpritesClientOverrides,
+} from "./providers/sprites.ts";

@@ -10,6 +10,5 @@ packages:
   - "sdks/gigacode/platforms/*"
   - "resources/vercel-ai-sdk-schemas"
   - "scripts/release"
-  - "scripts/sandbox-testing"
   - "examples/*"
   - "server/packages/sandbox-agent/tests/opencode-compat"

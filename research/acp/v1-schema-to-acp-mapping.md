@@ -54,16 +54,16 @@ Extension namespace used in this spec:
 | `POST /v1/fs/move` | `POST /v1/fs/move` | HTTP platform API | Port v1 behavior. |
 | `GET /v1/fs/stat` | `GET /v1/fs/stat` | HTTP platform API | Port v1 behavior. |
 | `POST /v1/fs/upload-batch` | `POST /v1/fs/upload-batch` | HTTP platform API | Tar upload/extract behavior from v1. |
-| `GET /v1/sessions` | `GET /v1/sessions` | HTTP control-plane | Session inventory without ACP connection requirement. |
-| `POST /v1/sessions/{session_id}` | `session/new` | Standard | Path `session_id` becomes alias in `_meta["sandboxagent.dev"].requestedSessionId`. |
-| `POST /v1/sessions/{session_id}/messages` | `session/prompt` | Standard | Asynchronous behavior comes from transport (request + stream). |
-| `POST /v1/sessions/{session_id}/messages/stream` | `session/prompt` + consume `session/update` on SSE | Standard | Streaming is transport-level, not a distinct ACP method. |
-| `POST /v1/sessions/{session_id}/terminate` | `_sandboxagent/session/terminate` | Extension | Idempotent termination semantics distinct from `DELETE /v1/rpc`. |
-| `GET /v1/sessions/{session_id}/events` | `_sandboxagent/session/events` (poll view over ACP stream) | Extension | Optional compatibility helper; canonical v1 is stream consumption. |
-| `GET /v1/sessions/{session_id}/events/sse` | `GET /v1/rpc` SSE stream | Standard transport | Filter by sessionId client-side or via connection/session binding. |
-| `POST /v1/sessions/{session_id}/permissions/{permission_id}/reply` | JSON-RPC response to pending `session/request_permission` request id | Standard | Bridge `permission_id` to request `id` in transport state. |
-| `POST /v1/sessions/{session_id}/questions/{question_id}/reply` | JSON-RPC response to pending `_sandboxagent/session/request_question` | Extension | ACP stable has no generic question/HITL request method. |
-| `POST /v1/sessions/{session_id}/questions/{question_id}/reject` | JSON-RPC response to pending `_sandboxagent/session/request_question` | Extension | Encode rejection in response outcome. |
+| legacy session list route | session/list | HTTP control-plane | Session inventory without ACP connection requirement. |
+| legacy session create route | `session/new` | Standard | Path `session_id` becomes alias in `_meta["sandboxagent.dev"].requestedSessionId`. |
+| legacy session prompt route | `session/prompt` | Standard | Asynchronous behavior comes from transport (request + stream). |
+| legacy session prompt + stream route | `session/prompt` + consume `session/update` on SSE | Standard | Streaming is transport-level, not a distinct ACP method. |
+| legacy session terminate route | `_sandboxagent/session/terminate` | Extension | Idempotent termination semantics distinct from `DELETE /v1/rpc`. |
+| legacy event polling route | `_sandboxagent/session/events` (poll view over ACP stream) | Extension | Optional compatibility helper; canonical v1 is stream consumption. |
+| legacy event SSE route | `GET /v1/rpc` SSE stream | Standard transport | Filter by sessionId client-side or via connection/session binding. |
+| legacy permission reply route | JSON-RPC response to pending `session/request_permission` request id | Standard | Bridge `permission_id` to request `id` in transport state. |
+| legacy question reply route | JSON-RPC response to pending `_sandboxagent/session/request_question` | Extension | ACP stable has no generic question/HITL request method. |
+| legacy question reject route | JSON-RPC response to pending `_sandboxagent/session/request_question` | Extension | Encode rejection in response outcome. |
 
 ### 3.1 `CreateSessionRequest` field mapping
 

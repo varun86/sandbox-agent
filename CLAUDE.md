@@ -20,7 +20,7 @@
 - For HTTP/CLI docs/examples, source of truth is:
   - `server/packages/sandbox-agent/src/router.rs`
   - `server/packages/sandbox-agent/src/cli.rs`
-- Keep docs aligned to implemented endpoints/commands only (for example ACP under `/v1/acp`, not legacy `/v1/sessions` APIs).
+- Keep docs aligned to implemented endpoints/commands only (for example ACP under `/v1/acp`, not legacy session REST APIs).
 
 ## Change Tracking
 
@@ -78,4 +78,3 @@
   - `scripts/release/main.ts`
   - `scripts/release/promote-artifacts.ts`
   - `scripts/release/sdk.ts`
-  - `scripts/sandbox-testing/test-sandbox.ts`

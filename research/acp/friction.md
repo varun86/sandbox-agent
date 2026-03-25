@@ -81,7 +81,7 @@ Update this file continuously during the migration.
 - Date: 2026-02-10
 - Area: Session lifecycle surface
 - Issue: ACP stable does not include v1-equivalent methods for session listing, explicit session termination/delete, or event-log polling.
-- Impact: Direct lift-and-shift of `/v1/sessions`, `/terminate`, and `/events` polling is not possible with ACP core only.
+- Impact: Direct lift-and-shift of the legacy session REST list, terminate, and event-polling behavior is not possible with ACP core only.
 - Proposed direction: Define `_sandboxagent/session/*` extension methods for these control operations, while keeping core prompt flow on standard ACP methods.
 - Decision: Open.
 - Owner: Unassigned.

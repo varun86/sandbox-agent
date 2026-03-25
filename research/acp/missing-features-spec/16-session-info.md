@@ -1,10 +1,10 @@
 # Feature 16: Session Info
 
-**Implementation approach:** New HTTP endpoints (`GET /v1/sessions`, `GET /v1/sessions/{id}`)
+**Implementation approach:** New session-info HTTP endpoints
 
 ## Summary
 
-v1 `SessionInfo` tracked `event_count`, `created_at`, `updated_at`, and full `mcp` config. v1 has session data in the ACP runtime's `MetaSession` struct but no HTTP endpoints to query it. Add REST endpoints for session listing and detail.
+v1 `SessionInfo` tracked `event_count`, `created_at`, `updated_at`, and full `mcp` config. v1 has session data in the ACP runtime's `MetaSession` struct but no HTTP endpoints to query it. Add HTTP endpoints for session listing and detail.
 
 ## Current v1 State
 
@@ -117,8 +117,8 @@ fn build_session_info(state: &SessionState) -> SessionInfo {
 ### New HTTP Endpoints
 
 ```
-GET /v1/sessions              -> SessionListResponse
-GET /v1/sessions/{id}         -> SessionInfo
+session list endpoint         -> SessionListResponse
+session detail endpoint       -> SessionInfo
 ```
 
 These are control-plane HTTP endpoints (not ACP), providing session visibility without requiring an active ACP connection.
@@ -156,7 +156,7 @@ Need to add:
 
 | File | Change |
 |------|--------|
-| `server/packages/sandbox-agent/src/router.rs` | Add `GET /v1/sessions` and `GET /v1/sessions/{id}` handlers; add response types |
+| `server/packages/sandbox-agent/src/router.rs` | Add session list and session detail handlers; add response types |
 | `server/packages/sandbox-agent/src/acp_runtime/mod.rs` | Add `created_at` to `MetaSession`; add `ended` tracking; expose `list_sessions()` and `get_session()` public methods |
 | `sdks/typescript/src/client.ts` | Add `listSessions()` and `getSession(id)` methods |
 | `server/packages/sandbox-agent/tests/v1_api.rs` | Add session listing and detail tests |
@@ -165,6 +165,6 @@ Need to add:
 
 | Doc | Change |
 |-----|--------|
-| `docs/openapi.json` | Add `/v1/sessions` and `/v1/sessions/{id}` endpoint specs |
+| `docs/openapi.json` | Add session list and session detail endpoint specs |
 | `docs/cli.mdx` | Add CLI `sessions list` and `sessions info` commands |
 | `docs/sdks/typescript.mdx` | Document session listing SDK methods |

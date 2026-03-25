@@ -17,16 +17,16 @@
 | /v1/fs/stat | UNIMPLEMENTED |
 | /v1/fs/upload-batch | UNIMPLEMENTED |
 | /v1/health | UNIMPLEMENTED |
-| /v1/sessions | session/list (UNSTABLE) |
-| /v1/sessions/{session_id} | session/new \| session/load \| session/resume (UNSTABLE) |
-| /v1/sessions/{session_id}/events | UNIMPLEMENTED |
-| /v1/sessions/{session_id}/events/sse | session/update (notification stream) |
-| /v1/sessions/{session_id}/messages | session/prompt |
-| /v1/sessions/{session_id}/messages/stream | session/prompt + session/update notifications |
-| /v1/sessions/{session_id}/permissions/{permission_id}/reply | session/request_permission response |
-| /v1/sessions/{session_id}/questions/{question_id}/reject | UNIMPLEMENTED |
-| /v1/sessions/{session_id}/questions/{question_id}/reply | UNIMPLEMENTED |
-| /v1/sessions/{session_id}/terminate | session/cancel (turn cancellation only) |
+| legacy session list route | session/list (UNSTABLE) |
+| legacy session create/load/resume route | session/new \| session/load \| session/resume (UNSTABLE) |
+| legacy session events polling route | UNIMPLEMENTED |
+| legacy session events SSE route | session/update (notification stream) |
+| legacy session prompt route | session/prompt |
+| legacy session prompt + stream route | session/prompt + session/update notifications |
+| legacy permission reply route | session/request_permission response |
+| legacy question reject route | UNIMPLEMENTED |
+| legacy question reply route | UNIMPLEMENTED |
+| legacy session terminate route | session/cancel (turn cancellation only) |
 | AgentCapabilities | initialize.result.agentCapabilities |
 | AgentCapabilities.commandExecution | UNIMPLEMENTED |
 | AgentCapabilities.errorEvents | UNIMPLEMENTED |
@@ -427,7 +427,7 @@
 
 - `UNIMPLEMENTED` means there is no ACP-standard field/method with equivalent semantics in `schema.unstable.json`; implementation would require ACP extension methods (`_...`) and/or `_meta` payloads.
 - Rows mapped to `_meta[...]` are ACP-compatible extensions, not standard interoperable ACP fields; both sides must agree on names and semantics.
-- Legacy event polling (`/v1/sessions/{session_id}/events`) has no ACP equivalent; ACP is stream-first via `session/update` notifications over streamable HTTP.
+- Legacy event polling has no ACP equivalent; ACP is stream-first via `session/update` notifications over streamable HTTP.
 - Session lifecycle differs: ACP has `session/new`, `session/load`, `session/resume` (UNSTABLE), and `session/fork` (UNSTABLE), but no standard explicit "close session" method.
 - Permission handling is request/response (`session/request_permission`) tied to JSON-RPC request IDs; it does not use standalone REST reply endpoints.
 - Question/answer HITL flow in the old schema has no standard ACP equivalent today (separate from permission prompts).

@@ -11,4 +11,4 @@ This tracks legacy inspector behaviors that do not yet have full parity on ACP v
 5. TDOO: Agent mode discovery before creating a session is not implemented (inspector currently returns cached-or-empty mode lists).
 6. TDOO: Agent model discovery before creating a session is not implemented (inspector currently returns cached-or-empty model lists).
 7. TDOO: Session listing only reflects sessions created by this inspector client instance (not full server/global session inventory).
-8. TDOO: Event history shown in inspector is synthesized from ACP traffic handled by the inspector compatibility layer, not the old canonical `/v1/sessions/*/events` backend history.
+8. TDOO: Event history shown in inspector is synthesized from ACP traffic handled by the inspector compatibility layer, not the old canonical session-events backend history.

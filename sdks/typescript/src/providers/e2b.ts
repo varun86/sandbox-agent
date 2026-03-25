@@ -5,6 +5,7 @@ import { DEFAULT_AGENTS, SANDBOX_AGENT_INSTALL_SCRIPT } from "./shared.ts";
 
 const DEFAULT_AGENT_PORT = 3000;
 const DEFAULT_TIMEOUT_MS = 3_600_000;
+const SANDBOX_AGENT_PATH_EXPORT = 'export PATH="/usr/local/bin:$HOME/.local/bin:$PATH"';
 
 type E2BCreateOverrides = Omit<Partial<SandboxBetaCreateOpts>, "timeoutMs" | "autoPause">;
 type E2BConnectOverrides = Omit<Partial<SandboxConnectOpts>, "timeoutMs">;
@@ -35,6 +36,11 @@ async function resolveTemplate(value: E2BTemplateOverride | undefined): Promise<
   return typeof value === "function" ? await value() : value;
 }
 
+function buildShellCommand(command: string, strict = false): string {
+  const strictPrefix = strict ? "set -euo pipefail; " : "";
+  return `bash -lc '${strictPrefix}${SANDBOX_AGENT_PATH_EXPORT}; ${command}'`;
+}
+
 export function e2b(options: E2BProviderOptions = {}): SandboxProvider {
   const agentPort = options.agentPort ?? DEFAULT_AGENT_PORT;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -56,15 +62,15 @@ export function e2b(options: E2BProviderOptions = {}): SandboxProvider {
         : // eslint-disable-next-line @typescript-eslint/no-explicit-any
           await Sandbox.betaCreate({ allowInternetAccess: true, ...restCreateOpts, timeoutMs, autoPause } as any);
 
-      await sandbox.commands.run(`curl -fsSL ${SANDBOX_AGENT_INSTALL_SCRIPT} | sh`).then((r) => {
+      await sandbox.commands.run(buildShellCommand(`curl -fsSL ${SANDBOX_AGENT_INSTALL_SCRIPT} | sh`, true)).then((r) => {
         if (r.exitCode !== 0) throw new Error(`e2b install failed:\n${r.stderr}`);
       });
       for (const agent of DEFAULT_AGENTS) {
-        await sandbox.commands.run(`sandbox-agent install-agent ${agent}`).then((r) => {
+        await sandbox.commands.run(buildShellCommand(`sandbox-agent install-agent ${agent}`)).then((r) => {
           if (r.exitCode !== 0) throw new Error(`e2b agent install failed: ${agent}\n${r.stderr}`);
         });
       }
-      await sandbox.commands.run(`sandbox-agent server --no-token --host 0.0.0.0 --port ${agentPort}`, { background: true, timeoutMs: 0 });
+      await sandbox.commands.run(buildShellCommand(`sandbox-agent server --no-token --host 0.0.0.0 --port ${agentPort}`), { background: true, timeoutMs: 0 });
 
       return sandbox.sandboxId;
     },
@@ -100,7 +106,7 @@ export function e2b(options: E2BProviderOptions = {}): SandboxProvider {
     async ensureServer(sandboxId: string): Promise<void> {
       const connectOpts = await resolveOptions(options.connect, sandboxId);
       const sandbox = await Sandbox.connect(sandboxId, { ...connectOpts, timeoutMs } as SandboxConnectOpts);
-      await sandbox.commands.run(`sandbox-agent server --no-token --host 0.0.0.0 --port ${agentPort}`, { background: true, timeoutMs: 0 });
+      await sandbox.commands.run(buildShellCommand(`sandbox-agent server --no-token --host 0.0.0.0 --port ${agentPort}`), { background: true, timeoutMs: 0 });
     },
   };
 }

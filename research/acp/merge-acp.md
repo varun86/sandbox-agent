@@ -20,8 +20,8 @@ Static v1 endpoints today:
 
 - `GET /v1/agents`
 - `POST /v1/agents/:agent/install`
-- `GET /v1/sessions`
-- `GET /v1/sessions/:session_id`
+- legacy session list endpoint
+- legacy session detail endpoint
 - `GET /v1/fs/entries`
 - `GET /v1/fs/file`
 - `PUT /v1/fs/file`
@@ -76,8 +76,8 @@ Interpretation for clients: all agent/session operations and non-binary filesyst
 | --- | --- | --- |
 | `GET /v1/agents` | `_sandboxagent/agent/list` | Response keeps current `AgentListResponse` shape for low migration risk. |
 | `POST /v1/agents/:agent/install` | `_sandboxagent/agent/install` | Params include `agent`, `reinstall`, `agentVersion`, `agentProcessVersion`. |
-| `GET /v1/sessions` | `_sandboxagent/session/list` | Return current `SessionListResponse` shape (not ACP unstable list shape). |
-| `GET /v1/sessions/:session_id` | `_sandboxagent/session/get` | Return current `SessionInfo` shape; error on missing session. |
+| legacy session list endpoint | `_sandboxagent/session/list` | Return current `SessionListResponse` shape (not ACP unstable list shape). |
+| legacy session detail endpoint | `_sandboxagent/session/get` | Return current `SessionInfo` shape; error on missing session. |
 | `GET /v1/fs/entries` | `_sandboxagent/fs/list_entries` | Preserve path + optional `sessionId` resolution semantics. |
 | `GET /v1/fs/file` | keep HTTP + `_sandboxagent/fs/read_file` | HTTP is primary because responses may require large streaming reads; ACP variant exists for compatibility/smaller payloads. |
 | `PUT /v1/fs/file` | keep HTTP + `_sandboxagent/fs/write_file` | HTTP is primary for large binary writes; ACP variant exists for compatibility/smaller payloads. |
@@ -143,7 +143,7 @@ Package boundary after migration:
 
 - `acp-http-client` remains protocol-pure ACP transport and generic `extMethod`/`extNotification`.
 - `sandbox-agent` remains the typed wrapper that maps convenience methods to `_sandboxagent/...` extension methods.
-- No direct `/v1/agents*`, `/v1/sessions*`, or non-binary `/v1/fs/*` fetches in SDK runtime code.
+- No direct legacy agents/session REST fetches or non-binary `/v1/fs/*` fetches in SDK runtime code.
 - Binary file transfer keeps direct HTTP fetches on the three endpoints listed above.
 - SDK policy: prefer HTTP for `readFsFile`/`writeFsFile`/`uploadFsBatch` even if ACP extension variants exist.
 
@@ -184,17 +184,17 @@ Alternative (optional): introduce a runtime-only control connection mode that do
 - TypeScript SDK (`sdks/typescript/src/client.ts`):
   - Repoint `listAgents`, `installAgent`, `listSessions`, `getSession`, `listFsEntries`, `deleteFsEntry`, `mkdirFs`, `moveFs`, and `statFs` to ACP extension calls.
   - Keep `readFsFile`, `writeFsFile`, and `uploadFsBatch` on HTTP endpoints.
-  - Remove direct runtime fetch usage for `/v1/agents*`, `/v1/sessions*`, and non-binary `/v1/fs/*`.
+  - Remove direct runtime fetch usage for legacy agents/session REST endpoints and non-binary `/v1/fs/*`.
   - Keep method names stable for callers.
   - Move these methods to connected-only semantics (`NotConnectedError` when disconnected).
 - CLI (`server/packages/sandbox-agent/src/cli.rs`):
-  - Make `api agents list/install` call ACP extension methods (via ACP post flow), not direct `/v1/agents*` HTTP calls.
+  - Make `api agents list/install` call ACP extension methods (via ACP post flow), not direct legacy agent HTTP calls.
 - Inspector flow/docs:
   - Stop depending on `GET /v1/agents` in startup path; use ACP extension instead.
 
 ### Phase 3: Remove Static Endpoints (Except Health + Binary FS Transfer)
 
-- Remove route registrations for `/v1/agents*`, `/v1/sessions*`, `/v1/fs/entries`, `/v1/fs/entry`, `/v1/fs/mkdir`, `/v1/fs/move`, `/v1/fs/stat` from `router.rs`.
+- Remove route registrations for legacy agent/session REST endpoints and `/v1/fs/entries`, `/v1/fs/entry`, `/v1/fs/mkdir`, `/v1/fs/move`, `/v1/fs/stat` from `router.rs`.
 - Keep `/v1/health`, `/v1/rpc`, `GET /v1/fs/file`, `PUT /v1/fs/file`, and `POST /v1/fs/upload-batch`.
 - Optional short deprecation period: convert removed routes to `410 Gone` with explicit extension method in `detail`.
 
@@ -237,6 +237,6 @@ Inspector:
 
 ## Open Decisions
 
-1. Should removed `/v1/agents*`, `/v1/sessions*`, and non-binary `/v1/fs/*` return `410` for one release or be dropped immediately?
+1. Should removed legacy agent/session REST endpoints and non-binary `/v1/fs/*` return `410` for one release or be dropped immediately?
 2. Do we keep a strict response-shape parity layer for session/file methods, or normalize to ACP-native shapes?
 3. Should `/` service-root remain as informational HTTP, or be treated as out-of-scope for this “only health static + binary fs transfer” policy?

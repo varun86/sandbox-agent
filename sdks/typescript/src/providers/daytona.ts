@@ -4,6 +4,7 @@ import { DEFAULT_SANDBOX_AGENT_IMAGE, buildServerStartCommand } from "./shared.t
 
 const DEFAULT_AGENT_PORT = 3000;
 const DEFAULT_PREVIEW_TTL_SECONDS = 4 * 60 * 60;
+const DEFAULT_CWD = "/home/sandbox";
 
 type DaytonaCreateParams = NonNullable<Parameters<Daytona["create"]>[0]>;
 
@@ -13,6 +14,7 @@ export interface DaytonaProviderOptions {
   create?: DaytonaCreateOverrides | (() => DaytonaCreateOverrides | Promise<DaytonaCreateOverrides>);
   image?: DaytonaCreateParams["image"];
   agentPort?: number;
+  cwd?: string;
   previewTtlSeconds?: number;
   deleteTimeoutSeconds?: number;
 }
@@ -26,12 +28,13 @@ async function resolveCreateOptions(value: DaytonaProviderOptions["create"]): Pr
 export function daytona(options: DaytonaProviderOptions = {}): SandboxProvider {
   const agentPort = options.agentPort ?? DEFAULT_AGENT_PORT;
   const image = options.image ?? DEFAULT_SANDBOX_AGENT_IMAGE;
+  const cwd = options.cwd ?? DEFAULT_CWD;
   const previewTtlSeconds = options.previewTtlSeconds ?? DEFAULT_PREVIEW_TTL_SECONDS;
   const client = new Daytona();
 
   return {
     name: "daytona",
-    defaultCwd: "/home/daytona",
+    defaultCwd: cwd,
     async create(): Promise<string> {
       const createOpts = await resolveCreateOptions(options.create);
       const sandbox = await client.create({

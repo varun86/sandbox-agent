@@ -45,7 +45,6 @@ const VERSION_REFERENCE_FILES = [
   "scripts/release/main.ts",
   "scripts/release/promote-artifacts.ts",
   "scripts/release/sdk.ts",
-  "scripts/sandbox-testing/test-sandbox.ts",
 ];
 
 export async function updateVersion(opts: ReleaseOpts) {

@@ -55,7 +55,7 @@ Upgrading backend integration from legacy sandbox-agent session endpoints to `sa
 
 ### Friction / Issue
 
-`0.2.0` no longer exposes `/v1/sessions` endpoints used by the backend integration; direct session create/status polling via legacy REST paths returns `404`.
+`0.2.0` no longer exposes the legacy session REST endpoints used by the backend integration; direct session create/status polling via those paths returns `404`.
 
 ### Attempted Fix / Workaround
 
@@ -65,5 +65,5 @@ Upgrading backend integration from legacy sandbox-agent session endpoints to `sa
 
 ### Outcome
 
-- Backend no longer depends on removed `/v1/sessions` endpoints.
+- Backend no longer depends on removed legacy session REST endpoints.
 - Daytona flow is aligned with `sandbox-agent 0.2.0` runtime and SDK usage.

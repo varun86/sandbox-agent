@@ -34,7 +34,7 @@ pub struct UniversalEvent {
 ### v1 Usage
 
 ```
-GET /v1/sessions/{id}/events?include_raw=true
+legacy event polling endpoint with `include_raw=true`
 ```
 
 When `include_raw=true`, each `UniversalEvent` included the verbatim JSON the agent process emitted before normalization into the universal schema.

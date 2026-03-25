@@ -36,7 +36,7 @@ Session-level features that build on Phase A runtime tracking.
 
 | Order | Feature                                                      | Spec | Approach                                             | Effort |
 |:-----:|--------------------------------------------------------------|:----:|------------------------------------------------------|:------:|
-| B1    | [Session Info](./16-session-info.md)                         | #16  | New `GET /v1/sessions` and `GET /v1/sessions/{id}`  | Medium |
+| B1    | [Session Info](./16-session-info.md)                         | #16  | New session info HTTP endpoints                     | Medium |
 | B2    | [Session Termination](./07-session-termination.md)           | #7   | Idempotent `_sandboxagent/session/terminate`         | Medium |
 | B3    | [Error Termination Metadata](./17-error-termination-metadata.md) | #17  | Stderr capture + `_sandboxagent/session/ended` event | Medium |
 

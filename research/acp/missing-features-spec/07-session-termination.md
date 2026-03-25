@@ -4,7 +4,7 @@
 
 ## Summary
 
-v1 had explicit session termination (`POST /v1/sessions/{id}/terminate`). v1 only has `session/cancel` (turn cancellation, not session kill) and `DELETE /v1/rpc` (connection close, not session termination). Need explicit session destroy/terminate semantics.
+The legacy session REST API had an explicit terminate endpoint. ACP only has `session/cancel` (turn cancellation, not session kill) and `DELETE /v1/rpc` (connection close, not session termination). Need explicit session destroy/terminate semantics.
 
 ## Current v1 State
 
@@ -20,7 +20,7 @@ v1 had explicit session termination (`POST /v1/sessions/{id}/terminate`). v1 onl
 ### HTTP Endpoint
 
 ```
-POST /v1/sessions/{id}/terminate
+legacy session terminate endpoint
 ```
 
 ### Handler (from `router.rs`)

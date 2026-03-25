@@ -171,7 +171,7 @@ When an agent process terminates with an error:
 ### Session Info Integration
 
 Termination metadata should be accessible via:
-- `GET /v1/sessions/{id}` (Feature #16) — include `terminationInfo` in response when session has ended
+- the session info endpoint (Feature #16) — include `terminationInfo` in response when session has ended
 - `session/list` ACP response — include termination status in session entries
 
 ### Files to Modify
