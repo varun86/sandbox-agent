@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts",
+    "build": "tsup src/index.ts --format esm --dts --tsconfig tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e:full": "HF_ENABLE_DAEMON_FULL_E2E=1 vitest run test/e2e/full-integration-e2e.test.ts",

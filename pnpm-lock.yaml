@@ -796,11 +796,6 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
-        version: 4.21.0
-      typescript:
-        specifier: latest
-        version: 5.9.3
-
   sdks/acp-http-client:
     dependencies:
       '@agentclientprotocol/sdk':
