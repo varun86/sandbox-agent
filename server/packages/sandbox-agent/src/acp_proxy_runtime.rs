@@ -298,7 +298,7 @@ impl AcpProxyRuntime {
 
         let resolve_started = std::time::Instant::now();
         let manager = self.inner.agent_manager.clone();
-        let launch = tokio::task::spawn_blocking(move || manager.resolve_agent_process(agent))
+        let mut launch = tokio::task::spawn_blocking(move || manager.resolve_agent_process(agent))
             .await
             .map_err(|err| SandboxError::StreamError {
                 message: format!("failed to resolve agent process launch spec: {err}"),
@@ -306,6 +306,16 @@ impl AcpProxyRuntime {
             .map_err(|err| SandboxError::StreamError {
                 message: err.to_string(),
             })?;
+
+        if agent == AgentId::Mock {
+            if let Ok(exe) = std::env::current_exe() {
+                let path = exe.to_string_lossy().to_string();
+                launch
+                    .env
+                    .entry("SANDBOX_AGENT_BIN".to_string())
+                    .or_insert(path);
+            }
+        }
 
         tracing::info!(
             server_id = server_id,

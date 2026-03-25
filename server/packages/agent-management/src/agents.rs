@@ -1093,9 +1093,9 @@ fn write_mock_agent_process_launcher(path: &Path) -> Result<(), AgentError> {
         fs::create_dir_all(parent)?;
     }
     let script = if cfg!(windows) {
-        "@echo off\r\nsandbox-agent mock-agent-process %*\r\n"
+        "@echo off\r\nif not \"%SANDBOX_AGENT_BIN%\"==\"\" (\r\n  \"%SANDBOX_AGENT_BIN%\" mock-agent-process %*\r\n  exit /b %errorlevel%\r\n)\r\nsandbox-agent mock-agent-process %*\r\n"
     } else {
-        "#!/usr/bin/env sh\nexec sandbox-agent mock-agent-process \"$@\"\n"
+        "#!/usr/bin/env sh\nif [ -n \"${SANDBOX_AGENT_BIN:-}\" ]; then\n  exec \"$SANDBOX_AGENT_BIN\" mock-agent-process \"$@\"\nfi\nexec sandbox-agent mock-agent-process \"$@\"\n"
     };
     write_text_file(path, script)
 }
@@ -1967,6 +1967,34 @@ exit 0
             InstalledArtifactKind::AgentProcess
         );
         assert_eq!(result.artifacts[0].source, InstallSource::Builtin);
+    }
+
+    #[test]
+    fn mock_launcher_prefers_sandbox_agent_bin() {
+        let temp_dir = tempfile::tempdir().expect("create tempdir");
+        let manager = AgentManager::with_platform(temp_dir.path(), Platform::LinuxX64);
+
+        manager
+            .install(
+                AgentId::Mock,
+                InstallOptions {
+                    reinstall: true,
+                    version: None,
+                    agent_process_version: None,
+                },
+            )
+            .expect("mock install");
+
+        let launcher = manager.agent_process_path(AgentId::Mock);
+        let mut file = fs::File::open(&launcher).expect("open mock launcher");
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)
+            .expect("read mock launcher");
+
+        assert!(
+            contents.contains("SANDBOX_AGENT_BIN"),
+            "mock launcher should reference SANDBOX_AGENT_BIN"
+        );
     }
 
     #[test]
