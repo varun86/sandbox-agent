@@ -19,7 +19,6 @@ console.log(`UI: ${client.inspectorUrl}`);
 
 const session = await client.createSession({
   agent: detectAgent(),
-  cwd: "/home/vercel-sandbox",
 });
 
 session.onEvent((event) => {

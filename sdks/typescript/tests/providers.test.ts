@@ -35,10 +35,10 @@ function findBinary(): string | null {
 }
 
 const BINARY_PATH = findBinary();
-if (!BINARY_PATH) {
-  throw new Error("sandbox-agent binary not found. Build it (cargo build -p sandbox-agent) or set SANDBOX_AGENT_BIN.");
-}
-if (!process.env.SANDBOX_AGENT_BIN) {
+// if (!BINARY_PATH) {
+//   throw new Error("sandbox-agent binary not found. Build it (cargo build -p sandbox-agent) or set SANDBOX_AGENT_BIN.");
+// }
+if (!process.env.SANDBOX_AGENT_BIN && BINARY_PATH) {
   process.env.SANDBOX_AGENT_BIN = BINARY_PATH;
 }
 

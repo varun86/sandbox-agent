@@ -36,6 +36,7 @@ export function cloudflare(options: CloudflareProviderOptions): SandboxProvider 
 
   return {
     name: "cloudflare",
+    defaultCwd: "/root",
     async create(): Promise<string> {
       if (typeof sdk.create !== "function") {
         throw new Error('sandbox provider "cloudflare" requires a sdk with a `create()` method.');

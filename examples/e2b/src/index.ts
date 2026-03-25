@@ -13,7 +13,6 @@ const client = await SandboxAgent.start({
 
 const session = await client.createSession({
   agent: detectAgent(),
-  cwd: "/home/user",
 });
 
 session.onEvent((event) => {

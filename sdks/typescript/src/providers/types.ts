@@ -47,4 +47,11 @@ export interface SandboxProvider {
    * (e.g. the duplicate process exits on port conflict).
    */
   ensureServer?(sandboxId: string): Promise<void>;
+
+  /**
+   * Default working directory for sessions when the caller does not specify
+   * one. Remote providers should set this to a path that exists inside the
+   * sandbox (e.g. '/home/user'). When omitted, falls back to process.cwd().
+   */
+  defaultCwd?: string;
 }

@@ -611,7 +611,7 @@ impl AdapterRuntime {
         }
     }
 
-    async fn stderr_tail_summary(&self) -> Option<String> {
+    pub async fn stderr_tail_summary(&self) -> Option<String> {
         let tail = self.stderr_tail.lock().await;
         if tail.is_empty() {
             return None;

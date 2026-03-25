@@ -44,6 +44,7 @@ export function docker(options: DockerProviderOptions = {}): SandboxProvider {
 
   return {
     name: "docker",
+    defaultCwd: "/home/sandbox",
     async create(): Promise<string> {
       const hostPort = await getPort();
       const env = await resolveValue(options.env, []);

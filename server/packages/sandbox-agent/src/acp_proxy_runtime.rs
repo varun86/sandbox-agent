@@ -147,6 +147,7 @@ impl AcpProxyRuntime {
                     "acp_proxy: POST → response"
                 );
                 let value = annotate_agent_error(instance.agent, value);
+                let value = annotate_agent_stderr(value, &instance.runtime).await;
                 Ok(ProxyPostOutcome::Response(value))
             }
             Ok(PostOutcome::Accepted) => {
@@ -572,6 +573,25 @@ fn parse_json_number(raw: &str) -> Option<Number> {
 
 /// Inspect JSON-RPC error responses from agent processes and add helpful hints
 /// when we can infer the root cause from a known error pattern.
+async fn annotate_agent_stderr(mut value: Value, runtime: &AdapterRuntime) -> Value {
+    if value.get("error").is_none() {
+        return value;
+    }
+    if let Some(stderr) = runtime.stderr_tail_summary().await {
+        if let Some(error) = value.get_mut("error") {
+            if let Some(error_obj) = error.as_object_mut() {
+                let data = error_obj
+                    .entry("data")
+                    .or_insert_with(|| Value::Object(Default::default()));
+                if let Some(obj) = data.as_object_mut() {
+                    obj.insert("agentStderr".to_string(), Value::String(stderr));
+                }
+            }
+        }
+    }
+    value
+}
+
 fn annotate_agent_error(agent: AgentId, mut value: Value) -> Value {
     if agent != AgentId::Pi {
         return value;

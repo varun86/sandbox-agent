@@ -23,6 +23,7 @@ export function modal(options: ModalProviderOptions = {}): SandboxProvider {
 
   return {
     name: "modal",
+    defaultCwd: "/root",
     async create(): Promise<string> {
       const app = await client.apps.fromName(appName, { createIfMissing: true });
 

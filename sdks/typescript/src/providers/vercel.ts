@@ -30,6 +30,7 @@ export function vercel(options: VercelProviderOptions = {}): SandboxProvider {
 
   return {
     name: "vercel",
+    defaultCwd: "/home/vercel-sandbox",
     async create(): Promise<string> {
       const sandbox = await Sandbox.create((await resolveCreateOptions(options.create, agentPort)) as Parameters<typeof Sandbox.create>[0]);
 

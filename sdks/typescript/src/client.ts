@@ -1127,7 +1127,7 @@ export class SandboxAgent {
 
     const localSessionId = request.id?.trim() || randomId();
     const live = await this.getLiveConnection(request.agent.trim());
-    const sessionInit = normalizeSessionInit(request.sessionInit, request.cwd);
+    const sessionInit = normalizeSessionInit(request.sessionInit, request.cwd, this.sandboxProvider?.defaultCwd);
 
     const response = await live.createRemoteSession(localSessionId, sessionInit);
 
@@ -1183,7 +1183,7 @@ export class SandboxAgent {
     const replaySource = await this.collectReplayEvents(existing.id, this.replayMaxEvents);
     const replayText = buildReplayText(replaySource, this.replayMaxChars);
 
-    const recreated = await live.createRemoteSession(existing.id, normalizeSessionInit(existing.sessionInit));
+    const recreated = await live.createRemoteSession(existing.id, normalizeSessionInit(existing.sessionInit, undefined, this.sandboxProvider?.defaultCwd));
 
     const updated: SessionRecord = {
       ...existing,
@@ -2657,17 +2657,21 @@ function toAgentQuery(options: AgentQueryOptions | undefined): Record<string, Qu
   };
 }
 
-function normalizeSessionInit(value: Omit<NewSessionRequest, "_meta"> | undefined, cwdShorthand?: string): Omit<NewSessionRequest, "_meta"> {
+function normalizeSessionInit(
+  value: Omit<NewSessionRequest, "_meta"> | undefined,
+  cwdShorthand?: string,
+  providerDefaultCwd?: string,
+): Omit<NewSessionRequest, "_meta"> {
   if (!value) {
     return {
-      cwd: cwdShorthand ?? defaultCwd(),
+      cwd: cwdShorthand ?? providerDefaultCwd ?? defaultCwd(),
       mcpServers: [],
     };
   }
 
   return {
     ...value,
-    cwd: value.cwd ?? cwdShorthand ?? defaultCwd(),
+    cwd: value.cwd ?? cwdShorthand ?? providerDefaultCwd ?? defaultCwd(),
     mcpServers: value.mcpServers ?? [],
   };
 }
