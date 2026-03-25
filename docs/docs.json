@@ -2,6 +2,10 @@
   "$schema": "https://mintlify.com/docs.json",
   "theme": "willow",
   "name": "Sandbox Agent SDK",
+  "appearance": {
+    "default": "dark",
+    "strict": true
+  },
   "colors": {
     "primary": "#ff4f00",
     "light": "#ff6a2a",
