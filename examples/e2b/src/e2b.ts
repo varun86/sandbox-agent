@@ -17,8 +17,10 @@ export async function setupE2BSandboxAgent(): Promise<{
   token?: string;
   cleanup: () => Promise<void>;
 }> {
+  const template = process.env.E2B_TEMPLATE;
   const client = await SandboxAgent.start({
     sandbox: e2b({
+      template,
       create: { envs: collectEnvVars() },
     }),
   });
