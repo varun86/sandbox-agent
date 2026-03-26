@@ -26,6 +26,7 @@ const VERSION_REFERENCE_FILES = [
   "docs/deploy/cloudflare.mdx",
   "docs/deploy/vercel.mdx",
   "docs/deploy/daytona.mdx",
+  "docs/deploy/agentcomputer.mdx",
   "docs/deploy/e2b.mdx",
   "docs/deploy/docker.mdx",
   "docs/deploy/boxlite.mdx",

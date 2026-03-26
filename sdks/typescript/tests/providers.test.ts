@@ -12,6 +12,7 @@ import { local } from "../src/providers/local.ts";
 import { docker } from "../src/providers/docker.ts";
 import { e2b } from "../src/providers/e2b.ts";
 import { daytona } from "../src/providers/daytona.ts";
+import { agentcomputer } from "../src/providers/agentcomputer.ts";
 import { vercel } from "../src/providers/vercel.ts";
 import { modal } from "../src/providers/modal.ts";
 import { computesdk } from "../src/providers/computesdk.ts";
@@ -208,6 +209,21 @@ function buildProviders(): ProviderEntry[] {
         return daytona({
           create: { envVars: collectApiKeys() },
         });
+      },
+    });
+  }
+
+  // --- agentcomputer ---
+  {
+    entries.push({
+      name: "agentcomputer",
+      skipReasons: missingAnyEnvVars("COMPUTER_API_KEY", "AGENTCOMPUTER_API_KEY"),
+      agent: "claude",
+      startTimeoutMs: 300_000,
+      canVerifyDestroyedSandbox: false,
+      sessionTestsEnabled: false,
+      createProvider() {
+        return agentcomputer();
       },
     });
   }

@@ -27,6 +27,10 @@
       "types": "./dist/providers/daytona.d.ts",
       "import": "./dist/providers/daytona.js"
     },
+    "./agentcomputer": {
+      "types": "./dist/providers/agentcomputer.d.ts",
+      "import": "./dist/providers/agentcomputer.js"
+    },
     "./docker": {
       "types": "./dist/providers/docker.d.ts",
       "import": "./dist/providers/docker.js"
