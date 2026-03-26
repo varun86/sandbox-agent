@@ -1,6 +1,6 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "willow",
+  "theme": "mint",
   "name": "Sandbox Agent SDK",
   "appearance": {
     "default": "dark",
@@ -25,11 +25,6 @@
   },
   "navbar": {
     "links": [
-      {
-        "label": "Gigacode",
-        "icon": "terminal",
-        "href": "https://github.com/rivet-dev/sandbox-agent/tree/main/gigacode"
-      },
       {
         "label": "Discord",
         "icon": "discord",
@@ -91,12 +86,9 @@
             "pages": ["file-system", "processes", "computer-use", "common-software"]
           },
           {
-            "group": "Orchestration",
-            "pages": ["orchestration-architecture", "session-persistence", "observability", "multiplayer", "security"]
-          },
-          {
             "group": "Reference",
             "pages": [
+              "troubleshooting",
               "architecture",
               "cli",
               "inspector",
@@ -129,5 +121,10 @@
       }
     ]
   },
-  "styles": ["/theme.css"]
+  "__removed": [
+	  {
+		"group": "Orchestration",
+		"pages": ["orchestration-architecture", "session-persistence", "observability", "multiplayer", "security"]
+	  }
+  ]
 }
