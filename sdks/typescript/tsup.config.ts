@@ -6,6 +6,7 @@ export default defineConfig({
     "src/providers/local.ts",
     "src/providers/e2b.ts",
     "src/providers/daytona.ts",
+    "src/providers/agentcomputer.ts",
     "src/providers/docker.ts",
     "src/providers/vercel.ts",
     "src/providers/cloudflare.ts",

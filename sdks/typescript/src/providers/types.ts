@@ -40,6 +40,12 @@ export interface SandboxProvider {
   getFetch?(sandboxId: string): Promise<typeof globalThis.fetch>;
 
   /**
+   * Return a browser-ready Inspector URL for this sandbox.
+   * When omitted, the SDK falls back to `${getUrl()}/ui/`.
+   */
+  getInspectorUrl?(sandboxId: string, baseUrl?: string): Promise<string>;
+
+  /**
    * Ensure the sandbox-agent server process is running inside the sandbox.
    * Called during health-wait after consecutive failures, and before
    * reconnecting to an existing sandbox. Implementations should be

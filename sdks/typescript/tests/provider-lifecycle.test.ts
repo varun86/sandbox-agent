@@ -83,10 +83,22 @@ vi.mock("@fly/sprites", () => ({
 import { e2b } from "../src/providers/e2b.ts";
 import { modal } from "../src/providers/modal.ts";
 import { computesdk } from "../src/providers/computesdk.ts";
+import { agentcomputer } from "../src/providers/agentcomputer.ts";
 import { sprites } from "../src/providers/sprites.ts";
 
 function createFetch(): typeof fetch {
   return async () => new Response(null, { status: 200 });
+}
+
+function jsonResponse(body: unknown, init?: ResponseInit): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    ...init,
+    headers: {
+      "content-type": "application/json",
+      ...(init?.headers ?? {}),
+    },
+  });
 }
 
 function createBaseProvider(overrides: Partial<SandboxProvider> = {}): SandboxProvider {
@@ -202,6 +214,27 @@ describe("SandboxAgent provider lifecycle", () => {
     });
     await killed.killSandbox();
     expect(kill).toHaveBeenCalledWith("created");
+  });
+
+  it("uses provider-specific inspector URLs when provided", async () => {
+    const provider = createBaseProvider({
+      async getUrl(): Promise<string> {
+        return "https://sandbox.example";
+      },
+      async getInspectorUrl(): Promise<string> {
+        return "https://sandbox.example/ui/?access_token=test-token";
+      },
+    });
+
+    const sdk = await SandboxAgent.start({
+      sandbox: provider,
+      skipHealthCheck: true,
+      fetch: createFetch(),
+    });
+
+    expect(sdk.inspectorUrl).toBe("https://sandbox.example/ui/?access_token=test-token");
+
+    await sdk.killSandbox();
   });
 });
 
@@ -371,6 +404,85 @@ describe("computesdk provider", () => {
         templateId: "tmpl-123",
       }),
     );
+  });
+});
+
+describe("agentcomputer provider", () => {
+  it("creates managed-worker computers with platform defaults and exposes an auth-ready inspector URL", async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ id: "cmp_123", status: "pending" }, { status: 201 }))
+      .mockResolvedValueOnce(jsonResponse({ id: "cmp_123", status: "pending" }))
+      .mockResolvedValueOnce(jsonResponse({ id: "cmp_123", status: "starting" }))
+      .mockResolvedValueOnce(jsonResponse({ connection: { web_url: "https://box.agentcomputer.example" } }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          access_url: "https://box.agentcomputer.example?access_token=browser-token",
+          expires_at: "2099-01-01T00:00:00Z",
+        }),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: "ok" }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: "ok" }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    const sdk = await SandboxAgent.start({
+      sandbox: agentcomputer({
+        apiKey: "ac_live_test",
+        fetch: fetchMock,
+        pollIntervalMs: 0,
+      }),
+    });
+
+    expect(sdk.sandboxId).toBe("agentcomputer/cmp_123");
+    expect(sdk.inspectorUrl).toBe("https://box.agentcomputer.example/ui/?access_token=browser-token");
+
+    const health = await sdk.getHealth();
+    expect(health.status).toBe("ok");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://api.computer.agentcomputer.ai/v1/computers",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          runtime_family: "managed-worker",
+          use_platform_default: true,
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "https://api.computer.agentcomputer.ai/v1/computers/cmp_123/connection",
+      expect.objectContaining({
+        headers: expect.any(Headers),
+      }),
+    );
+
+    const browserAccessRequest = fetchMock.mock.calls[4];
+    expect(browserAccessRequest?.[0]).toBe("https://api.computer.agentcomputer.ai/v1/computers/cmp_123/access/browser");
+
+    const sandboxHealthRequest = fetchMock.mock.calls[5]?.[0];
+    expect(sandboxHealthRequest).toBeInstanceOf(Request);
+    const sandboxHealthHeaders = new Headers((sandboxHealthRequest as Request).headers);
+    expect(sandboxHealthHeaders.get("cookie")).toContain("agentcomputer_access_session=browser-token");
+
+    await sdk.killSandbox();
+  });
+
+  it("maps missing computers to SandboxDestroyedError during reconnect", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ error: "not found" }), {
+        status: 404,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const provider = agentcomputer({
+      apiKey: "ac_live_test",
+      fetch: fetchMock,
+    });
+
+    await expect(provider.reconnect?.("cmp_missing")).rejects.toBeInstanceOf(SandboxDestroyedError);
   });
 });
 

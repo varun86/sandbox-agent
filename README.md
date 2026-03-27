@@ -32,7 +32,7 @@ Sandbox Agent solves three problems:
 
 - **Universal Agent API**: Single interface to control Claude Code, Codex, OpenCode, Cursor, Amp, and Pi with full feature coverage
 - **Universal Session Schema**: Standardized schema that normalizes all agent event formats for storage and replay
-- **Runs Inside Any Sandbox**: Lightweight static Rust binary. One curl command to install inside E2B, Daytona, Vercel Sandboxes, or Docker
+- **Runs Inside Any Sandbox**: Lightweight static Rust binary. One curl command to install inside Agent Computer, E2B, Daytona, Vercel Sandboxes, or Docker
 - **Server or SDK Mode**: Run as an HTTP server or embed with the TypeScript SDK
 - **OpenAPI Spec**: [Well documented](https://sandboxagent.dev/docs/api-reference) and easy to integrate from any language
 - **OpenCode SDK & UI Support** *(Experimental)*: [Connect OpenCode CLI, SDK, or web UI](https://sandboxagent.dev/docs/opencode-compatibility) to control agents through familiar OpenCode tooling

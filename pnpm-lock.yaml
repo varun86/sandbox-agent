@@ -31,6 +31,28 @@ importers:
         specifier: ^3.0.0
         version: 3.2.4(@types/debug@4.1.12)(@types/node@24.10.9)(jiti@1.21.7)(jsdom@26.1.0)(tsx@4.21.0)(yaml@2.8.2)
 
+  examples/agentcomputer:
+    dependencies:
+      '@sandbox-agent/example-shared':
+        specifier: workspace:*
+        version: link:../shared
+      sandbox-agent:
+        specifier: workspace:*
+        version: link:../../sdks/typescript
+    devDependencies:
+      '@types/node':
+        specifier: latest
+        version: 25.5.0
+      tsx:
+        specifier: latest
+        version: 4.21.0
+      typescript:
+        specifier: latest
+        version: 6.0.2
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/debug@4.1.12)(@types/node@25.5.0)(jiti@1.21.7)(jsdom@26.1.0)(tsx@4.21.0)(yaml@2.8.2)
+
   examples/boxlite:
     dependencies:
       '@boxlite-ai/boxlite':

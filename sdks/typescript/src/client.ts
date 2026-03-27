@@ -888,6 +888,7 @@ export class SandboxAgent {
   private sandboxProvider?: SandboxProvider;
   private sandboxProviderId?: string;
   private sandboxProviderRawId?: string;
+  private sandboxInspectorUrl?: string;
 
   private readonly persist: SessionPersistDriver;
   private readonly replayMaxEvents: number;
@@ -959,6 +960,7 @@ export class SandboxAgent {
     try {
       const fetcher = await resolveProviderFetch(provider, rawSandboxId);
       const baseUrl = provider.getUrl ? await provider.getUrl(rawSandboxId) : undefined;
+      const inspectorUrl = provider.getInspectorUrl ? await provider.getInspectorUrl(rawSandboxId, baseUrl) : undefined;
       const providerFetch = options.fetch ?? fetcher;
       const commonConnectOptions = {
         headers: options.headers,
@@ -984,6 +986,7 @@ export class SandboxAgent {
       client.sandboxProvider = provider;
       client.sandboxProviderId = prefixedSandboxId;
       client.sandboxProviderRawId = rawSandboxId;
+      client.sandboxInspectorUrl = inspectorUrl;
       return client;
     } catch (error) {
       if (createdSandbox) {
@@ -1006,7 +1009,7 @@ export class SandboxAgent {
   }
 
   get inspectorUrl(): string {
-    return `${this.baseUrl.replace(/\/+$/, "")}/ui/`;
+    return this.sandboxInspectorUrl ?? `${this.baseUrl.replace(/\/+$/, "")}/ui/`;
   }
 
   async dispose(): Promise<void> {
